@@ -1,4 +1,4 @@
-"""Ballast: remind Claude to hand a long chat over to a fresh session.
+"""Ideal-Umbrella: remind Claude to hand a long chat over to a fresh session.
 
 Hook for UserPromptSubmit (and optionally PostToolUse). It reads the session
 transcript, takes the context size of the last main-chain model call and, once
@@ -10,13 +10,14 @@ import json
 import os
 import sys
 
-THRESHOLD = int(os.environ.get("BALLAST_HANDOFF_AT", "150000"))
-STEP = int(os.environ.get("BALLAST_HANDOFF_STEP", "25000"))
+THRESHOLD = int(os.environ.get("IDEAL_UMBRELLA_HANDOFF_AT", "150000"))
+STEP = int(os.environ.get("IDEAL_UMBRELLA_HANDOFF_STEP", "25000"))
+# The folder keeps its first name, ballast: hooks in already-open chats point at it.
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "ballast", "state")
 TAIL_BYTES = 4 * 1024 * 1024
 
 NOTE = (
-    "Ballast: this chat's context is about {k}k tokens (over {t}k). At the next "
+    "Ideal-Umbrella: this chat's context is about {k}k tokens (over {t}k). At the next "
     "step boundary, not mid-step: write a resume point (state, decisions and why, "
     "open items, file paths) to the task's progress file, then offer a fresh "
     "session whose brief points to that file. If the user already chose to stay "
@@ -76,7 +77,7 @@ def main():
             f.write(str(band))
         event = data.get("hook_event_name") or "UserPromptSubmit"
         print(json.dumps({
-            "systemMessage": f"Ballast: context about {n // 1000}k tokens; "
+            "systemMessage": f"Ideal-Umbrella: context about {n // 1000}k tokens; "
                              "a fresh session is due at the next step boundary.",
             "hookSpecificOutput": {
                 "hookEventName": event,

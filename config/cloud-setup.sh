@@ -1,5 +1,5 @@
 #!/bin/bash
-# Ballast rules for Claude Code cloud sessions.
+# Ideal-Umbrella rules for Claude Code cloud sessions.
 # Paste into the cloud environment's setup script (claude.ai/code -> environment settings).
 # Cloud sessions don't read your local ~/.claude/CLAUDE.md, so this writes it inside the session.
 mkdir -p ~/.claude

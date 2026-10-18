@@ -14,12 +14,12 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 | Unused claude.ai connectors off | the app's connector switch (account-wide) | new session 96,690 -> 81,423 tokens (-15.8%) |
 | Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | reports from other sessions averaged 5,126 characters |
 | Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 118 tokens per session; a fresh session starts near 83k instead of carrying up to ~217k |
-| Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (copy to `~/.claude/ballast/`) | reads the real context size from the transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; about 1 s per message, 0 tokens below 150k |
+| Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (copy to `~/.claude/ballast/`, the folder's first name) | reads the real context size from the transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; about 1 s per message, 0 tokens below 150k |
 
-Install: merge `config/user-settings.json` into `~/.claude/settings.json` copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).
+Install: merge `config/user-settings.json` into `~/.claude/settings.json`, copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).
 Cloud sessions don't read `~/.claude/`: paste `config/cloud-setup.sh` into the cloud environment's setup script (claude.ai/code, environment selector under the message box, settings icon on the environment's row). It writes the same rules plus one line about pushing the progress file; 144 tokens.
 Check: open a new session and send `Call get_usage and list every context category with its tokens.`
-Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Thresholds: env `BALLAST_HANDOFF_AT`, `BALLAST_HANDOFF_STEP`. Folder-level `.claude/settings.local.json` files override user settings.
+Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Thresholds: env `IDEAL_UMBRELLA_HANDOFF_AT`, `IDEAL_UMBRELLA_HANDOFF_STEP`. Folder-level `.claude/settings.local.json` files override user settings.
 
 ## What did not work
 - An invented machine-only language. Glyphs and emoji cost more tokens than English words; gzip+base64 costs 2.8x prose. Terse English is about 0.5x prose and lossless. Hebrew costs 1.4x to 3.3x English for the same content.
