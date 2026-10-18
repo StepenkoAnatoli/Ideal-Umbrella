@@ -1,0 +1,18 @@
+{
+  "autoCompactWindow": 250000,
+  "skillListingBudgetFraction": 0.005,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; python3 -I \"$CLAUDE_PROJECT_DIR/hooks/context_check.py\"; exit 0",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

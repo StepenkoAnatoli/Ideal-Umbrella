@@ -18,6 +18,7 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 
 Install: merge `config/user-settings.json` into `~/.claude/settings.json`, copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).
 Cloud sessions don't read `~/.claude/`: paste `config/cloud-setup.sh` into the cloud environment's setup script (claude.ai/code, environment selector under the message box, settings icon on the environment's row). It writes the same rules plus one line about pushing the progress file; 144 tokens.
+The hook and the two keys reach a cloud session only through the repo's committed `.claude/settings.json`, and only in sessions with one repository. This repo has its own. For another repo, run `python -I config/add_to_repo.py <repo>` and commit the two files it writes. It merges `config/repo-settings.json` into the file, keeps other keys and hooks, and changes nothing on a second run. The hook exits at once unless `CLAUDE_CODE_REMOTE` is `true`, so local sessions still run only the user-level hook. For the compact window in every cloud session, including those with several repositories, you can instead set env `CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000` on the cloud environment.
 Check: open a new session and send `Call get_usage and list every context category with its tokens.`
 Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Thresholds: env `IDEAL_UMBRELLA_HANDOFF_AT`, `IDEAL_UMBRELLA_HANDOFF_STEP`. Folder-level `.claude/settings.local.json` files override user settings.
 
@@ -33,7 +34,8 @@ Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Threshol
 - Fixed load of a new session is about 83k tokens, mostly the app's own tools (System tools ~39.6k, MCP tools ~25.9k).
 
 ## Contents
-- `config/` - the settings snippet and the CLAUDE.md rule
+- `config/` - the settings snippet, the CLAUDE.md rule, the cloud setup script, and `add_to_repo.py` for repo-level cloud settings
+- `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log and the 13-agent panel results
