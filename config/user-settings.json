@@ -1,4 +1,17 @@
 {
   "autoCompactWindow": 250000,
-  "skillListingBudgetFraction": 0.005
+  "skillListingBudgetFraction": 0.005,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"C:/Users/PC/AppData/Local/Programs/Python/Python314/python.exe\" -I \"C:/Users/PC/.claude/ballast/context_check.py\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
 }
