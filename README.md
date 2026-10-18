@@ -12,7 +12,8 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 | Compact at 250k instead of ~1M | `autoCompactWindow: 250000` in `~/.claude/settings.json` | window 1,000,000 at 97% -> 250,000 at 87% |
 | Half-size skills list | `skillListingBudgetFraction: 0.005` in `~/.claude/settings.json` | Skills 9,913 -> 4,919 tokens |
 | Unused claude.ai connectors off | the app's connector switch (account-wide) | new session 96,690 -> 81,423 tokens (-15.8%) |
-| Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | costs 50 tokens; reports from other sessions averaged 5,126 characters |
+| Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | reports from other sessions averaged 5,126 characters |
+| Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 118 tokens per session; a fresh session starts near 83k instead of carrying up to ~217k |
 
 Install: merge `config/user-settings.json` into `~/.claude/settings.json` and copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md`.
 Check: open a new session and send `Call get_usage and list every context category with its tokens.`
