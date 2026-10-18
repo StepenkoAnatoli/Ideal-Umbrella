@@ -1,2 +1,38 @@
 # Ideal-Umbrella
-Make me waste less token while we work
+Make me waste less token while we work.
+
+Rules and small tools that cut how many tokens Claude Code re-reads on every call. Working name for the setup: **Ballast**.
+
+## Why
+In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58% cache reads, 27% cache writes and 15% output. Visible prose was about 12% of output characters. Every call re-reads the whole context, so the lever is a smaller context per call, not shorter wording.
+
+## What is applied to every session
+| Piece | Where | Measured effect |
+|---|---|---|
+| Compact at 250k instead of ~1M | `autoCompactWindow: 250000` in `~/.claude/settings.json` | window 1,000,000 at 97% -> 250,000 at 87% |
+| Half-size skills list | `skillListingBudgetFraction: 0.005` in `~/.claude/settings.json` | Skills 9,913 -> 4,919 tokens |
+| Unused claude.ai connectors off | the app's connector switch (account-wide) | new session 96,690 -> 81,423 tokens (-15.8%) |
+| Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | costs 50 tokens; reports from other sessions averaged 5,126 characters |
+
+Install: merge `config/user-settings.json` into `~/.claude/settings.json` and copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md`.
+Check: open a new session and send `Call get_usage and list every context category with its tokens.`
+Undo: delete the two keys and `~/.claude/CLAUDE.md`. Folder-level `.claude/settings.local.json` files override user settings.
+
+## What did not work
+- An invented machine-only language. Glyphs and emoji cost more tokens than English words; gzip+base64 costs 2.8x prose. Terse English is about 0.5x prose and lossless. Hebrew costs 1.4x to 3.3x English for the same content.
+- Keyline note format on an already terse progress file: -2%.
+- The `disableClaudeAiConnectors` setting: no effect in the Claude desktop app.
+- Disabling unused plugins: no measurable change so far (the skills list is capped anyway).
+- Gist tokens need the model itself trained. LLMLingua-2 could plug in through a PostToolUse hook (`updatedToolOutput`), but tool results are only 30% of context and file reads must stay exact for Edit; estimated gain about 7%.
+
+## Biggest costs still left
+- In two long sessions: one large skill load was 15% of context characters, 55 reports from other sessions 15%, another skill load 6%, Bash output 15%.
+- Fixed load of a new session is about 83k tokens, mostly the app's own tools (System tools ~39.6k, MCP tools ~25.9k).
+
+## Contents
+- `config/` - the settings snippet and the CLAUDE.md rule
+- `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I tests/run_tests.py`, needs `tiktoken`)
+- `research/` - the full progress log and the 13-agent panel results
+- `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine
+
+Token counts use tiktoken `o200k_base` / `cl100k_base` as a proxy; Claude's tokenizer is not public.

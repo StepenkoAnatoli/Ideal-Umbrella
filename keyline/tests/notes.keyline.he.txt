@@ -1,0 +1,3 @@
+סטאק: TypeScript; Next.js 14; Postgres דרך Prisma
+מוסכמות: להשתמש ב-pnpm לא ב-npm; טסטים יושבים ב-__tests__/ ליד המקור; הודעות קומיט לפי Conventional Commits
+פתוח: להעביר auth מ-NextAuth ל-Lucia; להוסיף rate limiting על /api/upload; לתקן טסט לא יציב ב-billing.spec.ts

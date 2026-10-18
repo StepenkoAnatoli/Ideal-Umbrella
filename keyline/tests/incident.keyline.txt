@@ -1,0 +1,6 @@
+incident: checkout-api HTTP 503 ~38% requests 2026-10-14 14:02-14:31 UTC
+cause: release v2.14.0 introduced new env var PAYMENT_TIMEOUT_MS, not set in production -> payment client started with zero timeout -> every provider call failed immediately
+timeline: 14:02 deploy v2.14.0 completed; 14:05 alert elevated 5xx rate; 14:12 on-call engineer found missing var in pod logs; 14:20 rollback to v2.13.2 initiated; 14:31 error rate back to baseline
+impact: ~1,900 checkout attempts failed; no data lost; no double charges
+root: production config value missing; deploy pipeline does not validate required env vars
+actions: startup check fails fast on missing required var (platform team, due 2026-10-21); set PAYMENT_TIMEOUT_MS=8000 in production config; add pre-deploy config diff step to pipeline

@@ -1,0 +1,6 @@
+⚠ checkout-api 503 ~38% 2026-10-14 14:02→14:31Z
+∵ v2.14.0 ⊕ env PAYMENT_TIMEOUT_MS ∅prod → client timeout=0 → ∀ provider call ✗ immediately
+⏱ 14:02 deploy ✓; 14:05 🔔 5xx↑; 14:12 oncall 🔍 var ∅ pod logs; 14:20 ⟲ v2.13.2 start; 14:31 err→baseline
+💥 ~1,900 checkout ✗; ¬data loss; ¬double charge
+⚓ prod cfg ∅; pipeline ¬validate env
+☐ startup check fail-fast ∅var (platform, 2026-10-21); PAYMENT_TIMEOUT_MS=8000 prod; pre-deploy cfg diff

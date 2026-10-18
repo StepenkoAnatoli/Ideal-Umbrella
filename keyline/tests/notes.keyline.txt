@@ -1,0 +1,3 @@
+stack: TypeScript; Next.js 14; Postgres via Prisma
+conventions: use pnpm not npm; tests live in __tests__/ next to source; commit messages follow Conventional Commits
+open: migrate auth from NextAuth to Lucia; add rate limiting on /api/upload; fix flaky test in billing.spec.ts

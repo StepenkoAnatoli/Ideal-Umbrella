@@ -1,0 +1,2 @@
+## Machine notes style
+Notes in notes/ and plans/: one 'key: item; item' line per topic, no markdown. Whole English words, no invented abbreviations. Drop articles, filler and recaps. Copy every number, date, version, identifier, path, name, negation, hedge and aspect verb verbatim. Update with Edit, not Write; grep instead of re-reading. English only; render Hebrew or prose on request, into a sibling .he.txt.

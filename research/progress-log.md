@@ -1,0 +1,82 @@
+# Machine-only compressed language — progress (saved 2026-10-18)
+
+Session paused at the user's request to wait for usage reset. This file is the resume point.
+
+## The request (user, 2026-10-17)
+Design a language that LLMs (Claude/GPT) write in instead of long human prose, so output is much shorter, files are light, and only machines read it. On request the machine must translate it to the user's language (English/Hebrew/...). Be honest, creative, less deterministic.
+
+## Established facts (measured this session)
+Benchmark script: `C:\Users\PC\AppData\Local\Temp\claude\C--Users-PC-Desktop-gittoken\57c9c8f0-2bc8-44d2-b435-a74480b9b591\scratchpad\tokentest.py`
+Venv with tiktoken 0.14.0: `...\scratchpad\tokenv\Scripts\python.exe`
+Same incident report, same meaning, token counts (o200k_base / cl100k_base):
+
+| Notation | chars | o200k | cl100k | ratio vs prose (o200k) |
+|---|---|---|---|---|
+| English prose | 596 | 121 | 122 | 1.00 |
+| Terse English | 184 | 61 | 61 | 0.50 |
+| JSON | 223 | 72 | 72 | 0.60 |
+| S-expression | 163 | 62 | 62 | 0.51 |
+| ASCII abbreviation codes (lossy) | 90 | 43 | 44 | 0.36 |
+| Invented Unicode glyphs (lossy) | 40 | 49 | 58 | 0.40 |
+| Emoji mix (lossy) | 51 | 57 | 67 | 0.47 |
+| Hebrew prose | 423 | 167 | 397 | 1.38 |
+| Chinese prose | 160 | 109 | 147 | 0.90 |
+| gzip+base64 of prose | 492 | 342 | 354 | 2.83 |
+
+Key observations:
+- Invented glyphs cost MORE than 1 token per character (each glyph splits into byte fragments). They only "won" by dropping information.
+- ASCII abbreviation codes fragment into sub-word tokens (R|CA, PO|OL) — not single tokens.
+- Compressing on disk (gzip/base64) makes the model's read ~2.8x MORE expensive.
+- Terse English / S-expr / JSON ≈ half the tokens of prose, lossless. That is the honest floor for a text-based scheme.
+- Hebrew is 1.4x (o200k) to 3.3x (cl100k) more expensive than English for the same content → machine notes should be in English; translate to Hebrew only on request.
+
+## Verified prior art (web search 2026-10-17)
+LLMLingua / LongLLMLingua (2x–6x prompt compression), LLMLingua-2, gist tokens (Mu et al. 2023), In-context Autoencoder (ICAE), AutoCompressors, CacheGen (KV-cache compression). All need model training or internals; not usable by an API user on Claude/GPT today.
+
+## Pricing facts (claude-api skill, cached 2026-10-06)
+Opus 5.5: $4 in / $20 out per MTok, cache reads $0.20. Fable 5.1: $10 / $50, cache reads $0.25. Haiku 5.5: $0.10 / $0.50. Output tokens ≈ 5x input; cached input ≈ 20x cheaper than fresh. Caching is prefix-based.
+
+## Ideation panel (Workflow tool)
+Run ID: `wf_6361f28d-f77`
+Script: `C:\Users\PC\.claude\projects\C--Users-PC-Desktop-gittoken\57c9c8f0-2bc8-44d2-b435-a74480b9b591\workflows\scripts\machine-language-ideation-wf_6361f28d-f77.js`
+Transcript/journal: `C:\Users\PC\.claude\projects\C--Users-PC-Desktop-gittoken\57c9c8f0-2bc8-44d2-b435-a74480b9b591\subagents\workflows\wf_6361f28d-f77\journal.jsonl`
+Design: 6 angles (tokenizer, information theory, systems/cost, linguist/notation history, safety skeptic, wildcard) → one adversarial refuter per angle (measures tokens) → one synthesis agent producing a spec with measured examples.
+Status: COMPLETE (resumed 2026-10-18 02:04 local, finished ~02:40). 13 agents, 0 errors, 10 ideas survived refutation, 14 refuted. Full extracted results: `machine-language-panel-results.md` next to this file. To re-run:
+`Workflow({scriptPath: "<script path above>", resumeFromRunId: "wf_6361f28d-f77"})` — completed agents return cached results.
+
+## Draft verdict to deliver (my own, before panel results)
+1. The premise is half right. Cost is per token, not per word. A *new* symbol language tokenizes worse, not better. The real lever is "fewer tokens per unit of meaning using tokens the model already has cheaply": terse English, code-like/structured notation, references instead of repetition, deltas instead of full rewrites.
+2. The biggest waste is not the data, it is the prose around it (explanations, narration, pleasantries) and re-reading the same files every turn. Both are fixable today with instructions + prompt caching, no new language needed.
+3. A machine-only language is dangerous if the *translator* is the LLM (hallucinated decompression, model drift, cross-model disagreement). Make the language a lossless formal notation with a deterministic decoder (a program), and let the LLM only read/write it. Then "translate on request" is guaranteed, in any human language, via templates.
+4. Concrete proposal: plain-ASCII, line-oriented fact/delta notation with a tiny versioned header; codebook lives once in a cached prefix; files store data + pointers, not prose; renderer program expands to English/Hebrew. Expected: ~2x on structured content, much less on nuanced prose, near-zero on code.
+5. The truly "machine-native" language is not text at all: KV-cache / gist tokens. Only the provider can do that; prompt caching is the form available today.
+
+## Build (2026-10-18)
+Tool folder built by a separate session: `C:\Users\PC\Desktop\gittoken\keyline\` (keyline_check.py, keyline_lint.py, measure.py, keyline_hook.py, hooks-example.json, CLAUDE-snippet.md, README.md, tests/). Verified here: `.venv/Scripts/python.exe -I tests/run_tests.py` -> 22/22 passed, all token counts within 2 of the panel. Not yet wired into any repo; hook tested with simulated events only.
+
+## Next steps when resuming
+1. Read journal.jsonl; if the run finished, pull `spec`, `survivors`, `dead`, `premise_verdicts` from the final result.
+2. If not finished, resume the workflow with the command above.
+3. Write the final answer to the user (honest verdict + proposal + measured table + what to build first), tagging claims per the evidence rule.
+
+## Pilot (2026-10-18 ~15:00)
+Lint fix: abbreviation rule now flags only abbreviation-shaped multi-token words; 3,774 -> 87 distinct flags on 400 gittoken markdown files; 8 of 9 invented test abbreviations still caught (pkts passes). Suite 30/30.
+Converted rk-wt/PROGRESS.md to Keyline: 2,114 -> 2,067 o200k tokens (-2%); 169/169 invariants present; backup rk-wt/.keyline-backup/PROGRESS.md.orig.
+Hook wired via settings.local.json in gittoken/.claude and rk-wt/.claude, --watch on that one file; active from the next new session only.
+Finding: an agent-written terse file saves ~2%; Keyline's gains come from padded prose and markdown-heavy notes, not already-terse logs.
+
+## Usage measurement and compaction change (2026-10-18 ~15:15)
+Billed usage in the 3 largest gittoken transcripts: cache reads 58%, cache writes 27%, output 15% of cost at Opus 5.5 list prices; output chars 84% tool calls, 12% visible text. Research-Kit sweep session: median 425,166 tokens re-read per call, 693 tokens read per token written. Conclusion: context size per call, not output wording, drives usage.
+Set autoCompactWindow=250000 in gittoken/.claude/settings.local.json and rk-wt/.claude/settings.local.json (hook entries kept; a session reads only its own folder's project settings). Not active in the session that set it (still 97%); verify in a new gittoken session with get_usage.
+VERIFIED 2026-10-18: a new session opened in gittoken reported contextWindow 250,000 and autoCompactsAtPercent 87 (compaction near 217,500 tokens); a fresh session already starts near 96k tokens of fixed overhead (system tools, MCP tools, prompt, skills).
+CONNECTORS 2026-10-18: set disableClaudeAiConnectors=true in gittoken/.claude/settings.local.json and rk-wt/.claude/settings.local.json. Baseline from fresh gittoken session local_63ff22b9 (started before the change): total 96,690; MCP tools 26,428; MCP server instructions 6,261; system tools 34,627; skills 9,913; system prompt 9,389. Compare a NEW gittoken session's get_usage categories against these. Undo: delete the key from both files.
+CONNECTOR RESULT 2026-10-18: disableClaudeAiConnectors had NO effect in the Claude desktop app (new session 15:51 still loaded all connectors; MCP tools 26,428 and instructions 6,261 unchanged), so the key was removed again from both files. The app's own connector switch (set_session_connector_enabled) is account-wide. Measured cost of connector tool-name lists: 8,948 tokens per call (Figma 1,243, Webflow 1,092, wawesome 1,072, Gmail 952, Slack 826...). Most of the 26,428 MCP-tools tokens are app-internal tools, not connectors.
+CONNECTORS OFF 2026-10-18 ~16:05 (account-wide default, user's choice): Figma, Webflow, api.wawesome.io, Slides AI, Gmail, Slack, Google Drive, Google Calendar, Zapier, Supermetrics, Semrush, Bigdata.com, Claude Docs. Kept: Firecrawl (18 calls since 2026-10-10, the only one used), GitHits, Composio, Hugging Face, visualize. Expected: about 7,714 fewer tool-name tokens per call, plus their server instructions. Verify in a new session against the baseline (total 96,690; MCP tools 26,428; MCP server instructions 6,261). Re-enable from the composer + menu > Connectors.
+MEASURED AFTER CONNECTORS OFF 2026-10-18: new gittoken session total 81,423 (before 96,690, -15,267, -15.8%); MCP server instructions 1,384 (before 6,261); MCP tools 25,818 (before 26,428); Messages no longer among the largest categories (before 9,780). Remaining fixed load: system tools 34,627, MCP tools 25,818 (mostly app-internal), skills 9,913, system prompt 9,389. Next candidate lever: unused plugins and the skills list.
+PLUGINS 2026-10-18: user chose to disable 16 claude.ai account plugins (must be switched off in the app's plugin settings; no tool can do it): legal, marketing, product-management, operations, data, design, engineering, advisorppc (plugin_012R3FKrUy8izmKxWHDL94dm), zizi-skills (plugin_01J4b9tFUHrKDvWpAPiziYAf), pwp (plugin_013BWAiAf6WpZhjju71ngsSS), codacy-skills (plugin_01AUyTaarX3ZHmZTdnyUtWyC), jointjs-claude-playground (plugin_01NpC3i4LYpeNSKbjWBkUun7), browser-use (plugin_01Cng2GP1yhRBivmDfvFVbB8), desktop-commander (plugin_01Y2NkU2XtxLmeitTyCQSgMB), github (plugin_01UZByMPnV7hP67cma9DLbSR), pdf-viewer (plugin_011v5h6QUzBZvas64y44XLhy). Kept: lesslop (evidence-rule hook, 394 tokens per prompt), anthropic-skills (xlsx used), figma, gitbook, tavily, qt-development-skills, first-pass, altimate-code, small extras. Skills list is capped near 9,913 tokens (full demand 21,642), so the list may not shrink; notices (needs-auth ~331, failed ~184 tokens) should mostly disappear. Next lever: skillListingBudgetFraction.
+SKILL BUDGET 2026-10-18: skillListingBudgetFraction=0.005 set in gittoken and rk-wt local settings (default 0.01). Baseline Skills category 9,913 tokens in every session measured today. Expect about half in a NEW session if the app honors it; if Skills stays 9,913 the app ignores it like disableClaudeAiConnectors, so remove the key. Undo: delete the key from both files.
+SKILL BUDGET RESULT 2026-10-18 ~17:25 (after PC restart): skillListingBudgetFraction WORKS. Skills 9,913 -> 4,919 (-4,994, -50%) in a new gittoken session and in this one. But System tools rose 34,627 -> 40,693 (new session) / 39,621 (this session), cause not found, so the new-session total was 82,504 vs 81,423 before. The 16 plugins were still enabled after the restart (their needs-auth/failed notices still appeared). Keep the key.
+PENDING 2026-10-18 ~17:35: user is disabling the 16 plugins and turning off the built-in browser tools (Settings > Claude Code > Browser), then measuring in a NEW gittoken session after the Research-Kit commit queue (started 17:23) finishes. Compare against post-restart baseline: total 82,504; System tools 40,693; MCP tools 25,818; System prompt 9,389; Skills 4,919; MCP server instructions 1,384. Browser tools as the cause of the +6k System tools is unconfirmed.
+LLMLINGUA CHECK 2026-10-18 ~18:00: gist tokens need the model itself trained (arXiv 2304.08467) -> unusable. LLMLingua-2 (small XLM-RoBERTa/mBERT model, 2-5x, arXiv 2403.12968) could plug in via a PostToolUse hook updatedToolOutput (docs/hooks), but in sessions 9ee97c33+57c9c8f0 tool results are only 30% of context chars (Bash 15%, Read 5%; Read must stay exact for Edit). Bigger buckets: one update-config skill load 290,435 chars (15%), 55 messages from other sessions 281,961 (15%), another skill load 104,391 (6%), task notifications 45,416 (2%). Lever: short reports from side sessions/subagents (details to a file), no huge skill loads in long sessions. New-session measure after plugin changes: total 82,965 (System tools 39,581, MCP tools 25,856, Skills 4,959, MCP instr 2,879); pwp + codacy-skills still enabled; browser_tools still On.
+CLAUDE.md 2026-10-18 ~18:10: created gittoken/CLAUDE.md (204 chars, 50 tokens o200k/cl100k): side sessions and subagents write details to a file and reply with a gist of at most 5 lines plus the path; briefs must ask for that. Loaded at launch by every new session opened in gittoken or any subfolder (docs/memory); not by sessions already running. Baseline to beat: 55 reports from other sessions averaged 5,126 chars across sessions 9ee97c33 and 57c9c8f0. Undo: delete the file.
+BALLAST 2026-10-18 ~18:20: user named the system (proposed name Ballast). Applied to all Claude Code sessions: autoCompactWindow 250000 + skillListingBudgetFraction 0.005 added to ~/.claude/settings.json (backup scratchpad/user-settings.before-ballast.json); report rule moved from gittoken/CLAUDE.md (deleted) to ~/.claude/CLAUDE.md. Project local settings in gittoken and rk-wt still repeat both keys. New sessions get all of it at launch; running sessions read CLAUDE.md only at launch.
