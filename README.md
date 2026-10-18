@@ -17,6 +17,7 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 | Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (copy to `~/.claude/ballast/`) | reads the real context size from the transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; about 1 s per message, 0 tokens below 150k |
 
 Install: merge `config/user-settings.json` into `~/.claude/settings.json` copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).
+Cloud sessions don't read `~/.claude/`: paste `config/cloud-setup.sh` into the cloud environment's setup script (claude.ai/code, environment selector under the message box, settings icon on the environment's row). It writes the same rules plus one line about pushing the progress file; 144 tokens.
 Check: open a new session and send `Call get_usage and list every context category with its tokens.`
 Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Thresholds: env `BALLAST_HANDOFF_AT`, `BALLAST_HANDOFF_STEP`. Folder-level `.claude/settings.local.json` files override user settings.
 
