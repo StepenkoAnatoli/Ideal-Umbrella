@@ -1,7 +1,7 @@
 # Ideal-Umbrella
 Make me waste less token while we work.
 
-Rules and small tools that cut how many tokens Claude Code re-reads on every call. Working name for the setup: **Ballast**.
+Rules and small tools that cut how many tokens Claude Code re-reads on every call. Working name for the setup: **Ideal-Umbrella**.
 
 ## Why
 In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58% cache reads, 27% cache writes and 15% output. Visible prose was about 12% of output characters. Every call re-reads the whole context, so the lever is a smaller context per call, not shorter wording.
