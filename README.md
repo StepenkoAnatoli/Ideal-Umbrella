@@ -13,7 +13,9 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 | Half-size skills list | `skillListingBudgetFraction: 0.005` in `~/.claude/settings.json` | Skills 9,913 -> 4,919 tokens |
 | Unused claude.ai connectors off | the app's connector switch (account-wide) | new session 96,690 -> 81,423 tokens (-15.8%) |
 | Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | reports from other sessions averaged 5,126 characters |
-| Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 118 tokens per session; a fresh session starts near 83k instead of carrying up to ~217k |
+| Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 211 tokens per session; a fresh session starts near 71k instead of carrying up to ~217k |
+| Restarts: the resume point is updated at the end of every task (replaced, not appended) | same `~/.claude/CLAUDE.md` | a restart loses at most the task in progress; start a fresh chat from the resume point rather than reopening a long chat, because the prompt cache lives 1 hour |
+| Finished side sessions are archived once their result is checked | same `~/.claude/CLAUDE.md` | keeps the sidebar clean; archived chats can be reopened |
 | Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (copy to `~/.claude/ballast/`, the folder's first name) | reads the real context size from the transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; about 1 s per message, 0 tokens below 150k |
 
 Install: merge `config/user-settings.json` into `~/.claude/settings.json`, copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).

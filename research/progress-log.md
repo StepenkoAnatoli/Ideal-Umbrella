@@ -83,7 +83,7 @@ BALLAST 2026-10-18 ~18:20: user named the system (proposed name Ballast). Applie
 REPO 2026-10-18 ~18:35: everything pushed to https://github.com/StepenkoAnatoli/Ideal-Umbrella (PUBLIC) on branch claude/save-progress, commit 5cbb066 (main untouched). Local clone gittoken/Ideal-Umbrella. Layout: README, config/ (settings snippet + CLAUDE.md rule), keyline/, research/ (progress-log = this file, panel-results), scripts/. Re-copy this file to research/progress-log.md when it changes.
 REPO MERGED 2026-10-18: main on Ideal-Umbrella fast-forwarded to 5cbb066 and pushed (user asked); branch claude/save-progress still exists at the same commit.
 
-## RESUME POINT (saved 2026-10-18 18:22)
+## Old resume point (2026-10-18 18:22)
 State: Ballast applied to all Claude Code sessions (~/.claude/settings.json: autoCompactWindow 250000, skillListingBudgetFraction 0.005; ~/.claude/CLAUDE.md short-report rule, 50 tokens). Backed up publicly at https://github.com/StepenkoAnatoli/Ideal-Umbrella (main), local clone gittoken/Ideal-Umbrella; research/progress-log.md there is a copy of this file.
 Last measures: fresh session 83,080 tokens (System tools 39,579; MCP tools 25,856; System prompt 9,389; Skills 4,961; MCP server instructions 2,879; Memory files 226). This chat (57c9c8f0) reached 202,866 tokens (81%) and should be retired; continue in a NEW chat.
 Open items:
@@ -97,7 +97,7 @@ HANDOFF HOOK 2026-10-18 ~18:55: UserPromptSubmit hook ~/.claude/ballast/context_
 CLOUD 2026-10-18 ~19:10: cloud sessions read neither ~/.claude/settings.json nor ~/.claude/CLAUDE.md (docs: settings#settings-in-cloud-sessions, cloud-environments). Wrote Ideal-Umbrella/config/cloud-setup.sh (writes ~/.claude/CLAUDE.md in the session: same rules + "commit and push the progress file"; 144 tokens; tested twice in a temp HOME, exit 0). User pastes it into the cloud environment setup script. Hook/settings for cloud not done (would need committing .claude/settings.json per repo). Commit c628696.
 RENAME 2026-10-18 ~19:25: the user renamed the system from Ballast to Ideal-Umbrella (README edit on GitHub, 24b31d4). Renamed in hook messages, env vars (now IDEAL_UMBRELLA_HANDOFF_AT / _STEP), script comments, README and memory (ballast-setup.md -> ideal-umbrella-setup.md). Kept on purpose: the ~/.claude/ballast/ folder (hooks in open chats point there). Older lines above keep the old name as history.
 
-## RESUME POINT (saved 2026-10-18 ~19:30, chat 57c9c8f0 at ~146k tokens)
+## Items 1-4 log (from the 2026-10-18 19:30 resume point)
 State: Ideal-Umbrella (first called Ballast) applies on this PC to every chat:
 - ~/.claude/settings.json: autoCompactWindow 250000, skillListingBudgetFraction 0.005, UserPromptSubmit hook ~/.claude/ballast/context_check.py (past 150k: tells Claude to offer a fresh session + notice to the user; again every +25k; env IDEAL_UMBRELLA_HANDOFF_AT/_STEP).
 - ~/.claude/CLAUDE.md: short-report rule + long-chat rule (118 tokens).
@@ -131,3 +131,21 @@ Items 1-3 started 2026-10-18 in session f4c53204 (context ~150k):
 - Item 1 DONE 2026-10-19 ~09:05 (side session local_ae76770b, details in side-session-notes/local_4990c8dd-.../usage-code-browser-off.md): user switched off Settings -> Claude Code -> Browser; get_settings browser_tools = Off. New chat 71,396 (-11,108 vs 82,504, -13.5%). MCP tools 15,023 (-10,824: the 19 mcp__Claude_Browser__* tools gone, ~570 each, not even deferred); system prompt 9,425 (-284: <built_in_browser> section gone); everything else identical (System tools 39,579; skills 4,961; MCP instr 1,700; memory 518). No app restart was needed: the desktop process still dated from 08:43:15, so the switch reaches new chats directly.
   Trade-off: no built-in browser or dev-server preview (preview_start) in Code chats; undo = switch it back on. Next saving targets: System tools 39,579 (55% of the start context, 20 built-in tools); optional MCP tools still loaded in full: visualize (2) and firecrawl scrape/search (2).
 Research-Kit commit queue belongs to another session: do not touch.
+
+## RESUME POINT (updated 2026-10-19 ~09:35; replace this section, don't append)
+State: Ideal-Umbrella applies on this PC to every chat:
+- ~/.claude/settings.json: autoCompactWindow 250000, skillListingBudgetFraction 0.005, UserPromptSubmit hook ~/.claude/ballast/context_check.py (seen firing live at 161k, 180k and 156k).
+- ~/.claude/CLAUDE.md (211 tokens): short reports from side sessions; archive a finished side session after checking its result (user's standing request 2026-10-19); resume point + fresh-chat offer past 150k; update this resume point at the end of each task that changed something; decisions in files.
+- Settings -> Claude Code -> Browser is off: a new chat starts at 71,396 tokens (was 83,080).
+- Cloud: config/cloud-setup.sh (same rules + push the progress file, 237 tokens) is pasted into the cloud environment; Ideal-Umbrella/.claude/settings.json gives cloud chats the hook and keys (other repos: config/add_to_repo.py).
+- Repo github.com/StepenkoAnatoli/Ideal-Umbrella, main. The user also edits it on GitHub: fetch before pushing; scan for secrets (public).
+Decisions and why:
+- ~/.claude/ballast/ keeps its first name: hooks in open chats point there.
+- Hook only on UserPromptSubmit: ~1 s per run, too slow for every tool call.
+- After a restart, start a fresh chat from this section instead of reopening a long one: the prompt cache lives 1 hour, so a reopened chat re-writes its whole context.
+Open items:
+1. Item 3 (cloud check) unconfirmed: the cloud chat's push never reached GitHub (Items 1-4 log above). Needs the user: paste that chat's reply, or run `git push -u origin HEAD` there.
+2. Next saving targets: System tools 39,579 (55% of a new chat); optional MCP tools visualize and firecrawl.
+3. The archive and resume-point rules are new (2026-10-19 ~09:30): not yet seen working in a new chat.
+Linked sessions local_1ef499f0 (waits on the user for item 3) and local_4990c8dd (waits on it): keep until item 3 is settled, then archive both.
+Never touch gittoken/research-kit (the user's own checkout).

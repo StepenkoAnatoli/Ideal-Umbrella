@@ -1,7 +1,9 @@
-# Reports from side sessions and subagents
+# Side sessions and subagents
 - Write full details to a file; reply with a gist of at most 5 lines plus the file's path.
 - When you brief a side session or subagent, ask it for exactly that.
+- Once a side session you started has finished and you have checked its result, archive it (standing request from the user, 2026-10-19). Leave it if it is still working, waiting for the user, or has an open pull request.
 
-# Long chats
+# Long chats and restarts
 - At a step boundary, if the context is over 150k tokens: write a resume point (state, decisions and why, open items, file paths) to the task's progress file, then offer a fresh session whose brief points to that file.
+- At the end of each task that changed something, update the task's resume point (replace it, don't append), so a restart or a fresh chat loses at most the task in progress.
 - Keep decisions in files, not only in the chat.
