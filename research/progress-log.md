@@ -132,20 +132,23 @@ Items 1-3 started 2026-10-18 in session f4c53204 (context ~150k):
   Trade-off: no built-in browser or dev-server preview (preview_start) in Code chats; undo = switch it back on. Next saving targets: System tools 39,579 (55% of the start context, 20 built-in tools); optional MCP tools still loaded in full: visualize (2) and firecrawl scrape/search (2).
 Research-Kit commit queue belongs to another session: do not touch.
 
-## RESUME POINT (updated 2026-10-19 ~09:35; replace this section, don't append)
+## RESUME POINT (updated 2026-10-19 12:35 local = 09:35Z; replace this section, don't append)
 State: Ideal-Umbrella applies on this PC to every chat:
 - ~/.claude/settings.json: autoCompactWindow 250000, skillListingBudgetFraction 0.005, UserPromptSubmit hook ~/.claude/ballast/context_check.py (seen firing live at 161k, 180k and 156k).
-- ~/.claude/CLAUDE.md (211 tokens): short reports from side sessions; archive a finished side session after checking its result (user's standing request 2026-10-19); resume point + fresh-chat offer past 150k; update this resume point at the end of each task that changed something; decisions in files.
+- ~/.claude/CLAUDE.md (224 tokens): short reports from side sessions; briefs ask for that and for a resume-point update; archive a finished side session after checking its result (user's standing request 2026-10-19); resume point + fresh-chat offer past 150k; update this resume point at the end of each task that changed something; decisions in files.
 - Settings -> Claude Code -> Browser is off: a new chat starts at 71,396 tokens (was 83,080).
-- Cloud: config/cloud-setup.sh (same rules + push the progress file, 237 tokens) is pasted into the cloud environment; Ideal-Umbrella/.claude/settings.json gives cloud chats the hook and keys (other repos: config/add_to_repo.py).
+- Cloud: config/cloud-setup.sh (same rules + push the progress file, 250 tokens) is pasted into the cloud environment; Ideal-Umbrella/.claude/settings.json gives cloud chats the hook and keys (other repos: config/add_to_repo.py).
 - Repo github.com/StepenkoAnatoli/Ideal-Umbrella, main. The user also edits it on GitHub: fetch before pushing; scan for secrets (public).
+- Rules check, 2026-10-19, fresh chat local_bc18b3ca: the archive, short-report and 150k-hook rules work in a fresh chat (the hook was simulated on a 214k transcript: one note, then silent). A fresh side session (Sonnet) did its task but skipped its resume-point update, because its brief limited where it could write. So the brief rule now asks for that update too (CLAUDE.md, config/CLAUDE.md, config/cloud-setup.sh, pushed to main).
 Decisions and why:
 - ~/.claude/ballast/ keeps its first name: hooks in open chats point there.
 - Hook only on UserPromptSubmit: ~1 s per run, too slow for every tool call.
 - After a restart, start a fresh chat from this section instead of reopening a long one: the prompt cache lives 1 hour, so a reopened chat re-writes its whole context.
+- Briefs ask the side session to update the task's resume point: a side session follows its brief's limits over CLAUDE.md (seen in the rules check).
 Open items:
-1. Item 3 (cloud check) unconfirmed: the cloud chat's push never reached GitHub (Items 1-4 log above). Needs the user: paste that chat's reply, or run `git push -u origin HEAD` there.
-2. Next saving targets: System tools 39,579 (55% of a new chat); optional MCP tools visualize and firecrawl.
-3. The archive and resume-point rules are new (2026-10-19 ~09:30): not yet seen working in a new chat.
-Linked sessions local_1ef499f0 (waits on the user for item 3) and local_4990c8dd (waits on it): keep until item 3 is settled, then archive both.
+1. Cloud check unconfirmed: the cloud chat's push never reached GitHub (Items 1-4 log above). Needs the user: paste that chat's reply, or run `git push -u origin HEAD` there.
+2. Re-paste config/cloud-setup.sh into the cloud environment's setup script (claude.ai/code -> environment settings, done by the user): the pasted copy predates the brief-rule change.
+3. Next saving targets: System tools 39,579 (55% of a new chat); optional MCP tools visualize and firecrawl.
+4. The new brief line has not yet been seen working in a side session.
+Linked sessions local_1ef499f0 (waits on the user for the cloud check) and local_4990c8dd (waits on it): keep until the cloud check is settled, then archive both.
 Never touch gittoken/research-kit (the user's own checkout).
