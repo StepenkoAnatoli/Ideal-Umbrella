@@ -13,7 +13,7 @@ Where sources disagree, the later one is used. `README.md` still says a new chat
 - **Smaller fixed load and earlier compaction.** The skills list went from 9,913 to 4,919 tokens (-50%). Chats now compact in a 250,000-token window at 87% (near 217,500) instead of a 1,000,000-token window at 97%.
 - **Long chats.** CLAUDE.md rules (224 tokens) and a UserPromptSubmit hook ask Claude to write a resume point and offer a fresh chat past 150k tokens. The hook fired live at 161k, 180k and 156k.
 - **Applied now on this PC.** `~/.claude/settings.json` holds the two keys, the hook and the six deny rules. `~/.claude/CLAUDE.md` holds the rules. In the app, unused connectors, the Code Browser and prompt suggestions are off.
-- **Cloud.** `config/cloud-setup.sh` is pasted into the cloud environment, and the repo's `.claude/settings.json` gives cloud chats the hook and the two keys. None of this has been confirmed in a real cloud chat yet.
+- **Cloud.** `config/cloud-setup.sh` is pasted into the cloud environment, and the repo's `.claude/settings.json` gives cloud chats the hook and the two keys. A new cloud chat confirmed the setup on 2026-10-19 (see the last timeline entry); only the hook firing live past 150k is still unseen.
 
 ## Timeline
 
@@ -94,6 +94,11 @@ Where sources disagree, the later one is used. `README.md` still says a new chat
 - **Brief rule seen working.** At 13:55, the visualize-check side session updated the resume point as its brief asked.
 - **Resume point.** It was updated at 14:05, ending in the open items below.
 
+### 2026-10-19: Cloud check, redone (cloud chat)
+- **Setup.** The user made a new cloud environment with env `CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000` and the current `config/cloud-setup.sh` as its setup script.
+- **Result: passed.** The cloud chat wrote `cloud-check.md`, pushed branch `claude/cloud-check` and opened PR #2. Its `~/.claude/CLAUDE.md` matched `config/cloud-setup.sh` line for line, `CLAUDE_CODE_REMOTE` was `true`, the compact window was 250000, Python was 3.13.16, and the repo's `.claude/settings.json` matched main.
+- **PR #2** was closed without merging: `cloud-check.md` was only a test file.
+
 ## What worked
 - **Code Browser off:** a new chat went from 82,504 to 71,396 tokens (-11,108, -13.5%). Why: its 19 tools were loaded in full in every chat, not deferred.
 - **Deny six never-used tools:** the first call went from 65,483 to 49,423 tokens (-25%). Why: 0 calls in 60 past chats, and a denied tool leaves the tool list.
@@ -112,11 +117,11 @@ Where sources disagree, the later one is used. `README.md` still says a new chat
 - **Claude in Chrome switch:** -260 tokens, and the 19 browser tools still loaded. Why: it was the wrong switch. Only Settings -> Claude Code -> Browser removes them.
 - **Visualize deny rules:** both visualize tools stayed loaded. Why: the desktop app adds visualize outside the deny filter.
 - **LLMLingua-2 and gist tokens:** tool results are only 30% of context, and the README puts the gain at about 7%. Why: gist tokens need the model itself trained, and file reads must stay exact for Edit.
-- **Cloud check:** no branch or push from the cloud chat reached GitHub. Why: unknown. The cloud chat's own reply has not been seen.
+- **First cloud check:** no branch or push from that cloud chat reached GitHub, and the chat itself was later lost. Why: a problem in that one chat; a new cloud chat's push worked on 2026-10-19.
 
-## Open items (copied from the 2026-10-19 14:05 resume point)
-1. Cloud check unconfirmed: the cloud chat's push never reached GitHub. Needs the user: paste that chat's reply, or run `git push -u origin HEAD` there.
-2. Re-paste `config/cloud-setup.sh` into the cloud environment's setup script (claude.ai/code -> environment settings, done by the user): the pasted copy predates the brief-rule change.
+## Open items (from the 2026-10-19 resume point, updated after the cloud check)
+1. Cloud check passed on 2026-10-19 (PR #2, closed unmerged). Still unseen: the hook firing live in a cloud chat, which needs a cloud chat past 150k tokens.
+2. Done: the new cloud environment uses the current `config/cloud-setup.sh`.
 3. Visualize check done (see the tool cuts). Remaining ideas:
    - computer-use server instructions: ~1.2k tokens per chat and 0 uses. The user can switch computer use off in the app's settings.
    - Duplicate skill listings: plain and `anthropic-skills:` copies.
