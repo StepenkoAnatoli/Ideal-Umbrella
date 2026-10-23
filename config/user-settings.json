@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"C:/Users/PC/AppData/Local/Programs/Python/Python314/python.exe\" -I \"C:/Users/PC/.claude/ballast/context_check.py\"",
+            "command": "python3 -I ~/.claude/ballast/context_check.py",
             "timeout": 15
           }
         ]

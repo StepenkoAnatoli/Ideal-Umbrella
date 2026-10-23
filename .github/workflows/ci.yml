@@ -1,0 +1,161 @@
+name: Ideal-Umbrella CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  keyline-tests:
+    name: Keyline Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ideal-Umbrella/keyline
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: Ideal-Umbrella/keyline/requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Build tiktoken cache
+        run: python -I keyline_lint.py --rebuild-cache
+      - name: Run keyline test suite
+        run: python -I tests/run_tests.py
+
+  hook-simulation-tests:
+    name: Hook Simulation Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ideal-Umbrella
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test context_check.py hook (UserPromptSubmit simulation)
+        run: |
+          # Create a mock transcript with context over threshold
+          cat > /tmp/test_transcript.jsonl <<'EOF'
+          {"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_creation_input_tokens":10000,"cache_read_input_tokens":80000,"output_tokens":2000}},"isSidechain":false}
+          EOF
+          # Should trigger the hook (context = 140k, under 150k threshold -> no output)
+          echo '{"transcript_path":"/tmp/test_transcript.jsonl","session_id":"test-session-1"}' | python -I hooks/context_check.py
+          echo "Exit code (should be 0): $?"
+
+          # Create a transcript over threshold
+          cat > /tmp/test_transcript2.jsonl <<'EOF'
+          {"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_creation_input_tokens":10000,"cache_read_input_tokens":100000,"output_tokens":2000}},"isSidechain":false}
+          EOF
+          # Should trigger (context = 160k, over 150k)
+          echo '{"transcript_path":"/tmp/test_transcript2.jsonl","session_id":"test-session-2"}' | python -I hooks/context_check.py
+          echo "Exit code (should be 0 with JSON output): $?"
+
+          # Second call for same session should not repeat (band same)
+          echo '{"transcript_path":"/tmp/test_transcript2.jsonl","session_id":"test-session-2"}' | python -I hooks/context_check.py
+          echo "Exit code (should be 0, no output): $?"
+
+      - name: Test keyline_hook.py (PostToolUse simulation)
+        run: |
+          cd keyline
+          # Test lint on markdown file (should fail with furniture)
+          echo '{"tool_name":"Write","cwd":"'"$(pwd)"'","tool_input":{"file_path":"'"$(pwd)"'/tests/notes.markdown.md"}}' | python -I keyline_hook.py --watch tests/notes.markdown.md
+          echo "Exit code (should be 2): $?"
+
+          # Test lint on keyline file (should pass)
+          echo '{"tool_name":"Write","cwd":"'"$(pwd)"'","tool_input":{"file_path":"'"$(pwd)"'/tests/notes.keyline.txt"}}' | python -I keyline_hook.py --watch tests/notes.keyline.txt
+          echo "Exit code (should be 0): $?"
+
+          # Test check: write Hebrew rendering, then write note (should check)
+          echo '{"tool_name":"Write","cwd":"'"$(pwd)"'","tool_input":{"file_path":"'"$(pwd)"'/tests/incident.keyline.he.txt"}}' | python -I keyline_hook.py --watch tests/incident.keyline.txt
+          echo "Exit code (should be 0): $?"
+
+  install-script-test:
+    name: Install Script Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ideal-Umbrella
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run install.py (dry-run via verify-only on fresh env)
+        run: |
+          # Test verify-only on fresh environment (should fail)
+          HOME=/tmp/test-home python -I config/install.py --verify-only
+          echo "Exit code (should be 1): $?"
+
+      - name: Run install.py (actual install)
+        run: |
+          HOME=/tmp/test-home python -I config/install.py
+          echo "Exit code (should be 0): $?"
+
+      - name: Run install.py verify-only (should pass after install)
+        run: |
+          HOME=/tmp/test-home python -I config/install.py --verify-only
+          echo "Exit code (should be 0): $?"
+
+      - name: Run install.py again (idempotent)
+        run: |
+          HOME=/tmp/test-home python -I config/install.py
+          echo "Exit code (should be 0, no changes): $?"
+
+  add-to-repo-test:
+    name: Add-to-Repo Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ideal-Umbrella
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Test add_to_repo.py on temp repo
+        run: |
+          mkdir -p /tmp/test-repo
+          cd /tmp/test-repo
+          git init -q
+          git config user.email "test@example.com"
+          git config user.name "Test"
+          python -I /github/workspace/Ideal-Umbrella/config/add_to_repo.py /tmp/test-repo
+          echo "First run exit code: $?"
+          cat .claude/settings.json
+          echo "---"
+          python -I /github/workspace/Ideal-Umbrella/config/add_to_repo.py /tmp/test-repo
+          echo "Second run exit code (should be 0, already up to date): $?"
+
+  config-validation:
+    name: Config Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: Ideal-Umbrella
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON syntax
+        run: |
+          python -m json.tool config/user-settings.json > /dev/null && echo "user-settings.json OK"
+          python -m json.tool config/repo-settings.json > /dev/null && echo "repo-settings.json OK"
+          python -m json.tool .claude/settings.json > /dev/null && echo ".claude/settings.json OK"
+      - name: Check portable hook path in user-settings.json
+        run: |
+          grep -q 'python3 -I ~/.claude/ballast/context_check.py' config/user-settings.json \
+            && echo "Portable hook path OK" \
+            || (echo "ERROR: Hardcoded path found" && exit 1)
+      - name: Check repo-settings.json uses CLAUDE_PROJECT_DIR
+        run: |
+          grep -q '\$CLAUDE_PROJECT_DIR' config/repo-settings.json \
+            && echo "CLAUDE_PROJECT_DIR usage OK" \
+            || (echo "ERROR: Missing CLAUDE_PROJECT_DIR" && exit 1)
