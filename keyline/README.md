@@ -143,7 +143,7 @@ Two panel claims do not reproduce exactly:
 - The panel says prose to Keyline passes in both directions. Keyline to prose passes, but prose
   to Keyline fails on `API`: the prose says "Checkout API" and the note lowercased it to
   `checkout-api`. The checker is right that the token changed.
-- The Keyline notes example passes the lint only with `pnpm` in `tests/keyline-allow.txt`.
+- The Keyline notes example passes the lint by default because `pnpm` is in the built-in allow list; it is flagged only under `--no-allow` (which is what the test exercises).
 
 ## Honest limits
 

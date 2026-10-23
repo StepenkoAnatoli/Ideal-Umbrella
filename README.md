@@ -20,7 +20,9 @@ In my own Claude Code transcripts (priced at Opus 5.5 list prices), cost was 58%
 | Finished side sessions are archived once their result is checked | same `~/.claude/CLAUDE.md` | keeps the sidebar clean; archived chats can be reopened |
 | Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (copy to `~/.claude/ballast/`, the folder's first name) | reads the real context size from the transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; about 1 s per message, 0 tokens below 150k |
 
-Install: merge `config/user-settings.json` into `~/.claude/settings.json`, copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command).
+Install (recommended): run `python install.py` from a checkout of this repo. It detects your Python, copies `hooks/context_check.py` to `~/.claude/ballast/`, merges the keys and hook into `~/.claude/settings.json` (idempotently), and copies `config/CLAUDE.md` to `~/.claude/CLAUDE.md` (backing up any existing file). Use `python install.py --dry-run` to preview and `python uninstall.py` to undo.
+
+Manual install: merge `config/user-settings.json` into `~/.claude/settings.json`, copy `config/CLAUDE.md` to `~/.claude/CLAUDE.md` and `hooks/context_check.py` to `~/.claude/ballast/` (fix the Python path in the hook command). The hook command must point at your real Python and the copied hook.
 Cloud sessions don't read `~/.claude/`: paste `config/cloud-setup.sh` into the cloud environment's setup script (claude.ai/code, environment selector under the message box, settings icon on the environment's row). It writes the same rules plus one line about pushing the progress file; 250 tokens.
 The hook and the two keys reach a cloud session only through the repo's committed `.claude/settings.json`, and only in sessions with one repository. This repo has its own. For another repo, run `python -I config/add_to_repo.py <repo>` and commit the two files it writes. It merges `config/repo-settings.json` into the file, keeps other keys and hooks, and changes nothing on a second run. The hook exits at once unless `CLAUDE_CODE_REMOTE` is `true`, so local sessions still run only the user-level hook. For the compact window in every cloud session, including those with several repositories, you can instead set env `CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000` on the cloud environment.
 Check: open a new session and send `Call get_usage and list every context category with its tokens.`
@@ -35,10 +37,12 @@ Undo: delete the two keys, the `hooks` entry and `~/.claude/CLAUDE.md`. Threshol
 
 ## Biggest costs still left
 - In two long sessions: one large skill load was 15% of context characters, 55 reports from other sessions 15%, another skill load 6%, Bash output 15%.
-- Fixed load of a new session is about 83k tokens, mostly the app's own tools (System tools ~39.6k, MCP tools ~25.9k).
+- Fixed load of a new session is about 71,396 tokens (measured 2026-10-19, Code Browser off), mostly the app's own tools (System tools ~39.6k, MCP tools ~15.0k). With Code Browser on it was ~82,504. Numbers drift as the app changes; re-measure with `scripts/` before quoting.
 
 ## Contents
 - `config/` - the settings snippet, the CLAUDE.md rule, the cloud setup script, and `add_to_repo.py` for repo-level cloud settings
+- `install.py` / `uninstall.py` - one-command user-level install and undo (`--dry-run` supported)
+- `scripts/smoke_hooks.py`, `scripts/unused_tools.py` - hook smoke tests and deny-list audit
 - `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I tests/run_tests.py`, needs `tiktoken`)

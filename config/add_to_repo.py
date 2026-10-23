@@ -39,9 +39,12 @@ def merge(settings, template):
 
 
 def main():
-    if len(sys.argv) != 2 or not os.path.isdir(sys.argv[1]):
-        sys.exit("usage: python -I config/add_to_repo.py <repo folder>")
-    claude_dir = os.path.join(sys.argv[1], ".claude")
+    dry = "--dry-run" in sys.argv
+    argv = [a for a in sys.argv[1:] if a != "--dry-run"]
+    if len(argv) != 1 or not os.path.isdir(argv[0]):
+        sys.exit("usage: python -I config/add_to_repo.py <repo folder> [--dry-run]")
+    repo = argv[0]
+    claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     settings = {}
     if os.path.exists(path):
@@ -51,24 +54,30 @@ def main():
             except ValueError as e:
                 sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
     with open(TEMPLATE, encoding="utf-8") as f:
-        changes = merge(settings, json.load(f))
-    if changes:
-        os.makedirs(claude_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
+        template = json.load(f)
+    changes = merge(settings, template)
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
             old = f.read()
     with open(SCRIPT, "rb") as f:
-        if f.read() != old:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copyfile(SCRIPT, target)
-            changes.append(".claude/hooks/context_check.py written")
+        new_hook = f.read()
+    if new_hook != old:
+        changes = changes + [".claude/hooks/context_check.py written"]
     print("\n".join(changes) or "already up to date")
+    if dry:
+        print("--dry-run: nothing written.")
+        return
     if changes:
+        os.makedirs(claude_dir, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        if new_hook != old:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(new_hook)
         print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
 
 
