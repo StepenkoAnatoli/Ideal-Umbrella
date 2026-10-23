@@ -1,0 +1,25 @@
+name: tests
+
+on:
+  push:
+    branches: [main, "improve/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  keyline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tiktoken
+        run: python -m pip install --upgrade pip && pip install tiktoken==0.14.0
+      - name: Run keyline suite
+        working-directory: keyline
+        run: python tests/run_tests.py
+      - name: Smoke-test hooks
+        run: python scripts/smoke_hooks.py
+      - name: Lint Python
+        run: python -m compileall hooks keyline scripts config install.py uninstall.py

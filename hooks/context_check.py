@@ -13,8 +13,11 @@ import sys
 THRESHOLD = int(os.environ.get("IDEAL_UMBRELLA_HANDOFF_AT", "150000"))
 STEP = int(os.environ.get("IDEAL_UMBRELLA_HANDOFF_STEP", "25000"))
 # The folder keeps its first name, ballast: hooks in already-open chats point at it.
+# TAIL_BYTES bounds how much of the transcript is read from the end; the last model call
+# (and any compact_boundary) always sits near the end, so 4 MB is enough in practice.
+# Raise it with env IDEAL_UMBRELLA_TAIL_BYTES if a transcript is larger than that.
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "ballast", "state")
-TAIL_BYTES = 4 * 1024 * 1024
+TAIL_BYTES = int(os.environ.get("IDEAL_UMBRELLA_TAIL_BYTES", str(4 * 1024 * 1024)))
 
 NOTE = (
     "Ideal-Umbrella: this chat's context is about {k}k tokens (over {t}k). At the next "
