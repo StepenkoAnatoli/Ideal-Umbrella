@@ -77,6 +77,24 @@ expect("Hebrew prose needs prefixed negations: base list finds 1 of 4",
        base_only == 1 and keyline_check.negations(he_prose) == 4,
        f"base list {base_only}, with prefixes {keyline_check.negations(he_prose)}")
 
+# Regression: this pair used to PASS with "0 invariants present" because the checker did not
+# extract proper nouns or hedges. It must fail, and a source with no invariants must be
+# INCONCLUSIVE rather than a vacuous pass.
+code, out = run("keyline_check.py", T / "false-pass.source.txt", T / "false-pass.rendering.txt")
+expect("check proper nouns and hedge: FAIL", code == 1 and out.startswith("FAIL"), out)
+expect("check proper nouns: Postgres, Prisma and Lucia are missing",
+       {"Postgres", "Prisma", "Lucia"} <= missing_of(out), out)
+expect("check hedge: possibility (could) is reported lost",
+       "hedges lost: possibility (could)" in out, out)
+
+code, out = run("keyline_check.py", T / "false-pass.source.txt", T / "false-pass.source.txt")
+expect("check source against itself: PASS", code == 0, out)
+
+code, out = run("keyline_check.py", T / "no-invariants.source.txt", T / "no-invariants.rendering.txt")
+expect("check source with no invariants: INCONCLUSIVE, exit 1",
+       code == 1 and out.startswith("INCONCLUSIVE"), out)
+
+
 # ---- keyline_lint.py ----
 for name in ("incident.keyline.txt", "notes.keyline.txt"):
     code, out = run("keyline_lint.py", T / name)

@@ -3,7 +3,9 @@
 How a request for a machine-only language became a set of rules, settings and one hook that cut the tokens Claude Code re-reads on every call. Sources: `research/progress-log.md` (the full work log, ending in the 2026-10-19 14:05 resume point), the git history and `README.md`.
 
 Two measures of a new chat appear below. **get_usage** is the app's own report of a new chat's context, and it also counts deferred MCP schemas. **First call** is the token count of a fresh chat's first request, read from its transcript. The first-call count is lower: it was 65,483 for a fresh side session in the period when get_usage gave 71,396.
-Where sources disagree, the later one is used. `README.md` still says a new chat's fixed load is "about 83k tokens", but the later resume point says 71,396. The first side measurement counted "~18" browser tools, and later ones counted 19. Clock times in the log are approximate, and some differ from the git commit times, so most entries give dates only.
+Where sources disagree, the later one is used. An earlier `README.md` said a new chat's fixed load was "about 83k tokens", but the later resume point says 71,396. The first side measurement counted "~18" browser tools, and later ones counted 19. Clock times in the log are approximate, and some differ from the git commit times, so most entries give dates only.
+
+> **Correction (2026-10-23).** The 58/27/15 cost split below was computed with every cache write priced at the 5-minute rate. The three largest gittoken transcripts are 100% 1-hour writes; repriced at $8/MTok the split is 43/37/20. `scripts/usage_breakdown.py` now splits the two TTLs. The history entries keep the old number as the measurement of record for that date.
 
 ## Summary
 - **Goal.** Make Claude Code waste fewer tokens. In the user's own transcripts, cost was 58% cache reads, 27% cache writes and 15% output. Every call re-reads the whole context, so the lever is a smaller context per call, not shorter wording.
