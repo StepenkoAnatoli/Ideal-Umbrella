@@ -2,75 +2,158 @@
 
 Cloud sessions read only the repository's committed .claude/settings.json, not
 ~/.claude/. This copies hooks/context_check.py to <repo>/.claude/hooks/ and
-merges config/repo-settings.json into <repo>/.claude/settings.json, keeping the
-file's other keys and hooks. Running it again changes nothing. The hook exits
-at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep only the
-user-level hook. Stdlib only; run with `python -I config/add_to_repo.py <repo>`,
-then commit the two files in that repository.
+merges config/repo-settings.json into <repo>/.claude/settings.json. Other keys,
+other hook entries and sibling hooks inside the same entry are preserved. An
+existing Ideal-Umbrella hook is updated in place, not duplicated. Running it
+again changes nothing.
+
+The hook exits at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep
+only the user-level hook. Stdlib only; run with
+`python -I config/add_to_repo.py <repo>`, then commit the two files in that
+repository.
 """
 import json
 import os
 import shutil
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "repo-settings.json")
 SCRIPT = os.path.join(os.path.dirname(HERE), "hooks", "context_check.py")
 
 
+def _hook_command(hook):
+    return str(hook.get("command", "")) if isinstance(hook, dict) else ""
+
+
 def is_ours(entry):
-    return any("context_check.py" in h.get("command", "") for h in entry.get("hooks", []))
+    if not isinstance(entry, dict):
+        return False
+    hooks = entry.get("hooks", [])
+    return isinstance(hooks, list) and any("context_check.py" in _hook_command(h) for h in hooks)
+
+
+def _template_hook(entries):
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for hook in entry.get("hooks", []):
+            if isinstance(hook, dict) and "context_check.py" in _hook_command(hook):
+                return hook
+    return None
+
+
+def _replace_hook(entry, replacement):
+    """Replace only our hook object, leaving sibling hooks in the same entry alone."""
+    changed = False
+    for hook in entry.get("hooks", []):
+        if isinstance(hook, dict) and "context_check.py" in _hook_command(hook):
+            if hook.get("command") != replacement.get("command"):
+                hook["command"] = replacement.get("command")
+                changed = True
+    return changed
 
 
 def merge(settings, template):
+    """Merge template into settings in place; return human-readable changes."""
+    if not isinstance(settings, dict):
+        raise ValueError("settings must be a JSON object")
+    if not isinstance(template, dict):
+        raise ValueError("template must be a JSON object")
     changes = []
     for key, value in template.items():
-        if key != "hooks" and settings.get(key) != value:
+        if key == "hooks":
+            continue
+        if settings.get(key) != value:
             changes.append(f"{key}: {settings.get(key)} -> {value}")
             settings[key] = value
+
+    template_hooks = template.get("hooks", {})
+    if not isinstance(template_hooks, dict):
+        raise ValueError("template hooks must be an object")
     hooks = settings.setdefault("hooks", {})
-    for event, entries in template["hooks"].items():
+    if not isinstance(hooks, dict):
+        raise ValueError("settings hooks must be an object")
+
+    for event, entries in template_hooks.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"template hooks.{event} must be a list")
         current = hooks.setdefault(event, [])
-        kept = [e for e in current if not is_ours(e)]
-        if kept + entries != current:
-            changes.append(f"hooks.{event}: Ideal-Umbrella entry {'updated' if len(kept) < len(current) else 'added'}")
-            hooks[event] = kept + entries
+        if not isinstance(current, list):
+            raise ValueError(f"settings hooks.{event} must be a list")
+        replacement = _template_hook(entries)
+        existing = [entry for entry in current if is_ours(entry)]
+        if existing and replacement is not None:
+            updated = False
+            for entry in existing:
+                updated = _replace_hook(entry, replacement) or updated
+            if updated:
+                changes.append(f"hooks.{event}: Ideal-Umbrella entry updated")
+        elif not existing:
+            current.extend(entries)
+            changes.append(f"hooks.{event}: Ideal-Umbrella entry added")
     return changes
 
 
-def main():
-    if len(sys.argv) != 2 or not os.path.isdir(sys.argv[1]):
+def _read_json(path):
+    with open(path, encoding="utf-8-sig") as f:
+        try:
+            data = json.load(f)
+        except ValueError as e:
+            sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
+    if not isinstance(data, dict):
+        sys.exit(f"{path} must contain a JSON object, not {type(data).__name__}; nothing written")
+    return data
+
+
+def _write_json(path, data):
+    fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py <repo folder>")
-    claude_dir = os.path.join(sys.argv[1], ".claude")
+    repo = argv[0]
+    claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
-    settings = {}
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            try:
-                settings = json.load(f)
-            except ValueError as e:
-                sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
-    with open(TEMPLATE, encoding="utf-8") as f:
-        changes = merge(settings, json.load(f))
+    settings = _read_json(path) if os.path.exists(path) else {}
+    template = _read_json(TEMPLATE)
+    try:
+        changes = merge(settings, template)
+    except ValueError as e:
+        sys.exit(f"{path}: {e}; nothing written")
+
     if changes:
         os.makedirs(claude_dir, exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(settings, f, indent=2)
-            f.write("\n")
+        _write_json(path, settings)
+
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
             old = f.read()
     with open(SCRIPT, "rb") as f:
-        if f.read() != old:
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copyfile(SCRIPT, target)
-            changes.append(".claude/hooks/context_check.py written")
+        source = f.read()
+    if source != old:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copyfile(SCRIPT, target)
+        changes.append(".claude/hooks/context_check.py written")
+
     print("\n".join(changes) or "already up to date")
     if changes:
         print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

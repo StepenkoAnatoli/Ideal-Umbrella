@@ -1,5 +1,9 @@
 """keyline_hook.py - Claude Code PostToolUse hook for Write/Edit on machine notes.
 
+Usage:
+  pipe a PostToolUse event on stdin, or
+  python keyline_hook.py --print-config   print a ready-to-paste hook entry for this install
+
 Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extension-less files
 inside a notes/ or plans/ folder of the project, or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
@@ -27,6 +31,28 @@ import keyline_lint  # noqa: E402
 WATCHED_DIRS = {"notes", "plans"}
 NOTE_SUFFIXES = {".txt", ".md", ".keyline", ""}
 HE = ".he.txt"
+
+
+def _quote(value):
+    if os.name == "nt":
+        return '"' + str(value).replace('"', '\\"') + '"'
+    import shlex
+
+    return shlex.quote(str(value))
+
+
+def print_config():
+    """Print a hook entry that points at this interpreter and this keyline folder."""
+    command = f"{_quote(sys.executable)} -I {_quote(HERE / 'keyline_hook.py')}"
+    print(json.dumps({
+        "hooks": {
+            "PostToolUse": [{
+                "matcher": "Write|Edit",
+                "hooks": [{"type": "command", "command": command, "timeout": 30}],
+            }]
+        }
+    }, indent=2))
+
 
 
 def _norm(p):
@@ -94,6 +120,9 @@ def parse_watch(argv):
 
 
 def main():
+    if sys.argv[1:] == ["--print-config"]:
+        print_config()
+        return 0
     patterns = parse_watch(sys.argv[1:])
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):

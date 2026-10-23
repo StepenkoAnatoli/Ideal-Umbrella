@@ -3,17 +3,17 @@
 Tools for Keyline machine notes: keyed, terse, whole-word English notes that an LLM writes for
 itself (one `key: item; item` line per topic), with a deterministic check that no fact was lost
 when a note is rendered to Hebrew or prose. Design and measurements:
-`../machine-language-panel-results.md` (section `=== SPEC ===`).
+`../research/panel-results.md` (section `=== SPEC ===`).
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier, path, CamelCase name, file name or snake_case token of the source, or has fewer negation words. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier, path, CamelCase name, proper noun, file name or snake_case token of the source, drops a hedge class, or has fewer negation words. A source with no extractable invariant is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
-| `keyline_hook.py` | Claude Code PostToolUse hook: runs the lint, and the check when a sibling `.he.txt` exists. |
-| `hooks-example.json` | The hook entry to paste into a repo's `.claude/settings.json`. |
+| `keyline_hook.py` | Claude Code PostToolUse hook: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
+| `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
 | `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (98 tokens o200k, header included). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
 | `cache/` | Built on first use: tiktoken encodings and the single-token word list. |
@@ -43,11 +43,16 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
   negations: source 4, rendering 0 (4 lost)
 ```
 
-`--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail, 2 usage error.
+`--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
 Matching is exact and case-sensitive, on ASCII token boundaries: `5` does not count as present
 because `503` is, but a Hebrew prefix glued to an identifier still counts. Markdown list numbers
-(`1. `) are not facts and are skipped.
+(`1. `) are not facts and are skipped. Proper nouns are extracted when they are not ordinary
+sentence furniture (`stack: Postgres via Prisma` checks `Postgres` and `Prisma`). Hedges are
+checked by class, so `could` may render as `may` but not as `will`.
+
+A source with no extractable invariant and no hedge is `INCONCLUSIVE` and exits 1. The checker
+must never report a vacuous `PASS` on a source whose claims it did not understand.
 
 Negations counted, English and Hebrew together in both texts:
 
@@ -99,7 +104,9 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 ## Wiring the hook into one repo
 
 1. In the repo, create `.claude/settings.json` to share the hook with the repo, or
-   `.claude/settings.local.json` to keep it personal. Paste the contents of `hooks-example.json`.
+   `.claude/settings.local.json` to keep it personal. Generate a ready-to-paste entry with
+   `python keyline_hook.py --print-config` (it uses this Python and this keyline folder), or
+   replace `__PYTHON__` and `__KEYLINE_DIR__` in `hooks-example.json`. Paste the result.
    If the file already has a `"hooks"` key, add the `PostToolUse` entry to it instead.
 2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path,
    and only acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
@@ -115,9 +122,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 
 How it behaves: the matcher is `Write|Edit`. On findings the hook exits 2 and prints them to
 stderr. For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
-Claude fixes the file. Paths in the hook command are absolute, so the repo can be anywhere.
-The hook has been tested by piping simulated PostToolUse events through the exact command in
-`hooks-example.json`. It has not yet run inside a live Claude Code session.
+Claude fixes the file. The generated command uses absolute paths, so the repo can be anywhere.
+The hook has been tested by piping simulated PostToolUse events through the generated command. It has not yet run inside a live Claude Code session.
 
 ## Reproduction
 
@@ -125,7 +131,7 @@ The hook has been tested by piping simulated PostToolUse events through the exac
 .venv/Scripts/python.exe tests/run_tests.py
 ```
 
-22 of 22 checks pass. Token counts match the panel exactly:
+The suite prints its final count; the current tree passes `35/35`. Token counts match the panel exactly:
 
 | Fixture | o200k | cl100k |
 |---|---|---|
@@ -150,7 +156,13 @@ Two panel claims do not reproduce exactly:
 - Token counts come from OpenAI tokenizers. Claude's tokenizer is not public, so treat every count
   and percentage as a proxy. Check real numbers with Anthropic's count_tokens endpoint.
 - The checker only sees tokens it can extract. It cannot catch a wrong verb, a swapped actor, a
-  reversed causal chain, a dropped hedge (could, may, likely) or an invented sentence.
+  reversed causal chain or an invented sentence.
+- Proper-noun detection is a heuristic: it skips the first word of a sentence/line and common
+  furniture, so a name at the start of a sentence can be missed, and a capitalized common word
+  mid-sentence can be checked. It is meant to fail closed, not to be a parser.
+- Hedges are checked by class (possibility, probability, obligation, ability), not word-for-word:
+  `could` -> `may` passes; `could` -> `will` fails. A hedge that changes class but keeps the
+  same meaning is reported.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
