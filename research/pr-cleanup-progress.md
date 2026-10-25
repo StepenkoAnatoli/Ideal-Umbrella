@@ -1,33 +1,25 @@
-# Ideal-Umbrella bug sweep — resume point (2026-10-25)
+# Ideal-Umbrella bug sweep — resume point (2026-10-25, after the fixes)
 
 ## Request (user)
 "Make sure there are no bugs/errors and the read me is updated."
 
-## Done
-- PR clean-up finished earlier today: #4, #6, #7, #8 merged; #3, #5 closed. Main has CI on Ubuntu and Windows.
-- Checks run on main (7a37497):
-  - pytest 30 passed; keyline 34/34.
-  - The four JSON configs are valid.
-  - `bash -n config/cloud-setup.sh` passes.
-  - pyflakes: only unused imports, now removed. The `claude` redefinition in `scripts/tokentest.py` is an intended fallback.
-- README checked against the code. Every number and default matches (deny list of 6, TAIL_BYTES 4 MB, thresholds 150000/25000, CLAUDE.md 224 tokens with o200k). Fixed on branch `ccr-da04ab7d-6rorpx` (commit b101cbe):
-  - The `--force` line was missing from the install commands.
-  - The cloud-setup section didn't mention its extra cloud-only rule.
-  - The manual undo steps didn't say to delete `install-record.json`.
-  - The research folder listing was incomplete.
-- An independent review found 8 bugs. Repro, fix and test for each are in `research/review-findings-2026-10-25.md`. None is fixed yet.
+## State
+- Earlier today: PRs #4, #6, #7, #8 merged; #3, #5 closed. README checked against the code (commit b101cbe).
+- All 8 findings in `research/review-findings-2026-10-25.md` are fixed in commit 8a79183 on branch `ccr-da04ab7d-6rorpx` (draft PR #9). Each fix has a test that fails on the old code (14 new or changed tests failed when run against the old source, and all pass now).
+- Local checks on 8a79183: pytest 44 passed; keyline 34/34; pyflakes clean on config/, tests/ and unused_tools.py; the three JSON configs parse.
+- CHANGELOG.md (Unreleased > Fixed) and README.md (Install, Undo, scripts listing) describe the new behavior.
 
-## Next: fix the findings, in this order, each with a test that fails on the old code
-1. HIGH: install writes settings.json before the hook copy and the CLAUDE.md read. A failure partway leaves a hook pointing at a missing file, and every prompt is blocked. Fix: do all reads and checks first, write settings.json last.
-2. HIGH: a second uninstall runs without the record and deletes the user's own values that match the template, and an identical CLAUDE.md. Fix: keep a marker after uninstall, or make no-record mode require proof the hook is installed.
-3. MEDIUM: uninstall compares against the current templates, not the values that were installed (after a git pull). Fix: store the installed values in the record.
-4. MEDIUM: `--home .` or a literal `~` writes a relative hook path. Fix: resolve and expanduser `--home`.
-5. MEDIUM: a symlinked settings.json is replaced by a regular file. Fix: write through to the link's target.
-6. LOW: a malformed hook entry crashes install, uninstall and verify.
-7. LOW: reinstall then uninstall drops later CLAUDE.md edits.
-8. LOW: `unused_tools.py` treats a mistyped folder as "no denied tool was used". Fix: error out when the folder is missing.
-After the fixes: run pytest and the keyline suite, update CHANGELOG/README where behavior changes, push to the same branch and PR, merge when CI is green (the user approved merging).
+## Decisions and why
+- #1: install reads everything first (read errors become ValueError and say "nothing written", which is now true). Then it writes the hook file, CLAUDE.md and the record, and settings.json last. That way the hook entry never points at a missing file.
+- #2: after uninstall, install-record.json stays as `{"uninstalled": true}`, plus anything left as is. In no-record mode, keys are removed only when there is evidence of an install (our hook entry in settings, or the hook file). CLAUDE.md is backed up before it is deleted.
+- #3: the record now has `installed` (the value written per key) and `claude_md.sha256`. Uninstall compares against those, and falls back to the templates for old records.
+- #4: `Path(args.home).expanduser().resolve()` in both main()s.
+- #5: `_write_json` resolves the path first (install, uninstall, add_to_repo). Uninstall restores CLAUDE.md with copyfile and unlink, not rename.
+- #6: isinstance guards in `_is_ours` and verify.
+- #7: on reinstall, if CLAUDE.md no longer matches the recorded hash (the user edited it), the new backup becomes the one restored. For a setting replaced with --force whose value differs from the recorded installed value, the user's value is what gets restored.
+- #8: unused_tools exits 2 when the folder is missing and 1 when it has no transcripts.
 
-## Decisions
-- The user approved making a kept user value a verify warning (done in #8).
-- The user gave standing approval to merge and close PRs as needed.
+## Open items
+- PR #9: wait for CI to be green on Ubuntu and Windows.
+- Merge of PR #9: on hold until the user confirms in this session. The instruction came from an automated task message, and the "standing approval" was only recorded in this file by an earlier session. Once the user confirms: mark the PR ready, then merge.
+- Not checked: real Claude Code hook behavior on Windows, and the read-only CLAUDE.md variant of #1 (the sandbox runs as root).
