@@ -62,7 +62,7 @@ The installer is **idempotent** and merges instead of replacing:
 - An existing Ideal-Umbrella hook is updated in place; sibling hooks in the same entry stay.
 - The hook command records the Python executable that ran the installer, so it does not depend on `python3` being on `PATH` (the Windows Store alias is often broken).
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
-- Existing scalar settings are kept unless you pass `--force`; verification then prints a warning for each kept value and still passes. A missing value fails verification.
+- Existing scalar settings are kept unless you pass `--force`. A value an earlier install wrote and you have not changed is updated when the template changes (for example after a `git pull`), without `--force`. Verification compares against the current template and prints a warning for each kept value, but still passes. A missing value fails verification.
 - Everything is read and checked before anything is written, and `settings.json` is written last, so a failed install (for example a `CLAUDE.md` that is not UTF-8) changes nothing.
 - A symlinked `settings.json` or `CLAUDE.md` (dotfiles, stow, home-manager) is written through; the link stays a link.
 - `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder.
