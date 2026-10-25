@@ -21,4 +21,4 @@
 
 ## Open items
 - PR #18 (fourth review) is a draft with CI green on 6cff84a, not merged (not asked); merge it when told, then restart the branch from main.
-- A `send_later` check-in (trig_01AKdkcCiEMfHcFMUpEK982r) re-checks PR #18; delete it once the PR is merged or closed.
+- The `send_later` check-in on PR #18 fired at 20:35 UTC and found nothing new (CI green, mergeable, no review threads); check-ins stopped. The next GitHub event or a message from the user resumes work.
