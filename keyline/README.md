@@ -131,7 +131,7 @@ The hook has been tested by piping simulated PostToolUse events through the gene
 .venv/Scripts/python.exe tests/run_tests.py
 ```
 
-The suite prints its final count; the current tree passes `35/35`. Token counts match the panel exactly:
+The suite prints its final count; the current tree passes `35/35` on Linux and macOS and `36/36` on Windows (one path check is Windows only). Token counts match the panel exactly:
 
 | Fixture | o200k | cl100k |
 |---|---|---|

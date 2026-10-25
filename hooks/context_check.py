@@ -117,6 +117,9 @@ def context_tokens(path):
         if not isinstance(event, dict) or event.get("isSidechain"):
             continue
         if event.get("subtype") == "compact_boundary":
+            # Claude Code records the size before compaction (preTokens), not after. Until the
+            # next assistant event reports real usage, the context is small but unknown: report
+            # 0, which also clears the band state so the reminder can fire again later.
             return (event.get("compactMetadata") or {}).get("postTokens") or 0
         if event.get("type") != "assistant":
             continue

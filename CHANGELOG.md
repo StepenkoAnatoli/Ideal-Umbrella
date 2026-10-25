@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; this file is the short summary.
+Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `research/progress-log.md` the full work log; this file is the short summary.
 
 ## [Unreleased]
 ### Added
@@ -11,6 +11,11 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `scripts/toolresult_share.py`, `scripts/usertext_split.py` and `scripts/usertext_top.py` no longer crash on a transcript line that is a JSON list or string, print usage when run without arguments, and report an empty transcript instead of dividing by zero.
+- `scripts/unused_tools.py` no longer counts a `tool_use` block without a name as a tool called `None`.
+- `config/install.py` writes the install record after `settings.json`, so a failed settings write no longer leaves a record of values that were not installed.
+- `keyline/measure.py` says how to install tiktoken when it is missing instead of raising ImportError.
+- Docs: the keyline suite count (35 checks, 36 on Windows), one-machine paths in the keyline hook and test docstrings, and the CHANGELOG pointer to the history files.
 - `scripts/lint_validate.py` and `scripts/plugin_cost.py` no longer hardcode one machine's paths: the keyline module and tiktoken cache come from this repository, and the corpus folder and Claude app folder are arguments (with per-OS defaults and `CLAUDE_APP_DIR`). Both print usage and fail cleanly on a missing folder.
 - `scripts/tokentest.py` no longer redefines `claude` (the pyflakes warning is gone).
 - The user-level hook command `config/install.py` writes now ends in `|| exit 0`. A `settings.json` synced to a machine without `~/.claude/ballast/context_check.py` (or without that Python) used to exit 2 there, which blocks every prompt.

@@ -1,5 +1,11 @@
-"""Share of a transcript's context characters that are tool results, by tool."""
+"""Share of a transcript's context characters that are tool results, by tool.
+
+Usage: python -I scripts/toolresult_share.py TRANSCRIPT.jsonl [TRANSCRIPT.jsonl ...]
+"""
 import collections, json, sys
+
+if len(sys.argv) < 2:
+    sys.exit("usage: python -I scripts/toolresult_share.py <transcript.jsonl> [more transcripts]")
 
 def size(c):
     if isinstance(c, str):
@@ -30,7 +36,7 @@ for path in sys.argv[1:]:
                 e = json.loads(line)
             except ValueError:
                 continue
-            if e.get("isSidechain"):
+            if not isinstance(e, dict) or e.get("isSidechain"):
                 continue
             m = e.get("message")
             if not isinstance(m, dict):
@@ -62,9 +68,13 @@ for path in sys.argv[1:]:
 
 tr = sum(res.values())
 total = tr + sum(v for k, v in other.items() if not k.startswith("thinking"))
+if not total:
+    sys.exit("no messages found in the given transcripts")
 print(f"total context chars {total:,}; tool results {tr:,} = {tr / total:.0%}")
 for k, v in other.most_common():
     print(f"  {k:24} {v:>12,}")
+if not tr:
+    sys.exit(0)
 print(f"results over 10k chars: {sum(big.values()):,} = {sum(big.values()) / tr:.0%} of tool results")
 print("tool          calls    result chars  share  avg   >10k chars")
 for n, v in res.most_common(12):

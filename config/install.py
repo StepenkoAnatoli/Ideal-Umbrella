@@ -57,6 +57,9 @@ def layout(home):
 
 def quote(value):
     if os.name == "nt":
+        # Double quotes work in cmd.exe, PowerShell and the bash Claude Code uses for hooks. A
+        # double quote cannot appear in a Windows path, so the escape below never triggers in
+        # practice; it only keeps a quoted value from ending the string early.
         return '"' + str(value).replace('"', '\\"') + '"'
     import shlex
 
@@ -289,9 +292,9 @@ def install(home, force=False):
     changes, notices = [], []
     record = {}
 
-    # Read and check everything before writing anything, and write settings.json last: its
-    # hook entry must never point at a hook file that was not copied (a missing hook file
-    # exits 2, which blocks every prompt).
+    # Read and check everything before writing anything, and write settings.json after the
+    # hook file: its hook entry must never point at a hook file that was not copied (a missing
+    # hook file exits 2, which blocks every prompt).
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
     old_record = read_record(paths["record"]) or {}
@@ -329,14 +332,17 @@ def install(home, force=False):
         paths["claude_md"].write_text(claude_md, encoding="utf-8", newline="\n")
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
 
-    if setting_changes or changes:
-        _write_json(paths["record"], _merge_record(old_record, record))
-
     if setting_changes:
         if paths["settings"].exists():
             backup = _backup(paths["settings"])
             setting_changes.append(f"settings backup: {backup.name}")
         _write_json(paths["settings"], existing)
+
+    # The record describes what was written, so it comes after settings.json: a record of an
+    # install that failed would make uninstall report values it never installed. Without a
+    # record, uninstall still works from the hook entry as evidence.
+    if setting_changes or changes:
+        _write_json(paths["record"], _merge_record(old_record, record))
     return setting_changes + changes, notices
 
 

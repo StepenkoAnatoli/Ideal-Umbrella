@@ -59,7 +59,7 @@ python -I config/uninstall.py              # undo
 The installer is **idempotent** and merges instead of replacing:
 
 - Existing keys, `permissions.allow`, `permissions.ask`, custom `deny` rules and unrelated hooks are kept.
-- An existing Ideal-Umbrella hook is updated in place; sibling hooks in the same entry stay.
+- An existing Ideal-Umbrella hook is updated in place; sibling hooks in the same entry stay. The installer, the uninstaller and `add_to_repo.py` recognise the hook by its file name: any hook command that names `context_check.py` is treated as Ideal-Umbrella's.
 - The hook command records the Python executable that ran the installer, so it does not depend on `python3` being on `PATH` (the Windows Store alias is often broken).
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
 - Existing scalar settings are kept unless you pass `--force`. A value an earlier install wrote and you have not changed is updated when the template changes (for example after a `git pull`), without `--force`. Verification compares against the current template and prints a warning for each kept value, but still passes. A missing value fails verification.
@@ -168,7 +168,7 @@ python -I config/verify-tokens.py --model <current-model-id>
 - **Token measure** (`measure.py`): o200k_base/cl100k_base counts.
 - **PostToolUse hook** (`keyline_hook.py`): runs lint + check on write/edit in `notes/` or `plans/`; `--print-config` generates a ready-to-paste hook entry.
 
-Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`; venv in `keyline/.venv/`). The suite has 35 checks on Windows and 34 elsewhere (one path check is Windows only); see `keyline/README.md` for details and honest limits.
+Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`; venv in `keyline/.venv/`). The suite has 36 checks on Windows and 35 elsewhere (one path check is Windows only); see `keyline/README.md` for details and honest limits.
 
 ## Tests
 

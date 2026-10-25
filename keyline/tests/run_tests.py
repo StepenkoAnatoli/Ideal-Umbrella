@@ -1,8 +1,8 @@
 """Reproduce the panel's worked examples with the three scripts.
 
-Run with the keyline venv:   .venv/Scripts/python.exe tests/run_tests.py
+Run from the repository root:   python -I keyline/tests/run_tests.py   (needs tiktoken)
 Fixtures: the "before"/"after" strings of the SPEC worked examples in
-gittoken/machine-language-panel-results.md (lines 265-325): incident.prose.md, incident.keyline.txt,
+research/panel-results.md: incident.prose.md, incident.keyline.txt,
 incident.keyline.he.txt, incident.glyph.txt, notes.markdown.md, notes.keyline.txt. Two Hebrew
 renderings the panel measured but did not print there come from its synth_measure.py:
 notes.keyline.he.txt and incident.prose.he.txt. All are stored LF, no BOM, no trailing newline.
@@ -18,7 +18,7 @@ K = T.parent
 sys.path.insert(0, str(K))
 import keyline_check  # noqa: E402
 
-# Panel's measured counts (o200k_base, cl100k_base) from machine-language-panel-results.md.
+# Panel's measured counts (o200k_base, cl100k_base) from research/panel-results.md.
 PANEL = {
     "incident.prose.md": (301, 302),
     "incident.keyline.txt": (204, 206),

@@ -30,7 +30,9 @@ def tool_calls(folder):
                 content = message.get("content") if isinstance(message, dict) else None
                 for block in content if isinstance(content, list) else []:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
-                        called[block.get("name")] += 1
+                        name = block.get("name")
+                        if isinstance(name, str) and name:
+                            called[name] += 1
     return len(files), called
 
 
