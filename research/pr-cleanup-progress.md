@@ -1,14 +1,14 @@
-# Ideal-Umbrella review follow-up — resume point (2026-10-25; fourth review of main 51da01e in PR, not merged)
+# Ideal-Umbrella review follow-up — resume point (2026-10-25; fourth review of main 51da01e in draft PR #18, 15 findings fixed, not merged)
 
 ## Request (user)
 "Review the repo for correctness, errors and bugs then report in summary", then "fix the two high items and push", then "when finished, work on the medium and low", then "check your work ... then merge", then "fix the two leftover items too", then "Run the full review again on main", then "Fix the two medium and the low items and merge once CI is green", then "merge it", then "Run the full review again on main" (third pass), then "When finished the review, fix all issues(high/medium/low) and then check your work for possible bugs/errors and then if all good merge", then "Run the full review again on main, fix the class each time" (fourth pass; no merge asked).
 
 ## State
-- main is 51da01e (merge of PR #17, docs only). PRs #9, #10, #12, #13, #14, #15, #16 and #17 are merged. Branch `ccr-866ae3a7-ac9ajn` was restarted from that main and carries the fourth review.
-- Fourth full review of main 51da01e: `research/review-findings-main-51da01e.md` (no high, 1 medium, 3 low), each fixed class-wide (every hit listed there with file:line) with failing-first tests and a prevention: `tests/test_source_rules.py` scans every script for `sys.exit` outside `main()` and for UTF-8 reads with no decode handler. After the fixes: pytest 112 passed, keyline 35/35, pyflakes clean. A fresh-context second reviewer was running when this was pushed; its findings, if any, go into the same PR.
+- main is 51da01e (merge of PR #17, docs only). PRs #9, #10, #12, #13, #14, #15, #16 and #17 are merged. Branch `ccr-866ae3a7-ac9ajn` was restarted from that main and carries the fourth review in draft PR #18 (not merged: the user did not ask for a merge this time).
+- Fourth full review of main 51da01e: `research/review-findings-main-51da01e.md`, 15 findings (no high; 7 medium, 8 low), findings 1-5 from the first reviewer and 6-15 from a fresh-context second reviewer (its report: scratchpad `breaker2/report.md`, not in the repo). Each fixed class-wide with failing-first tests, every hit listed with file:line, and a prevention. Fixes: keyline_check (new extractions `PRs`/`v2`/hashes/`sha256`/`__init__`, strict number boundary in `present()`, mid-line markers, Hebrew hedges, calendar aliases, all-caps `MAY`), keyline_hook (outside-project notes ignored), install (interpreter check in verify, `_write_bytes` atomic writes, four-path symlink check, "Done before the error" listing), uninstall (non-list deny notice and kept `deny_added`, atomic restore, progress listing), add_to_repo (symlink check, atomic writes), tests/test_source_rules.py (exit and decode-handler scans), docs and CHANGELOG. After the fixes: pytest 143 passed, keyline 35/35, pyflakes clean, JSON parses. CI on PR #18 was green for the first push (ba21332); the second push carries findings 6-15.
 - First sweep: findings in `research/review-findings-2026-10-25.md`, fixed in PR #12 and #13.
 - Second full review of main 913ab0c: `research/review-findings-main-913ab0c.md` (no high, 2 medium, 8 low), all fixed in PR #14 (commit ee1dfee).
-- Third full review of main 99edcda: `research/review-findings-main-99edcda.md` (no high, 1 medium, 14 low after merging a fresh-context second reviewer's additions). All 15 fixed in PR #16 (merged 2026-10-25, CI green on ubuntu and windows): keyline_check (ISO timestamps, possessives, month May, non-UTF-8 input), keyline_lint (tiktoken hint, non-UTF-8), install/uninstall (corrupt record refused, OSError reported, dangling symlinks, non-string backup, notice for an unwritten CLAUDE.md, UTF-8 stdout), context_check (band reset after a compaction above threshold, comment), CI comment, docs, CHANGELOG. Tests: `tests/test_keyline_check.py` and `tests/test_keyline_lint.py` new; cases added to test_install, test_uninstall, test_context_check. After the fixes: pytest 97 passed, keyline 35/35, pyflakes clean, JSON parses.
+- Third full review of main 99edcda: `research/review-findings-main-99edcda.md` (no high, 1 medium, 14 low), all 15 fixed in PR #16 (merged 2026-10-25).
 
 ## Decisions and why
 - `|| exit 0` rather than a wrapper script: works in sh, bash and cmd.exe; the only cases masked are a missing file or interpreter, which must never block a prompt.
@@ -20,5 +20,5 @@
 - Finding 11 (record without a `claude_md` entry): the second reviewer's suggested deletion was rejected; a missing entry means the install never wrote CLAUDE.md, so the file is the user's own. A notice is printed instead. Pinned by `test_second_uninstall_keeps_the_users_own_values` and `test_record_without_claude_md_entry_keeps_the_file_and_says_so`.
 
 ## Open items
-- The fourth-review PR is open as a draft and not merged (the user did not ask for a merge this time). Merge it when told, then restart the branch from main.
-- Merge the second reviewer's findings into the report if it adds any.
+- PR #18 (fourth review) is a draft, CI pending on the second push; merge it when told, then restart the branch from main.
+- A `send_later` check-in (trig_01AKdkcCiEMfHcFMUpEK982r) re-checks PR #18; delete it once the PR is merged or closed.

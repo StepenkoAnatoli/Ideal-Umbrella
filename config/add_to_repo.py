@@ -15,7 +15,6 @@ that repository.
 """
 import json
 import os
-import shutil
 import sys
 import tempfile
 
@@ -122,18 +121,25 @@ def _read_json(path):
     return data
 
 
-def _write_json(path, data):
-    # Write through a symlink instead of replacing the link.
+def _write_bytes(path, data):
+    """Write whole or not at all (temp file beside the target, then rename), through a
+    symlink instead of replacing the link, keeping the file's mode."""
     path = os.path.realpath(path)
-    fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if os.path.exists(path):
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+def _write_json(path, data):
+    _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
 def main(argv=None):
@@ -167,6 +173,10 @@ def _add(repo, force):
     (changes, notices)."""
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
+    target = os.path.join(claude_dir, "hooks", "context_check.py")
+    for p in (path, target):
+        if os.path.islink(p) and not os.path.exists(p):
+            raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     try:
@@ -175,10 +185,8 @@ def _add(repo, force):
         raise ValueError(f"{path}: {e}") from None
 
     if changes:
-        os.makedirs(claude_dir, exist_ok=True)
         _write_json(path, settings)
 
-    target = os.path.join(claude_dir, "hooks", "context_check.py")
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
@@ -186,8 +194,7 @@ def _add(repo, force):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     if source != old:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.copyfile(SCRIPT, target)
+        _write_bytes(target, source)
         changes.append(".claude/hooks/context_check.py written")
     return changes, notices
 

@@ -9,10 +9,10 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier, path, CamelCase name, proper noun, file name or snake_case token of the source, drops a hedge class, or has fewer negation words. A source with no extractable invariant is `INCONCLUSIVE`, not `PASS`. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash, path, CamelCase name, proper noun, file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
-| `keyline_hook.py` | Claude Code PostToolUse hook: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
+| `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
 | `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
 | `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (98 tokens o200k, header included). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
@@ -49,10 +49,14 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
 `--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
 Matching is exact and case-sensitive, on ASCII token boundaries: `5` does not count as present
-because `503` is, but a Hebrew prefix glued to an identifier still counts. Markdown list numbers
-(`1. `) are not facts and are skipped. Proper nouns are extracted when they are not ordinary
-sentence furniture (`stack: Postgres via Prisma` checks `Postgres` and `Prisma`). Hedges are
-checked by class, so `could` may render as `may` but not as `will`.
+because `503` is, a bare number does not count as present inside a time or a grouped number
+(`10` is not in `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still
+counts. Markdown list numbers (`1. `) are not facts and are skipped. Proper nouns are extracted
+when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
+and `Prisma`; so does `- **Stack:** Postgres`). A month or weekday name may appear in its Hebrew
+form (`Monday` as `יום שני`, `October` as `אוקטובר`). Hedges are checked by class, so `could`
+may render as `may` but not as `will`; a Hebrew rendering keeps the class with the Hebrew words
+of the same group (`could` as `עלול`, `should` as `אמור`).
 
 A source with no extractable invariant and no hedge is `INCONCLUSIVE` and exits 1. The checker
 must never report a vacuous `PASS` on a source whose claims it did not understand.
@@ -111,8 +115,9 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    `python keyline_hook.py --print-config` (it uses this Python and this keyline folder), or
    replace `__PYTHON__` and `__KEYLINE_DIR__` in `hooks-example.json`. Paste the result.
    If the file already has a `"hooks"` key, add the `PostToolUse` entry to it instead.
-2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path,
-   and only acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
+2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path
+   (a `notes/` folder outside the project too), and only acts on `.txt`, `.md`, `.keyline` or
+   extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
    absolute pattern matches the absolute path, a relative one the path from the project dir).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
@@ -165,11 +170,17 @@ Two panel claims do not reproduce exactly:
   mid-sentence can be checked. It is meant to fail closed, not to be a parser.
 - Hedges are checked by class (possibility, probability, obligation, ability), not word-for-word:
   `could` -> `may` passes; `could` -> `will` fails. A hedge that changes class but keeps the
-  same meaning is reported.
+  same meaning is reported. Hebrew hedges come from a word list (עלול, ייתכן, כנראה, צריך, אמור,
+  יכול, ניתן and their inflections); a Hebrew hedge spelt another way is not seen, and a Hebrew
+  source gains a hedge class only from those words.
+- Month and weekday names are accepted in English or in their Hebrew form (with the prefixes
+  ב/מ/ל/ה); a rendering that writes the date as a number instead of the name is still a miss.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
-  are not extracted as invariants.
+  are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
+  words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,
+  `b07b3b6`, `__init__` and `v2` are.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k
   vocabulary is multilingual, so short shorthands that are already one token pass: rb, cfg, err,
   conn, svc, msg, idx and others. Those are allowed by the spec. k8s, mgmt, dflt and similar are

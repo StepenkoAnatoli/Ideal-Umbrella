@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from conftest import ROOT
 
 ADD = ROOT / "config" / "add_to_repo.py"
@@ -132,3 +134,21 @@ def test_non_utf8_settings_say_so(tmp_path):
     assert result.returncode == 1
     assert "not UTF-8" in result.stderr and "Traceback" not in result.stderr
     assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
+
+
+@pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
+def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
+    # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two
+    # kinds of file, did not: the error named a temp file in the missing target folder.
+    repo = tmp_path / "repo"
+    link = repo / ".claude" / relative
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(tmp_path / "gone" / link.name)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "settings.json").is_file()

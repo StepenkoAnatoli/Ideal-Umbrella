@@ -63,8 +63,9 @@ The installer is **idempotent** and merges instead of replacing:
 - The hook command records the Python executable that ran the installer, so it does not depend on `python3` being on `PATH` (the Windows Store alias is often broken).
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
 - Existing scalar settings are kept unless you pass `--force`. A value an earlier install wrote and you have not changed is updated when the template changes (for example after a `git pull`), without `--force`. Verification compares against the current template and prints a warning for each kept value, but still passes. A missing value fails verification.
-- Everything is read and checked before anything is written, and `settings.json` is written last, so an install that fails while reading or checking (for example a `CLAUDE.md` that is not UTF-8, or a symlink to a missing target) changes nothing. A write that fails part way (disk full, a folder in the way) is reported and leaves no hook entry in `settings.json`; the files already written are inert without it.
-- A symlinked `settings.json` or `CLAUDE.md` (dotfiles, stow, home-manager) is written through; the link stays a link.
+- Everything is read and checked before anything is written, and `settings.json` is written after the hook file and `CLAUDE.md` (the install record last, since it describes what was written), so an install that fails while reading or checking (for example a `CLAUDE.md` that is not UTF-8, or any of the four files being a symlink to a missing target) changes nothing. Every file is written whole or not at all (to a temp file beside it, then renamed over it), so a write that fails part way (disk full, a folder in the way) leaves the old file as it was and no hook entry in `settings.json`; the error message lists the backups and files written before it.
+- A symlinked `settings.json`, `CLAUDE.md` or hook file (dotfiles, stow, home-manager) is written through; the link stays a link.
+- Verification also checks that the Python the hook command names still exists (a deleted venv or a pyenv bump leaves a command that `|| exit 0` silences); run `install.py` again to point it at the current Python.
 - `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder.
 
 ### Manual install
@@ -166,7 +167,7 @@ python -I config/verify-tokens.py --model <current-model-id>
 - **Fact checker** (`keyline_check.py`): verifies that dates, numbers, identifiers, proper nouns, hedges and negations survive a rendering (Hebrew, prose, etc.). A source with no extractable invariants is `INCONCLUSIVE`, not `PASS`.
 - **Style linter** (`keyline_lint.py`): flags markdown furniture and *invented* abbreviations; real tech terms are allowed via `keyline-allow.txt`.
 - **Token measure** (`measure.py`): o200k_base/cl100k_base counts.
-- **PostToolUse hook** (`keyline_hook.py`): runs lint + check on write/edit in `notes/` or `plans/`; `--print-config` generates a ready-to-paste hook entry.
+- **PostToolUse hook** (`keyline_hook.py`): runs lint + check on write/edit in `notes/` or `plans/` of the project (a file outside the project is ignored); `--print-config` generates a ready-to-paste hook entry.
 
 Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`: `python -m pip install -r keyline/requirements.txt`). The suite has 36 checks on Windows and 35 elsewhere (one path check is Windows only); see `keyline/README.md` for details and honest limits.
 

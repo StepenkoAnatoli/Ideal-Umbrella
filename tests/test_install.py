@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -342,3 +343,77 @@ def test_non_utf8_settings_say_so(install_module, tmp_path, capsys):
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
     assert "not UTF-8" in err and "Traceback" not in err
+
+
+def test_verify_fails_when_the_hook_interpreter_is_missing(install_module, tmp_path, monkeypatch):
+    # The command embeds the interpreter that ran the installer; after a deleted venv or a pyenv
+    # bump the hook never runs ("|| exit 0" hides it) and verify() used to say all is well.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    hook = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    gone = str(tmp_path / "gone venv" / "bin" / "python")
+    hook["command"] = hook["command"].replace(install_module.quote(sys.executable), install_module.quote(gone))
+    assert gone in hook["command"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok
+    assert any(gone in issue and "interpreter" in issue for issue in issues), issues
+
+    # A bare name found on PATH (a hand-edited command) is fine.
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    hook["command"] = hook["command"].replace(install_module.quote(gone), Path(sys.executable).name)
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+
+
+def test_failed_claude_md_write_keeps_the_file_and_names_the_backup(install_module, tmp_path, monkeypatch, capsys):
+    # CLAUDE.md was overwritten in place: a write error left a truncated file, and the backup
+    # that holds the original was never named because the error path dropped the changes list.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    real_write_text, real_replace = Path.write_text, os.replace
+
+    def truncating_write_text(self, data, *args, **kwargs):
+        if self.name == "CLAUDE.md":
+            with open(self, "w", encoding="utf-8") as f:
+                f.write(data[:5])
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, data, *args, **kwargs)
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if str(dst).endswith("CLAUDE.md"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", truncating_write_text)
+    monkeypatch.setattr(install_module.os, "replace", failing_replace)
+    assert install_module.main(["--home", str(home)]) == 1
+    out, err = capsys.readouterr()
+    assert "No space left" in err and "Traceback" not in err
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    backups = [p.name for p in claude.glob("CLAUDE.md.bak-*")]
+    assert len(backups) == 1
+    assert backups[0] in out + err
+    assert not list(claude.glob(".*CLAUDE*")), "temp file left behind"
+
+
+@pytest.mark.parametrize("name", ["hook", "record"])
+def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(install_module, tmp_path, capsys, name):
+    # settings.json and CLAUDE.md had this check; the hook and the record did not, so a
+    # dangling link there gave "No such file or directory" naming a temp file.
+    home = tmp_path / "home"
+    target = install_module.layout(home)[name]
+    target.parent.mkdir(parents=True)
+    try:
+        target.symlink_to(tmp_path / "missing" / target.name)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert not settings_file(home).exists()
+    assert not (home / ".claude" / "CLAUDE.md").exists()

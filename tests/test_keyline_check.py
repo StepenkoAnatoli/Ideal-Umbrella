@@ -81,3 +81,70 @@ def test_month_may_mid_sentence_is_not_a_hedge(keyline_check):
     assert keyline_check.hedges("Shipped in May; it may slip.") == {"possibility": ["may"]}
     assert keyline_check.hedges("- May we proceed?") == {"possibility": ["may"]}
     assert keyline_check.hedges("Plan.\nMay I help?") == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("token,changed", [
+    ("v2", "v3"),
+    ("PRs", "MRs"),
+    ("b07b3b6", "b07b3b7"),
+    ("sha256", "sha512"),
+    ("utf8", "utf16"),
+    ("__init__", "__main__"),
+])
+def test_identifier_shapes_that_fell_through_every_alternative(keyline_check, token, changed):
+    # A bare version, a plural acronym, a git hash, a lowercase word with digits and a dunder
+    # name matched no alternative, so a rendering that changed them PASSed on the anchor "14:02".
+    source = f"deploy: {token} live at 14:02"
+    assert token in keyline_check.invariants(source)
+    result = keyline_check.check(source, source.replace(token, changed))
+    assert not result.ok and result.missing == [token]
+    assert keyline_check.check(source, f"פריסה: {token} עלתה ב-14:02").ok
+
+
+def test_prose_words_are_not_hashes_or_identifiers(keyline_check):
+    inv = keyline_check.invariants("The defaced cafe faced a deadbeef deadline on page 2 of 10.")
+    assert inv == {"2": "number", "10": "number"}
+
+
+def test_number_is_not_found_inside_a_time_or_a_grouped_number(keyline_check):
+    # "10" used to be found at the start of "10:00" and "2" inside "2,500".
+    assert keyline_check.check("max 10 connections at 14:02", "restart at 10:00 at 14:02").missing == ["10"]
+    assert keyline_check.check("retry 2 times at 14:02", "retry 2,500 times at 14:02").missing == ["2"]
+    assert keyline_check.check("retry 2 times at 14:02", "retry 2 times (2,500 max) at 14:02").ok
+    assert keyline_check.check("~1,900 attempts at 14:02", "1,900 ניסיונות ב-14:02").ok
+
+
+def test_name_after_a_mid_line_separator_is_checked(keyline_check):
+    # A dash, ">" or "#" anywhere before a name used to count as a list marker, so the name was
+    # skipped as a sentence start and a rendering that dropped it PASSed.
+    assert keyline_check.check("db: moved to Postgres - Prisma stays", "db: moved to Postgres").missing == ["Prisma"]
+    assert keyline_check.check("compare: size > Postgres limit", "compare: size limit").missing == ["Postgres"]
+    inv = keyline_check.invariants("- **Language:** TypeScript\n## Heading here\n> Quoted Name")
+    assert "Language" not in inv and "Heading" not in inv and "Quoted" not in inv
+    assert "TypeScript" in inv and "Name" in inv
+
+
+def test_hebrew_hedges_keep_the_class(keyline_check):
+    # Hedges were English-only, so every hedged source FAILed against a correct Hebrew rendering.
+    source = "risk: pool could be exhausted at 14:02; fix should ship"
+    assert keyline_check.check(source, "סיכון: המאגר עלול להתרוקן ב-14:02; התיקון אמור לצאת").ok
+    lost = keyline_check.check(source, "סיכון: המאגר יתרוקן ב-14:02; התיקון ייצא")
+    assert lost.missing_hedges == ["possibility", "obligation"]
+    assert keyline_check.hedges("ייתכן שכן, כנראה; צריך לבדוק; ניתן") == {
+        "possibility": ["ייתכן"], "probability": ["כנראה"], "obligation": ["צריך"], "ability": ["ניתן"]}
+
+
+@pytest.mark.parametrize("english,hebrew", [
+    ("Monday", "ביום שני"), ("October", "מאוקטובר"), ("May", "במאי"), ("MAY", "מאי"), ("Sat", "בשבת"),
+])
+def test_month_and_weekday_names_accept_their_hebrew_form(keyline_check, english, hebrew):
+    source = f"due: {english} at 14:02"
+    assert english in keyline_check.invariants(source)
+    assert keyline_check.check(source, f"יעד: {hebrew} ב-14:02").ok
+    assert keyline_check.check(source, "יעד: ב-14:02").missing == [english]
+    assert keyline_check.check(source, "יעד: ביום שלישי ב-14:02").missing == [english]
+
+
+def test_upper_case_may_before_a_number_is_the_month(keyline_check):
+    assert keyline_check.hedges("Window: MAY 2026") == {}
+    assert keyline_check.hedges("WE MAY FAIL") == {"possibility": ["may"]}

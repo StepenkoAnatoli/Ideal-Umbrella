@@ -19,7 +19,6 @@ Usage:
   python -I config/uninstall.py [--home PATH] [--dry-run]
 """
 import argparse
-import shutil
 import sys
 from pathlib import Path
 
@@ -107,6 +106,11 @@ def undo_settings(settings, template, record, evidence=None):
                 del permissions["deny"]
                 if not permissions:
                     del settings["permissions"]
+    elif isinstance(permissions, dict) and "deny" in permissions and record.get("deny_added"):
+        # A deny that is not a list (a hand edit, a sync tool) holds nothing of ours we can
+        # take out; say so and keep deny_added so a later run can still remove the tools.
+        notices.append(f"permissions.deny is not a list ({permissions['deny']!r}); left as is")
+        left.append("permissions.deny")
     if not has_record:
         notices.append("no install record; permissions.deny left as is")
 
@@ -136,15 +140,25 @@ def _leftover_record(record, left, claude_md_left):
         leftover["added_keys"] = [k for k in record.get("added_keys", []) if k in left]
         leftover["replaced"] = {k: v for k, v in record.get("replaced", {}).items() if k in left}
         leftover["installed"] = {k: v for k, v in record.get("installed", {}).items() if k in left}
+        if "permissions.deny" in left and record.get("deny_added"):
+            leftover["deny_added"] = record["deny_added"]
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
     return leftover
 
 
-def uninstall(home, dry_run=False):
+def uninstall(home, dry_run=False, progress=None):
+    """Undo the install; return (changes, notices). Each change is appended to `progress`
+    (when given) once it is done, so an OSError part way can still name the backups made."""
     paths = install.layout(home)
     record = install.read_record(paths["record"])
     changes, notices = [], []
+    if progress is None:
+        progress = []
+
+    def done(change):
+        changes.append(change)
+        progress.append(change)
 
     # Read everything first, so a read error leaves every file as it was.
     settings = install._read_json(paths["settings"]) if paths["settings"].exists() else None
@@ -165,13 +179,16 @@ def uninstall(home, dry_run=False):
         changes.extend(setting_changes)
         if setting_changes and not dry_run:
             backup = install._backup(paths["settings"])
-            changes.append(f"settings backup: {backup.name}")
+            done(f"settings backup: {backup.name}")
             install._write_json(paths["settings"], settings)
+            progress.append("settings.json written")
 
     if paths["hook"].exists():
-        changes.append("hook deleted")
-        if not dry_run:
+        if dry_run:
+            changes.append("hook deleted")
+        else:
             paths["hook"].unlink()
+            done("hook deleted")
 
     entry = (record or {}).get("claude_md")
     claude_md_left = False
@@ -187,10 +204,13 @@ def uninstall(home, dry_run=False):
             notices.append("CLAUDE.md differs from what was installed; left as is"
                            + (f" (your earlier file is in {backup.name})" if backup and backup.exists() else ""))
         elif backup is not None and backup.exists():
-            changes.append(f"CLAUDE.md restored from {backup.name}")
-            if not dry_run:
-                # Copy, not rename, so a symlinked CLAUDE.md is written through, not replaced.
-                shutil.copyfile(backup, claude_md)
+            if dry_run:
+                changes.append(f"CLAUDE.md restored from {backup.name}")
+            else:
+                # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
+                # link; a copy that fails part way must not leave a truncated file.
+                install._write_bytes(claude_md, backup.read_bytes())
+                done(f"CLAUDE.md restored from {backup.name}")
                 backup.unlink()
         elif backup is not None:
             # The install replaced a file of yours and its backup is gone: deleting now would
@@ -199,9 +219,11 @@ def uninstall(home, dry_run=False):
             notices.append(f"CLAUDE.md left as is: the backup {backup.name} it should be restored "
                            "from is missing")
         elif record is not None and entry is not None:
-            changes.append("CLAUDE.md deleted")
-            if not dry_run:
+            if dry_run:
+                changes.append("CLAUDE.md deleted")
+            else:
                 claude_md.unlink()
+                done("CLAUDE.md deleted")
         elif record is not None and entry is None:
             # The record says this install never wrote CLAUDE.md (the file already matched the
             # template), so it is the user's own: say so rather than pass over it in silence.
@@ -213,7 +235,7 @@ def uninstall(home, dry_run=False):
             else:
                 backup = install._backup(claude_md)
                 claude_md.unlink()
-                changes.append(f"CLAUDE.md deleted (copy kept as {backup.name})")
+                done(f"CLAUDE.md deleted (copy kept as {backup.name})")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
         install._write_json(paths["record"], _leftover_record(record, left, claude_md_left))
@@ -230,8 +252,10 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    progress = []
     try:
-        changes, notices = uninstall(Path(args.home).expanduser().resolve(), dry_run=args.dry_run)
+        changes, notices = uninstall(Path(args.home).expanduser().resolve(), dry_run=args.dry_run,
+                                     progress=progress)
     except ValueError as e:
         # Raised while reading, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
@@ -240,6 +264,10 @@ def main(argv=None):
         # e.g. the hook path is a folder, or a file is read-only. Files already undone stay
         # undone; a second run after fixing the cause finishes the rest.
         print(f"Error: {e}; the undo stopped part way, fix the cause and run again", file=sys.stderr)
+        if progress:
+            print("Done before the error:", file=sys.stderr)
+            for line in progress:
+                print(f"  - {line}", file=sys.stderr)
         return 1
     if changes:
         print("Would change:" if args.dry_run else "Changes:")

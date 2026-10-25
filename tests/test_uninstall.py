@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 
@@ -355,3 +356,53 @@ def test_non_string_backup_name_in_record_does_not_crash(install_module, uninsta
 
     changes, notices = uninstall_module.uninstall(home)
     assert "CLAUDE.md deleted" in changes, (changes, notices)
+
+
+def test_deny_that_is_not_a_list_is_reported_and_kept_in_the_record(install_module, uninstall_module, tmp_path):
+    # The deny undo was gated on isinstance(list) with no else: a string deny was skipped in
+    # silence and deny_added dropped from the record, so the tools could never be removed.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["permissions"]["deny"] = ",".join(settings["permissions"]["deny"])
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert any("permissions.deny" in n and "not a list" in n for n in notices), notices
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["deny_added"] == list(install_module.REQUIRED_TOOLS)
+
+    settings = read_settings(home)
+    settings["permissions"]["deny"] = settings["permissions"]["deny"].split(",")
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert any(c.startswith("permissions.deny: removed") for c in changes), changes
+    assert "deny" not in read_settings(home).get("permissions", {})
+
+
+def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The backup was copied over CLAUDE.md in place; a write error left a fragment.
+    import shutil
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="my own rules\n")
+    install_module.install(home)
+    claude_md = home / ".claude" / "CLAUDE.md"
+    real_copyfile, real_replace = shutil.copyfile, os.replace
+
+    def truncating_copyfile(src, dst, *args, **kwargs):
+        if str(dst).endswith("CLAUDE.md"):
+            with open(dst, "w", encoding="utf-8") as f:
+                f.write("my o")
+            raise OSError(28, "No space left on device")
+        return real_copyfile(src, dst, *args, **kwargs)
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if str(dst).endswith("CLAUDE.md"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", truncating_copyfile)
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        uninstall_module.uninstall(home)
+    assert claude_md.read_text(encoding="utf-8") == TEMPLATE_MD
+    assert list((home / ".claude").glob("CLAUDE.md.bak-*"))

@@ -5,7 +5,7 @@ Usage:
   python keyline_hook.py --print-config   print a ready-to-paste hook entry for this install
 
 Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extension-less files
-inside a notes/ or plans/ folder of the project, or, when one or more --watch PATTERN arguments
+inside a notes/ or plans/ folder of the project (a file outside the project is ignored), or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
 project dir). Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
@@ -77,7 +77,7 @@ def watched(path, root, patterns=()):
     try:
         rel = path.resolve().relative_to(Path(root).resolve())
     except (ValueError, OSError):
-        rel = path
+        return False        # outside the project: ~/notes/todo.md is not a project note
     return bool({p.lower() for p in rel.parent.parts} & WATCHED_DIRS)
 
 
