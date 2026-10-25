@@ -468,7 +468,7 @@ clean.
    Other hits: rule 4 (`_glob_call`) sees attribute calls inside one function only; its limits
    are now in the docstring too (self-review finding 8).
    Prevention: tests/test_source_rules.py `test_rule_five_reads_the_leading_flags`
-   (parametrized over the five shapes).
+   (parametrized over eight list and tuple shapes).
 8. LOW tests/test_source_rules.py (rule 4): any `glob.escape` call in the function satisfies it;
    `from glob import glob`, a module-level call and `Path.glob` are not seen. Class: a rule
    whose docstring promised more than it checks.
