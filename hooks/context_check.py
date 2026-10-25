@@ -33,8 +33,13 @@ LOG_MAX_BYTES = 1024 * 1024      # the log keeps about its last half when it pas
 
 
 def config_dir():
-    """Where Claude Code keeps its files: CLAUDE_CONFIG_DIR when set, else ~/.claude."""
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    """Where Claude Code keeps its files: CLAUDE_CONFIG_DIR when set, else ~/.claude. The
+    variable is read as config/install.py reads it (~ expanded, made absolute), so the hook
+    and the installer agree on the folder."""
+    value = os.environ.get("CLAUDE_CONFIG_DIR")
+    if value:
+        return os.path.realpath(os.path.expanduser(value))
+    return os.path.join(os.path.expanduser("~"), ".claude")
 
 
 def state_dir():

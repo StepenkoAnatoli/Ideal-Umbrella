@@ -202,8 +202,15 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         else:
             paths["hook"].unlink()
             done("hook deleted")
-    # What the hook wrote while it ran: the per-session state files and its log.
-    if paths["state"].is_dir():
+    # What the hook wrote while it ran: the per-session state files and its log. A state folder
+    # that is a symlink is unlinked, not followed (shutil.rmtree refuses a link).
+    if paths["state"].is_symlink():
+        if dry_run:
+            changes.append("state link removed")
+        else:
+            paths["state"].unlink()
+            done("state link removed")
+    elif paths["state"].is_dir():
         if dry_run:
             changes.append("state folder deleted")
         else:

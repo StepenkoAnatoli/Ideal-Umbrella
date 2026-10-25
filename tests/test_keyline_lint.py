@@ -1,3 +1,4 @@
+import os
 import sys
 
 import pytest
@@ -34,7 +35,7 @@ def test_missing_tiktoken_with_a_cache_does_not_stop_the_lint(tmp_path, monkeypa
     monkeypatch.setitem(sys.modules, "tiktoken", None)
     assert keyline_lint.token_count("mgmt") is None
     findings = list(keyline_lint.lint_text("the mgmt layer\n", {"the", "layer"}, set()))
-    assert len(findings) == 1 and "not one token" in findings[0][1]
+    assert len(findings) == 1 and "mgmt" in findings[0][1]
 
 
 def test_missing_tiktoken_without_a_cache_is_one_line_from_main(tmp_path, monkeypatch, capsys):
@@ -128,3 +129,37 @@ def test_a_cache_build_that_fails_part_way_leaves_no_cache(tmp_path, monkeypatch
     assert keyline_lint.build_cache() == {"the", "and"}
     assert keyline_lint.load_words() == {"the", "and"}
     assert "; 2 words" in (tmp_path / "cache" / "words.txt").read_text(encoding="utf-8").splitlines()[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_rebuilt_cache_gets_the_umask_mode(tmp_path, monkeypatch):
+    # mkstemp creates the temp file 0600 and the rename keeps it, so a cache built by one user
+    # was unreadable to another on a shared checkout.
+    import types
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    monkeypatch.setattr(keyline_lint, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(keyline_lint, "WORDS_CACHE", tmp_path / "cache" / "words.txt")
+
+    class Enc:
+        n_vocab = 2
+
+        def decode_single_token_bytes(self, i):
+            return [b" the", b" and"][i]
+
+    fake = types.SimpleNamespace(get_encoding=lambda name: Enc(), __version__="0")
+    monkeypatch.setattr(keyline_lint, "_tiktoken", lambda: fake)
+    keyline_lint.build_cache()
+    mask = os.umask(0)
+    os.umask(mask)
+    assert (tmp_path / "cache" / "words.txt").stat().st_mode & 0o777 == 0o666 & ~mask
+
+
+def test_missing_tiktoken_says_the_word_was_not_counted(monkeypatch):
+    # With tiktoken missing, a word absent from the list was reported as "not one token",
+    # which the lint had not checked.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    findings = list(keyline_lint.lint_text("the mgmt layer\n", {"the", "layer"}, set()))
+    assert len(findings) == 1
+    assert "not counted" in findings[0][1] and "tiktoken" in findings[0][1]
+    assert "not one token" not in findings[0][1]

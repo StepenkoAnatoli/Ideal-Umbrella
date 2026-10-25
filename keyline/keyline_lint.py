@@ -59,7 +59,7 @@ IDENT_CHARS = re.compile(r"[/\\_.=@#$%&*+<>|~]")
 class TiktokenMissing(ImportError):
     """tiktoken is not installed; str(error) is the install hint.
 
-    An Exception, not SystemExit: token_count() catches it to report "not one token", and the
+    An Exception, not SystemExit: token_count() catches it to report "not counted", and the
     entry points (main() here, keyline_hook.py) turn it into one line and an exit code.
     """
 
@@ -106,11 +106,19 @@ def build_cache():
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(header + "\n".join(sorted(words)) + "\n")
+        os.chmod(tmp, 0o666 & ~_umask())     # the mode a plain write gives, not mkstemp's 0600
         os.replace(tmp, WORDS_CACHE)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
     return words
+
+
+def _umask():
+    """The process umask; os.umask can only read it by setting it."""
+    value = os.umask(0)
+    os.umask(value)
+    return value
 
 
 def load_words():
@@ -183,8 +191,11 @@ def lint_text(text, words, allow):
                 n = token_count(part)
                 if n == 1:
                     continue                  # one token after all: the word list is not complete
-                size = f"{n} tokens" if n else "not one token"
-                yield no, (f"abbreviation: '{part}' is {size} under o200k_base; spell it out, "
+                if n is None:
+                    size = "not in the one-token word list and was not counted (tiktoken is missing)"
+                else:
+                    size = f"{n} tokens under o200k_base"
+                yield no, (f"abbreviation: '{part}' is {size}; spell it out, "
                            f"or add it to {ALLOW_NAME} if it is a real name")
 
 

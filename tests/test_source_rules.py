@@ -14,14 +14,18 @@
    replaced byte becomes) used to end the script with UnicodeEncodeError.
 4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
    folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
-   no transcript at all.
-5. A test that starts a script of this repository (`[sys.executable, ...]` in `tests/` and
-   `keyline/tests/`) passes `-I` right after the interpreter, so the suite runs the scripts
-   the way the docs say to run them: `-I` ignores `PYTHON*` variables and the script folder on
-   `sys.path`. `tests/test_utf8_output.py` is the exception: it sets `PYTHONIOENCODING` on
-   purpose, which `-I` would discard.
+   no transcript at all. The check sees attribute calls (`glob.glob`, `glob.escape`) inside
+   one function; `from glob import glob`, a module-level call or `Path.glob` are not covered.
+5. A test that starts a script of this repository (`[sys.executable, flags..., script]` in
+   `tests/` and `keyline/tests/`) passes `-I` among the leading flags, so the suite runs the
+   scripts the way the docs say to run them: `-I` ignores `PYTHON*` variables and the script
+   folder on `sys.path`. A module run (`-m`) is not a script of this repository and is not
+   checked; `-c code` is. `tests/test_utf8_output.py` is the exception: it sets
+   `PYTHONIOENCODING` on purpose, which `-I` would discard.
 """
 import ast
+
+import pytest
 
 from conftest import ROOT
 
@@ -153,10 +157,31 @@ def test_glob_patterns_escape_the_folder():
     assert not bad, "glob.glob() without glob.escape() in the same function:\n" + "\n".join(bad)
 
 
-def _starts_script(node):
-    return (isinstance(node, ast.List) and node.elts
-            and isinstance(node.elts[0], ast.Attribute) and node.elts[0].attr == "executable"
-            and _name(node.elts[0].value) == "sys")
+TAKES_AN_ARGUMENT = {"-X", "-W"}
+
+
+def _isolated(node):
+    """True when a [sys.executable, flags..., script] list or tuple holds "-I" among its leading
+    flags, False when it does not, None when it is not a script run (a -m module run, or
+    nothing after the interpreter)."""
+    if not (isinstance(node, (ast.List, ast.Tuple)) and node.elts):
+        return None
+    first = node.elts[0]
+    if not (isinstance(first, ast.Attribute) and first.attr == "executable" and _name(first.value) == "sys"):
+        return None
+    rest = list(node.elts[1:])
+    while rest and isinstance(rest[0], ast.Constant) and isinstance(rest[0].value, str) \
+            and rest[0].value.startswith("-"):
+        flag = rest.pop(0).value
+        if flag == "-I":
+            return True
+        if flag == "-m":
+            return None
+        if flag == "-c":
+            return False
+        if flag in TAKES_AN_ARGUMENT and rest:
+            rest.pop(0)
+    return False if rest else None
 
 
 def test_tests_start_scripts_with_isolation():
@@ -167,9 +192,23 @@ def test_tests_start_scripts_with_isolation():
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             for node in ast.walk(tree):
-                if not _starts_script(node):
-                    continue
-                second = node.elts[1] if len(node.elts) > 1 else None
-                if not (isinstance(second, ast.Constant) and second.value == "-I"):
+                if _isolated(node) is False:
                     bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
-    assert not bad, '[sys.executable, ...] without "-I" second:\n' + "\n".join(bad)
+    assert not bad, '[sys.executable, ...] without "-I" among its flags:\n' + "\n".join(bad)
+
+
+@pytest.mark.parametrize("code, isolated", [
+    ('[sys.executable, "-I", str(p)]', True),
+    ('[sys.executable, "-X", "utf8", "-I", str(p)]', True),
+    ('[sys.executable, "-I", "-c", code]', True),
+    ('[sys.executable, str(p)]', False),
+    ('[sys.executable, "-X", "utf8=0", str(p)]', False),
+    ('(sys.executable, str(p))', False),
+    ('[sys.executable, "-m", "pytest"]', None),
+    ('[sys.executable]', None),
+])
+def test_rule_five_reads_the_leading_flags(code, isolated):
+    # "-I" is accepted anywhere among the leading flags; a module run (-m) is not a script of
+    # this repository; a tuple counts like a list.
+    node = ast.parse(code).body[0].value
+    assert _isolated(node) is isolated

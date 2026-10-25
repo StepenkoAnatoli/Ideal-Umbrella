@@ -234,3 +234,15 @@ def test_a_long_dash_joined_run_is_extracted_in_linear_time(keyline_check):
     start = time.perf_counter()
     keyline_check.invariants(text)
     assert time.perf_counter() - start < 2.0
+
+
+@pytest.mark.parametrize("line", [
+    "years 2020-2024 at 14:02", "budget 1000-2000 x", "season 2026-27 x", "in 2026-10 x",
+    "ticket 2026-1234 x", "FY2024-25 x", "Q4 2025-2026 x", "call 5-12-34 x", "ids 7-10-20 x",
+    "ratio 1/10 x", "v1/10 x", "ratio 3:1:30 x", "pages 5-10", "ב-10 ב-14:02",
+])
+def test_a_source_passes_against_itself(keyline_check, line):
+    # The date and slash boundaries of the number lookup fired on any "NNNN-" or "N/" prefix,
+    # so a year range or a fraction failed against a rendering holding the source verbatim.
+    result = keyline_check.check(line, line)
+    assert result.ok, result.missing

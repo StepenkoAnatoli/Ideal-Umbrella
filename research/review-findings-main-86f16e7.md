@@ -12,8 +12,10 @@ changed by this pass.
 
 Status: all 20 findings fixed in PR #19 (the PR that carries this report), each with a
 failing-first test, a search of the whole repository for the same pattern (listed under "Other
-hits") and a prevention. After the fixes: pytest 178 passed (1 skipped as root), keyline suite
-35/35, pyflakes clean, JSON files parse. Counts: 0 high, 3 medium, 17 low. Findings 17 and 18
+hits") and a prevention. A fresh-context self-review of the PR diff (section "Self-review of
+the PR diff" below) found 9 more (1 high, 2 medium, 6 low), all fixed the same way. After both
+rounds: pytest 203 passed (1 skipped as root), keyline suite 35/35, pyflakes clean, JSON files
+parse. Counts of this review: 0 high, 3 medium, 17 low. Findings 17 and 18
 were PLAUSIBLE (one step depends on Claude Code behaviour that cannot be checked here) and are
 fixed on the assumption that the documented behaviour holds; all others were CONFIRMED by a run
 and their reproductions now give the expected result. Line numbers in the finding text are the
@@ -47,17 +49,22 @@ None.
    2026-10-25", ...)` still ok.
    Smallest fix: extend the number boundary to `(?<!\d[-./,:])` on the left and
    `(?![-./,:]\d|%)` on the right; re-run the suite, no fixture should move.
-   Fixed: keyline/keyline_check.py:27-28, `L_NUMBER` also blocks `\d-`, `\d/` on the left and an
-   ISO date's year and month positions (`\d{4}-`, `\d{4}-\d{2}-`); `R_NUMBER` blocks `/\d`, `%`
-   and a year's `-MM-DD` on the right. A lone dash stays a boundary on purpose, so a range
-   (`pages 5-10`) and a Hebrew prefix (`ב-10`) are still found; the source extractor never
-   yields a bare number from a date, a percentage or a slash pair, so only the rendering side
-   needed the block. All four reproductions now report the number missing.
-   Other hits: `present()` is the only presence check and `L_NUMBER`/`R_NUMBER` its only number
-   boundary; the keyline fixtures (35/35) did not move.
+   Fixed: keyline/keyline_check.py:218-221 (`present()`) and :258 (`check()`): a number is
+   looked up by extraction, not by a boundary. `check()` runs `invariants()` on the rendering
+   once and a source number is present when the rendering's own tokens hold it, so `10` is not
+   found inside `10:00`, `2,500`, `10%`, `10/25` or `2026-10-25` (each one token to the
+   extractor), while both ends of `5-10`, the year range `2020-2024` and `10` in `ב-10` are
+   (each a token of its own). The first fix of this finding, a boundary pair `L_NUMBER`/
+   `R_NUMBER` with dash lookarounds, failed a year range against an identical rendering (self-
+   review finding 1) and was replaced; whatever the extractor takes from a source line it takes
+   from the same line in a rendering, so a rendering holding the source verbatim always passes.
+   All four reproductions report the number missing.
+   Other hits: `present()` is the only presence check; the keyline fixtures (35/35) did not move.
    Prevention: tests/test_keyline_check.py
    `test_number_is_not_found_inside_a_date_a_percentage_or_a_slash_pair` (the three date
-   positions, `10%`, `10/25`, and the positive cases `ב-14:02`, `5-10`, `ב-10`).
+   positions, `10%`, `10/25`, and the positive cases `ב-14:02`, `5-10`, `ב-10`) and
+   `test_a_source_passes_against_itself` (14 lines with ranges, slash and colon chains, Hebrew
+   prefixes, each checked against itself).
 
 2. (A) keyline/keyline_lint.py:99-102 (`build_cache`), :106-110 (`load_words`), :168-171
    (`lint_text`): a truncated or empty word cache is trusted, so the lint flags ordinary words;
@@ -84,9 +91,12 @@ None.
    Fixed: keyline/keyline_lint.py:105-115, `build_cache()` writes to a `mkstemp` file beside the
    cache and `os.replace`s it, removing the temp file when the build fails; :122-125,
    `load_words()` parses the header's `; N words` and rebuilds when it is missing or does not
-   match the lines present (an empty file rebuilds too); :184, `lint_text()` skips a word
+   match the lines present (an empty file rebuilds too); :192, `lint_text()` skips a word
    tiktoken counts as one token. The second first run now builds into its own temp file and
-   the rename is atomic, so two overlapping hooks cannot see each other's half.
+   the rename is atomic, so two overlapping hooks cannot see each other's half. The rebuilt
+   cache gets the mode a plain write gives (:109, `chmod` to the umask), not `mkstemp`'s 0600,
+   and a word that is not in the list while tiktoken is missing is reported as "not counted
+   (tiktoken is missing)", not as "not one token" (:195; self-review findings 4 and 5).
    Other hits: config/install.py:264 and config/add_to_repo.py:142 already write temp-and-rename.
    Safe: hooks/context_check.py:172 (the state file is a one-number band marker, read under
    `except (OSError, ValueError)` at :163 and rewritten on the next prompt); scripts/plugin_cost.py:106
@@ -130,8 +140,11 @@ None.
    case; a time found after a `:` is a different instant.) Class: Neighbors (the fourth review
    marked "14:02 in 14:02:30" safe and did not look at the left side). Fix: for `kind ==
    "time"` a left boundary that also blocks `\d:`.
-   Fixed: keyline/keyline_check.py:30, `L_TIME = L + r"(?<!\d:)"`, used by `present()` for
+   Fixed: keyline/keyline_check.py:31, `L_TIME = L + r"(?<!\d:)"`, used by `present()` for
    `kind == "time"`; `00:30` is no longer found in `10:00:30`, `14:02` in `14:02:30` still is.
+   The `time` alternative of the extractor (:45) carries the same `(?<!\d:)` lookbehind, so a
+   time the lookup could never find (`1:30` in `ratio 3:1:30`) is not extracted either: that
+   line is the numbers 3, 1 and 30 on both sides and passes against itself.
    Other hits: none; the timestamp kind has its own full-match boundaries.
    Prevention: tests/test_keyline_check.py `test_time_is_not_found_at_the_end_of_a_longer_time`.
 
@@ -150,14 +163,14 @@ None.
    (the three acronyms, and `Dec` and `MAY` still accepted).
 
 6. (A) Docs: "a source with no extractable invariant is INCONCLUSIVE, never PASS"
-   (keyline/keyline_check.py:8-9, keyline/README.md:12, README.md:167) is false for a
+   (keyline/keyline_check.py:8-9, keyline/README.md:12, README.md:168) is false for a
    hedge-only source: the code at keyline_check.py:245 is `inconclusive = not inv and not
    source_hedges`, which keyline/README.md:61 states correctly. Reproduced: source `the pool
    could be exhausted`, rendering `the pool may be exhausted` -> `PASS (0 invariants
    present ...)`. Class: Words. Fix: make the three sentences match :61, or the code match
    the sentences.
    Fixed: the three sentences (keyline/keyline_check.py:8-9, keyline/README.md:12,
-   README.md:167) now read "no extractable invariant and no hedge is INCONCLUSIVE, never PASS",
+   README.md:168) now read "no extractable invariant and no hedge is INCONCLUSIVE, never PASS",
    which is what :245 does.
    Other hits: a grep for "never PASS" finds no other copy.
    Prevention: none mechanical; the sentence names the condition the code tests.
@@ -214,8 +227,9 @@ None.
    Fixed: keyline/keyline_check.py:43, the `path` alternative's lead-in is bounded
    (`[\w.~-]{0,200}`) and so is the `file` alternative, so each start position scans at most
    200 characters. Measured after the fix: 2000 pairs 0.04 s, 8000 pairs 0.14 s, 16000 pairs
-   0.28 s (was 0.32 / 4.15 / 16.5 s). A real path component longer than 200 characters is not
-   extracted as a path; its words still are.
+   0.28 s (was 0.32 / 4.15 / 16.5 s). A path component or file name longer than 200 characters
+   is not extracted as one token (its words are part of the same run and are not extracted
+   either; the comment at :34-37 says so).
    Other hits: the other alternatives are bounded by their own character classes.
    Prevention: tests/test_keyline_check.py `test_a_long_dash_joined_run_is_extracted_in_linear_time`
    (8000 pairs in under 2 s).
@@ -238,7 +252,9 @@ None.
     clause.
    Fixed: keyline/keyline_hook.py docstring names exit 1 (non-blocking, one line on stderr)
    for a read error or missing tiktoken.
-   Other hits: keyline/README.md already listed the three codes.
+   Other hits: keyline/README.md:131-133 named exit 2 but not exit 1 (self-review finding 9);
+   it now says "when the note cannot be read or tiktoken is missing it exits 1 (non-blocking,
+   one line on stderr)". keyline/keyline_hook.py:161-166 is the only place the codes are set.
    Prevention: none mechanical.
 
 13. (B) config/install.py:465: `--verify-only` tracebacks with `TypeError: 'NoneType' object
@@ -338,7 +354,8 @@ None.
    with `--home` it is ignored; `install()`, `verify()`, `merge_settings()` and
    `hook_command()` take the folder through, config/uninstall.py:281 uses the same `target()`,
    and hooks/context_check.py:35-44 reads its state folder and log from `CLAUDE_CONFIG_DIR`
-   too. README.md documents the variable under the install options.
+   too, with `~` expanded and the path made absolute, as the installer's `target()` does
+   (self-review finding 3). README.md documents the variable under the install options.
    Other hits: scripts/plugin_cost.py:27-31 uses `Path.home()` for the Claude desktop app's
    folder, which is a different product's path. Safe.
    Prevention: tests/test_install.py `test_claude_config_dir_is_honoured_when_home_is_not_given`
@@ -353,9 +370,11 @@ None.
    after the hook (the hook rebuilds them), reports "state folder deleted" and "log deleted",
    and lists both in `--dry-run`; README.md's "By hand" list and the uninstall docstring name
    them.
+   A `ballast/state` that is a symlink is unlinked, not followed (self-review finding 2).
    Other hits: `layout()` now carries both paths (`state`, `log`), so the installer and the
    uninstaller cannot disagree on them.
-   Prevention: tests/test_uninstall.py `test_uninstall_removes_the_state_folder_and_the_log`.
+   Prevention: tests/test_uninstall.py `test_uninstall_removes_the_state_folder_and_the_log` and
+   `test_a_symlinked_state_folder_is_unlinked_not_followed`.
 
 20. (B) tests/test_install.py:434-449
     `test_write_bytes_removes_the_temp_file_even_when_the_target_is_read_only` never reaches
@@ -373,6 +392,96 @@ None.
    `test_write_bytes_refuses_a_read_only_target`.
    Other hits: no other test uses an `A|B` match that would accept the path it means to skip.
    Prevention: the test itself; it fails before the fix as root and as a plain user.
+
+## Self-review of the PR diff
+
+A fresh-context reviewer read the diff of commit 9c3e12c (the 20 fixes above) against main
+86f16e7 before any merge, with the same rules as the review itself. Its report is in the
+scratchpad (`selfreview5/report.md`, not in the repo). Nine findings, all fixed in PR #19 with
+a failing-first test, a search for the pattern and a prevention; line numbers are the fixed
+tree's. After the fixes: pytest 203 passed (1 skipped as root), keyline suite 35/35, pyflakes
+clean.
+
+1. HIGH keyline/keyline_check.py (`L_NUMBER`/`R_NUMBER`, the first fix of finding 1): a number
+   after `NNNN-` was never found, so `years 2020-2024` or `FY2024-25` failed against an
+   identical rendering (`missing: 2024`). The dash lookarounds that blocked `10` in
+   `2026-10-25` also blocked the second half of every four-digit range. Class: a boundary fix
+   that is stricter than the extraction it guards; the review's own class ("a presence check
+   whose boundary is looser than the token the extraction took") has this as its mirror image.
+   Fixed: keyline/keyline_check.py:218-221, :258: the boundary pair is gone; a number is present
+   when `invariants(rendering)` holds the same token (see finding 1 above). The `time`
+   alternative (:45) got `(?<!\d:)` so extraction and lookup agree (see finding 4).
+   Other hits: no other kind is looked up with a boundary tighter than its extraction; `kind
+   == "time"` uses `L_TIME`, which the extractor now mirrors.
+   Prevention: tests/test_keyline_check.py `test_a_source_passes_against_itself` (14 lines:
+   year ranges, `FY2024-25`, `5-12-34`, `v1/10`, `3:1:30`, `pages 5-10`, `ב-10 ב-14:02`, each
+   checked against itself, which is the checker's one invariant that must hold for every line).
+2. MEDIUM config/uninstall.py (the fix of finding 19): a `ballast/state` that is a symlink was
+   passed to `shutil.rmtree`, which refuses a symlink with an OSError, so the undo stopped part
+   way on every run. Class: Endings (a delete that does not ask what it deletes).
+   Fixed: config/uninstall.py:207-212, a symlinked `state` is unlinked ("state link removed");
+   a folder is still deleted; `--dry-run` lists either.
+   Other hits: `paths["log"]` is removed with `unlink`, which is right for a file or a link;
+   the hook folder and the install record are files. config/install.py never deletes a folder.
+   Prevention: tests/test_uninstall.py `test_a_symlinked_state_folder_is_unlinked_not_followed`
+   (the link is gone, its target is intact, the undo finishes).
+3. MEDIUM hooks/context_check.py:35-37 vs config/install.py:73: a `CLAUDE_CONFIG_DIR` written
+   as `~/cfg` or as a relative path sent the installer (which expands and resolves it) and the
+   hook (which joined it raw) to different folders, so the hook's state and log were not where
+   the uninstaller looks. Class: Neighbors (two readers of one variable, one normalisation).
+   Fixed: hooks/context_check.py:41, `config_dir()` returns
+   `os.path.realpath(os.path.expanduser(value))`, the same normalisation as `target()`.
+   Other hits: config/uninstall.py goes through `target()`; no other file reads the variable.
+   Prevention: tests/test_context_check.py `test_state_dir_follows_claude_config_dir` (an
+   absolute path, `~/cfg`, and a relative path under a changed working directory).
+4. LOW keyline/keyline_lint.py:105 (the fix of finding 2): the rebuilt word cache was written
+   through `mkstemp`, so it kept that file's private mode (0600) instead of the mode a plain
+   write gives; a second user on the machine could not read it and rebuilt their own. Class:
+   Neighbors (the same hole the installers closed in the fourth review, `_write_bytes`).
+   Fixed: keyline/keyline_lint.py:109, `os.chmod(tmp, 0o666 & ~_umask())` before the rename;
+   `_umask()` at :117 reads and restores the mask as config/install.py does.
+   Other hits: config/install.py:269 and config/add_to_repo.py:147 already do this; no other
+   `mkstemp` in the repo.
+   Prevention: tests/test_keyline_lint.py `test_a_rebuilt_cache_gets_the_umask_mode`.
+5. LOW keyline/keyline_lint.py:183-186: with the words file present and tiktoken missing, a
+   word absent from the list was reported as "not one token" although nothing had counted it.
+   Class: Words (a message that claims a measurement that was not made).
+   Fixed: keyline/keyline_lint.py:195, the finding reads "is not in the one-token word list and
+   was not counted (tiktoken is missing)"; with tiktoken it still reads "is N tokens under
+   o200k_base". The `TiktokenMissing` docstring (:62) says "not counted".
+   Other hits: none; `token_count()` is the only caller that returns None.
+   Prevention: tests/test_keyline_lint.py `test_missing_tiktoken_says_the_word_was_not_counted`.
+6. LOW keyline/keyline_check.py:43-44 and this report's finding 10: a path component or file
+   name over 200 characters is dropped entirely; "its words still are [extracted]" was not
+   true, since the words are part of the same run. Class: Words.
+   Fixed: the comment at keyline/keyline_check.py:34-37 and finding 10's Fixed block say "not
+   extracted as one token" and nothing about the words.
+   Other hits: none.
+   Prevention: none mechanical.
+7. LOW tests/test_source_rules.py (rule 5, the prevention of finding 8): the rule flagged
+   `[sys.executable, "-m", ...]`, `"-c"` and `"-X"` forms that are legitimate, and did not see a
+   tuple. Class: a rule that reads the first flag only.
+   Fixed: tests/test_source_rules.py:160-184, `_isolated()` walks the leading flags: `-I`
+   anywhere among them passes, `-m` is not a script run, `-c` without `-I` fails, `-X`/`-W`
+   consume their argument; lists and tuples alike. The docstring (rule 5) says what is and is
+   not checked.
+   Other hits: rule 4 (`_glob_call`) sees attribute calls inside one function only; its limits
+   are now in the docstring too (self-review finding 8).
+   Prevention: tests/test_source_rules.py `test_rule_five_reads_the_leading_flags`
+   (parametrized over the five shapes).
+8. LOW tests/test_source_rules.py (rule 4): any `glob.escape` call in the function satisfies it;
+   `from glob import glob`, a module-level call and `Path.glob` are not seen. Class: a rule
+   whose docstring promised more than it checks.
+   Fixed: the docstring (rule 4) states the limits. The check itself is unchanged: every
+   `glob.glob` in the repo is an attribute call inside a function, and a wider rule would
+   have to guess which `escape` guards which call.
+   Other hits: none.
+   Prevention: none mechanical; the docstring is the contract.
+9. LOW research/review-findings-main-86f16e7.md:241: "keyline/README.md already listed the
+   three codes" was not true; the README named exit 2 only. Class: Words.
+   Fixed: keyline/README.md:131-133 names exit 1 (see finding 12's Other hits above).
+   Other hits: none; README.md and CHANGELOG.md do not list the hook's exit codes.
+   Prevention: none mechanical.
 
 ## Observations, not findings
 - A source date `2026-10-14` is reported missing when the rendering writes the same day as

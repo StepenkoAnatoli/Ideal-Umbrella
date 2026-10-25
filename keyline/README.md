@@ -129,7 +129,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 6. Start a new Claude Code session in the repo so it loads the settings.
 
 How it behaves: the matcher is `Write|Edit`. On findings the hook exits 2 and prints them to
-stderr. For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
+stderr; when the note cannot be read or tiktoken is missing it exits 1 (non-blocking, one line on
+stderr). For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
 Claude fixes the file. The generated command uses absolute paths, so the repo can be anywhere.
 The hook has been tested by piping simulated PostToolUse events through the generated command. It has not yet run inside a live Claude Code session.
 

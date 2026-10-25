@@ -439,3 +439,23 @@ def test_uninstall_removes_the_state_folder_and_the_log(install_module, uninstal
     assert "state folder deleted" in changes and "log deleted" in changes
     assert not (ballast / "state").exists() and not (ballast / "context_check.log").exists()
     assert (ballast / "install-record.json").is_file()
+
+
+def test_a_symlinked_state_folder_is_unlinked_not_followed(install_module, uninstall_module, tmp_path):
+    # shutil.rmtree refuses a symlink, so the undo stopped after the hook was deleted and every
+    # rerun failed at the same place.
+    home = tmp_path / "home"
+    install_module.install(home)
+    ballast = home / ".claude" / "ballast"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "session-1").write_text("1", encoding="utf-8")
+    try:
+        (ballast / "state").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    changes, _ = uninstall_module.uninstall(home)
+    assert "state link removed" in changes
+    assert not (ballast / "state").is_symlink()
+    assert (elsewhere / "session-1").is_file()
+    assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")
