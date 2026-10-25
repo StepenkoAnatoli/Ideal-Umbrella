@@ -245,15 +245,23 @@ def text_hash(text):
 
 
 def read_record(path):
-    """The saved install record, or None when there is none or it is unreadable."""
+    """The saved install record, or None when there is none.
+
+    A record that exists but cannot be read is an error, not "no record": it holds the values
+    an uninstall must put back, so neither install nor uninstall may silently overwrite it.
+    """
     if not path.exists():
         return None
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
-    except (ValueError, OSError):
-        return None
-    return data if isinstance(data, dict) else None
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}); fix it or delete it first") from e
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
+    return data
 
 
 def _merge_record(old, new):
@@ -295,6 +303,9 @@ def install(home, force=False):
     # Read and check everything before writing anything, and write settings.json after the
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
+    for name in ("settings", "claude_md"):
+        if paths[name].is_symlink() and not paths[name].exists():
+            raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
     old_record = read_record(paths["record"]) or {}
@@ -419,6 +430,9 @@ def main(argv=None):
     parser.add_argument("--force", action="store_true", help="replace differing scalar settings")
     parser.add_argument("--verify-only", action="store_true", help="check the installation without writing")
     args = parser.parse_args(argv)
+    # Paths in the output may hold characters outside the Windows ANSI code page.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     # A relative or literal "~" home would put a relative path in the hook command, which
     # Claude Code runs from the project folder.
     home = Path(args.home).expanduser().resolve()

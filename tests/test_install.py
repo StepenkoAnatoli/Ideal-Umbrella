@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 
@@ -260,3 +261,62 @@ def test_record_is_written_after_settings(install_module, tmp_path, monkeypatch)
     assert not paths["record"].exists()
     assert not paths["settings"].exists()
     assert paths["hook"].exists()
+
+
+def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
+    # The record holds the values an uninstall puts back. It used to be read as "no record"
+    # and overwritten; now the user is told to fix or delete it first.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = install_module.layout(home)["record"]
+    record.write_text("{broken", encoding="utf-8")
+    settings_before = settings_file(home).read_text(encoding="utf-8")
+
+    assert install_module.main(["--home", str(home), "--force"]) == 1
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err and "nothing written" in err
+    assert record.read_text(encoding="utf-8") == "{broken"
+    assert settings_file(home).read_text(encoding="utf-8") == settings_before
+
+
+def test_record_that_is_not_an_object_is_an_error(install_module, tmp_path):
+    record = tmp_path / "install-record.json"
+    record.write_text("[1, 2]", encoding="utf-8")
+    with pytest.raises(ValueError, match="JSON object"):
+        install_module.read_record(record)
+    assert install_module.read_record(tmp_path / "missing.json") is None
+
+
+def test_dangling_symlink_is_reported_before_anything_is_written(install_module, tmp_path, capsys):
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    try:
+        (claude / "CLAUDE.md").symlink_to(tmp_path / "missing" / "CLAUDE.md")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err
+    assert not (claude / "ballast").exists()
+    assert not settings_file(home).exists()
+
+
+def test_generated_hook_command_runs_the_hook(install_module, tmp_path):
+    # The negative test above cannot fail (every error ends in "|| exit 0"); this one proves the
+    # quoting is right by running the installed command end to end on a 160k transcript.
+    home = tmp_path / "home"
+    install_module.install(home)
+    command = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(json.dumps({
+        "type": "assistant",
+        "message": {"usage": {"input_tokens": 100_000, "output_tokens": 60_000}},
+    }) + "\n", encoding="utf-8")
+    env = dict(os.environ, IDEAL_UMBRELLA_STATE_DIR=str(tmp_path / "state"),
+               IDEAL_UMBRELLA_LOG=str(tmp_path / "hook.log"))
+    result = subprocess.run(command, shell=True, input=json.dumps({
+        "transcript_path": str(transcript), "session_id": "s-1"}),
+        capture_output=True, text=True, encoding="utf-8", env=env)
+    assert result.returncode == 0, result.stderr
+    assert "context about 160k tokens" in json.loads(result.stdout)["systemMessage"]

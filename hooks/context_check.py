@@ -117,9 +117,10 @@ def context_tokens(path):
         if not isinstance(event, dict) or event.get("isSidechain"):
             continue
         if event.get("subtype") == "compact_boundary":
-            # Claude Code records the size before compaction (preTokens), not after. Until the
-            # next assistant event reports real usage, the context is small but unknown: report
-            # 0, which also clears the band state so the reminder can fire again later.
+            # compactMetadata.postTokens is the size of the compacted conversation. It leaves
+            # out the system prompt and tool definitions, so it is a floor until the next
+            # assistant event reports real usage. Older transcripts carry only preTokens: then
+            # report 0, which also clears the band state so the reminder can fire again later.
             return (event.get("compactMetadata") or {}).get("postTokens") or 0
         if event.get("type") != "assistant":
             continue
@@ -158,7 +159,10 @@ def run():
             last = int(f.read().strip())
     except (OSError, ValueError):
         last = -1
-    if band <= last:
+    # Same band as the last reminder: stay silent. A lower band means the context shrank
+    # (a compaction that still landed above the threshold): the old reminder is stale, so
+    # start again from this band.
+    if band == last:
         return
     os.makedirs(state_dir(), exist_ok=True)
     prune_state(state_dir())
