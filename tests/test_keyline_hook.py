@@ -34,3 +34,18 @@ def test_a_note_outside_the_project_is_not_watched(keyline_hook, tmp_path):
                             text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, result.stderr
     assert result.stderr == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_symlinked_notes_folder_inside_the_project_is_watched(keyline_hook, tmp_path):
+    # The outside-project fix resolved the path first, so a notes/ folder that is a symlink to
+    # a folder elsewhere (Dropbox, another repo) left the project and was no longer watched.
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    real = tmp_path / "dropbox_notes"
+    real.mkdir()
+    (proj / "notes").symlink_to(real, target_is_directory=True)
+    note = proj / "notes" / "todo.md"
+    note.write_text("# My todo\n", encoding="utf-8")
+    assert keyline_hook.watched(note, proj)
+    assert not keyline_hook.watched(real / "todo.md", proj)

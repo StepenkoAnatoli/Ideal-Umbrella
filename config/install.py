@@ -21,6 +21,7 @@ config/uninstall.py can put back the values that were there before.
 """
 import argparse
 import datetime
+import errno
 import hashlib
 import json
 import os
@@ -223,9 +224,11 @@ def _write_bytes(path, data):
     A write that fails part way (disk full, a killed process) leaves the old file as it was
     instead of a truncated one. Writes through a symlink (dotfiles, stow, home-manager)
     instead of replacing the link, and keeps the file's mode; a new file gets the mode a
-    plain write would give it."""
+    plain write would give it. A read-only target is refused, as a plain write refuses it."""
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists() and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as f:
@@ -237,6 +240,10 @@ def _write_bytes(path, data):
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
+            try:
+                os.chmod(tmp, 0o600)   # Windows cannot remove a read-only file
+            except OSError:
+                pass
             os.remove(tmp)
 
 
@@ -403,7 +410,11 @@ def _interpreter(command):
 
 
 def _runnable(exe):
-    """True when exe is a path that exists or a bare name found on PATH."""
+    """True when exe is a path that exists or a bare name found on PATH. ~ and $VAR are expanded
+    as the shell would; a Git-Bash path (/c/Users/...) on Windows cannot be checked and passes."""
+    exe = os.path.expanduser(os.path.expandvars(exe))
+    if os.name == "nt" and exe.startswith("/"):
+        return True
     if os.sep in exe or (os.altsep and os.altsep in exe):
         return os.path.exists(exe)
     return shutil.which(exe) is not None

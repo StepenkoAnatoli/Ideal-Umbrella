@@ -13,6 +13,7 @@ only the user-level hook. Stdlib only; run with
 `python -I config/add_to_repo.py [--force] <repo>`, then commit the two files in
 that repository.
 """
+import errno
 import json
 import os
 import sys
@@ -131,9 +132,11 @@ def _umask():
 def _write_bytes(path, data):
     """Write whole or not at all (temp file beside the target, then rename), through a
     symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
-    plain write would give it."""
+    plain write would give it. A read-only target is refused, as a plain write refuses it."""
     path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "wb") as f:
@@ -145,6 +148,10 @@ def _write_bytes(path, data):
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
+            try:
+                os.chmod(tmp, 0o600)   # Windows cannot remove a read-only file
+            except OSError:
+                pass
             os.remove(tmp)
 
 

@@ -172,9 +172,12 @@ Two panel claims do not reproduce exactly:
   `could` -> `may` passes; `could` -> `will` fails. A hedge that changes class but keeps the
   same meaning is reported. Hebrew hedges come from a word list (עלול, ייתכן, כנראה, צריך, אמור,
   יכול, ניתן and their inflections); a Hebrew hedge spelt another way is not seen, and a Hebrew
-  source gains a hedge class only from those words.
-- Month and weekday names are accepted in English or in their Hebrew form (with the prefixes
-  ב/מ/ל/ה); a rendering that writes the date as a number instead of the name is still a miss.
+  source gains a hedge class only from those words. Some of them have plain senses too (ניתן
+  "was given", סביר "reasonable"), so a Hebrew source with one of those fails against an
+  English rendering that does not hedge.
+- Month and weekday names are accepted in English or in their Hebrew form, with up to three
+  prefix letters (ב, מ, ל, ה, ו, ש, כ) and Hebrew-letter boundaries, so a word that is a prefix
+  plus the name (לשבת, "to sit") still counts as the name; a rendering that writes the date as a number instead of the name is still a miss.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,

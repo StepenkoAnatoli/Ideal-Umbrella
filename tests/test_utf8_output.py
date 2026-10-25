@@ -59,9 +59,5 @@ def test_unused_tools_prints_a_non_ascii_tool_name(tmp_path):
     ok(run_cp1252("scripts/unused_tools.py", str(tmp_path)), "Café: 1")
 
 
-def test_usage_breakdown_runs_on_a_cp1252_console(tmp_path):
-    write_jsonl(tmp_path / "t.jsonl", [
-        {"type": "assistant", "message": {"id": "m1", "usage": {"input_tokens": 5, "output_tokens": 2},
-                                          "content": [{"type": "text", "text": "café"}]}},
-    ])
-    ok(run_cp1252("scripts/usage_breakdown.py", str(tmp_path)), "1 transcripts")
+# scripts/usage_breakdown.py prints only ASCII (counts and fixed keys); tests/test_source_rules.py
+# keeps its UTF-8 stdout. A cp1252 run of it cannot tell the fixed script from the old one.

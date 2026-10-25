@@ -38,7 +38,7 @@ INVARIANT = re.compile(
     | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*s?)
     | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
     | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[A-Za-z0-9]+__)
+    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
     | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})
     | (?P<number>\d+(?:[.,]\d+)*(?:%|[A-Za-z]+)?)
     | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
@@ -59,6 +59,8 @@ PROPER_STOP = {
     "roughly", "run", "set", "short", "side", "stack", "start", "stop", "summary", "tests",
     "that", "the", "these", "this", "those", "three", "timeline", "to", "two", "update",
     "use", "verify", "when", "while", "with", "without", "write", "yes",
+    # label values ("**Status:** Done", "Priority: High") a rendering translates
+    "active", "blocked", "closed", "done", "high", "low", "medium", "none", "pending", "ready",
 }
 
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
@@ -156,7 +158,7 @@ def invariants(text):
             continue
         if kind == "upper" and len(re.findall(r"[A-Z]", tok)) < 2:
             continue          # "A", "I", "A1": not identifiers
-        if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[A-Za-z0-9]+__", tok):
+        if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
             continue
         if kind == "proper":
             if tok.lower() in PROPER_STOP or _is_sentence_start(text, m.start()):
@@ -169,15 +171,17 @@ def invariants(text):
 
 
 def _all_caps_line(text, start, end):
-    """True when another all-caps word of two or more letters stands on the same line."""
+    """True when the rest of the line has no lowercase letter and holds another all-caps word
+    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line."""
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
     line = text[line_start:start] + " " + text[end:line_end if line_end >= 0 else len(text)]
-    return re.search(r"\b[A-Z]{2,}\b", line) is not None
+    return re.search(r"[a-z]", line) is None and re.search(r"\b[A-Z]{2,}\b", line) is not None
 
 
 def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
+    text = LIST_MARKER.sub("", text)      # "2) May we proceed?": the marker is not a sentence
     found = {}
     for m in HEDGE.finditer(text):
         if m.group(0) in ("May", "MAY") and (re.match(r"\s+\d", text[m.end():])
@@ -206,9 +210,13 @@ def present(tok, kind, text):
     if kind == "datetime":
         # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
         body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
-    forms = [body] + [re.escape(form) for form in CALENDAR.get(tok.lower(), ())]
     left, right = (L_NUMBER, R_NUMBER) if kind == "number" else (L, R)
-    return re.search(left + "(?:" + "|".join(forms) + ")" + tail + right, text) is not None
+    forms = [left + body + tail + right]
+    # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
+    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day.
+    forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+              for form in CALENDAR.get(tok.lower(), ())]
+    return re.search("(?:" + "|".join(forms) + ")", text) is not None
 
 
 def negations(text):

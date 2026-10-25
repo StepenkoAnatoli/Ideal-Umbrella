@@ -429,3 +429,50 @@ def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp
     for name in ("settings.json", "CLAUDE.md", os.path.join("ballast", "context_check.py")):
         path = home / ".claude" / name
         assert path.stat().st_mode & 0o777 == expected, name
+
+
+def test_write_bytes_removes_the_temp_file_even_when_the_target_is_read_only(install_module, tmp_path, monkeypatch):
+    # With a read-only target the temp file got the read-only mode too; on Windows the failing
+    # rename then left it behind, since os.remove cannot delete a read-only file.
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        def boom(src, dst):
+            raise PermissionError(13, "simulated rename failure", dst)
+        monkeypatch.setattr(install_module.os, "replace", boom)
+        with pytest.raises(PermissionError, match="simulated|read-only"):
+            install_module._write_bytes(target, b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
+    finally:
+        target.chmod(0o644)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_write_bytes_refuses_a_read_only_target(install_module, tmp_path):
+    # Replacing the file through a rename ignored the read-only bit the user set; main's plain
+    # write raised PermissionError and changed nothing.
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            install_module._write_bytes(target, b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
+    finally:
+        target.chmod(0o644)
+
+
+def test_verify_accepts_a_hook_interpreter_written_with_tilde_or_a_variable(install_module, tmp_path, monkeypatch):
+    # README's manual install writes the hook path with ~; _runnable looked for the literal "~".
+    home = tmp_path / "home"
+    install_module.install(home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    exe = home / "venv" / "bin" / "python"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    for form in ("~/venv/bin/python", "$HOME/venv/bin/python"):
+        assert install_module._runnable(form), form

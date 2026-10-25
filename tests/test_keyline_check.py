@@ -148,3 +148,48 @@ def test_month_and_weekday_names_accept_their_hebrew_form(keyline_check, english
 def test_upper_case_may_before_a_number_is_the_month(keyline_check):
     assert keyline_check.hedges("Window: MAY 2026") == {}
     assert keyline_check.hedges("WE MAY FAIL") == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("source, rendering, dropped", [
+    ("due: May at 14:02", "יעד: מאיפה ב-14:02 ההגעה", "May"),          # "from where", not the month
+    ("deploy: Sat at 14:02", "פריסה: מחשבת ב-14:02", "Sat"),                # "thought", not שבת
+    ("cutover: June at 14:02", "מעבר: ב-14:02 עם יוניקוד", "June"),        # "Unicode"
+])
+def test_a_hebrew_calendar_form_inside_another_word_is_not_the_name(keyline_check, source, rendering, dropped):
+    # The Hebrew forms were wrapped in the ASCII-only boundaries, so any Hebrew letters could
+    # sit on either side and a dropped month passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok
+    assert result.missing == [dropped]
+    for ok in ("במאי", "ממאי", "ובמאי"):
+        assert keyline_check.check("due: May at 14:02", f"יעד: {ok} ב-14:02").ok
+    # "לשבת" is "to sit" and also "to Saturday": a prefix letter plus the name is accepted.
+    assert keyline_check.check("deploy: Saturday at 14:02", "פריסה: ב-14:02, לשבת").ok
+
+
+def test_a_status_value_after_a_bold_label_is_not_a_name(keyline_check):
+    # Checking the word after "**Label:**" (so that "- **Stack:** Postgres" keeps Postgres) made
+    # "Done" and "High" invariants, and a correct Hebrew rendering failed.
+    source = "- **Status:** Done\n- **Priority:** High\n- **Deadline:** 2026-11-01\n- **Stack:** Postgres\n"
+    inv = keyline_check.invariants(source)
+    assert "Postgres" in inv and "2026-11-01" in inv
+    assert "Done" not in inv and "High" not in inv
+    hebrew = "- **סטטוס:** בוצע\n- **עדיפות:** גבוהה\n- **יעד:** 2026-11-01\n- **Stack:** Postgres\n"
+    assert keyline_check.check(source, hebrew).ok
+
+
+def test_upper_case_may_beside_an_acronym_is_the_month(keyline_check):
+    assert keyline_check.hedges("ship: MAY, 14:02 UTC") == {}
+    assert keyline_check.check("window: API freeze in MAY", "חלון: הקפאת API במאי").ok
+    assert keyline_check.hedges("WE MAY FAIL") == {"possibility": ["may"]}
+
+
+def test_hedges_skip_list_markers_like_invariants(keyline_check):
+    assert keyline_check.hedges("2) May we proceed?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("1. May we proceed?") == {"possibility": ["may"]}
+
+
+def test_markdown_bold_with_underscores_is_not_a_dunder(keyline_check):
+    inv = keyline_check.invariants("__Important__ note at 14:02 in __init__")
+    assert "__Important__" not in inv
+    assert inv["__init__"] == "snake"

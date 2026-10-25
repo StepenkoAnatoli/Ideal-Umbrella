@@ -74,10 +74,18 @@ def watched(path, root, patterns=()):
             elif rel is not None and fnmatch.fnmatchcase(rel, pat_n):
                 return True
         return False
-    try:
-        rel = path.resolve().relative_to(Path(root).resolve())
-    except (ValueError, OSError):
-        return False        # outside the project: ~/notes/todo.md is not a project note
+    # The path as written first (a notes/ folder that is a symlink to Dropbox stays inside the
+    # project), then with symlinks resolved; a file outside the project by both readings
+    # (~/notes/todo.md) is not a project note.
+    for candidate, base in ((Path(os.path.abspath(path)), Path(os.path.abspath(root))),
+                            (path.resolve(), Path(root).resolve())):
+        try:
+            rel = candidate.relative_to(base)
+            break
+        except (ValueError, OSError):
+            continue
+    else:
+        return False
     return bool({p.lower() for p in rel.parent.parts} & WATCHED_DIRS)
 
 

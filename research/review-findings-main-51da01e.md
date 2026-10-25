@@ -13,9 +13,10 @@ The two previous reviews had already found this class twice (third review, findi
 second review, findings 7 and 10): the fixes covered the reported line, not the pattern, which
 is why it came back.
 
-Status: all 15 findings fixed in the PR that carries this report, plus one regression of the
-fixes (16) found in the pre-merge self-review. After the fixes: pytest 143
-passed, keyline suite 35/35, pyflakes clean, JSON files parse. Findings 1-5 are the first
+Status: all 15 findings fixed in the PR that carries this report, plus ten more (16-25) found by
+the pre-merge self-review: one regression of the fixes and nine edges of them, from a third
+fresh-context reviewer run on the PR diff. After the fixes: pytest 154 passed (1 skipped as
+root), keyline suite 35/35, pyflakes clean, JSON files parse. Findings 1-5 are the first
 reviewer's, 6-15 the second reviewer's (its finding 4 is finding 1 here); the second reviewer
 ran against the tree before the first five fixes and found none of them fixed by accident.
 
@@ -382,6 +383,132 @@ None.
   `test_new_files_get_the_umask_mode_not_the_temp_file_mode`, `tests/test_add_to_repo.py`
   same name. Skipped on Windows, where `st_mode` carries only the read-only bit.
 - Prevention: the two helpers are the only writers of user files, and each has the mode test.
+
+### 17. Medium: a Hebrew month or weekday form matched inside another Hebrew word (edge of 14)
+- Where: `keyline/keyline_check.py` `present()`: the Hebrew forms from `CALENDAR` were wrapped in
+  `L`/`R`, which are ASCII-only boundaries, so Hebrew letters could stand on either side.
+- Reproduced: source "ship: May 3", rendering "מאיפה 3" passed (`מאיפה`, "from where", holds
+  `מאי`); likewise `Sat` inside `מחשבת` and `June` inside `יוניקוד`. A rendering that dropped the
+  month passed: the checker's no-false-PASS guarantee was broken for Hebrew renderings.
+- Class: words / "a non-ASCII token matched with ASCII word boundaries". `NEG_HE` and `HEDGE_HE`
+  already used `(?<![א-ת])` / `(?![א-ת])`; the calendar forms were the odd one out.
+- Pattern searched: every regex built from a Hebrew list (`CALENDAR`, `HEDGE_HE`, `NEG_HE`,
+  `HEDGE_GROUPS_HE`) and its boundaries.
+- Other hits: none; the three other lists already carried Hebrew-letter boundaries.
+- Fixed: each Hebrew form is its own alternative, `(?<![א-ת])[ובלמהשכ]{0,3}form(?![א-ת])`, so up to
+  three prefix letters are allowed (במאי, ממאי, ובמאי) and nothing else. `לשבת` ("to sit") is ל +
+  שבת and still counts as Saturday; documented in `keyline/README.md` Honest limits.
+- Test (failed before the fix): `tests/test_keyline_check.py`
+  `test_a_hebrew_calendar_form_inside_another_word_is_not_the_name` (May/מאיפה, Sat/מחשבת,
+  June/יוניקוד; also asserts the three prefixed forms and לשבת pass).
+- Prevention: `HEB` is the one boundary class used by every Hebrew regex; the test pins it.
+
+### 18. Low: a label value after `**Label:**` became a checked name (edge of 8)
+- Where: `keyline/keyline_check.py` `_is_sentence_start` and `PROPER_STOP`.
+- Reproduced: source "- **Status:** Done", rendering "- **סטטוס:** בוצע" failed with "missing
+  Done": finding 8 made the word after a mid-line label a mid-sentence word, so a capitalised
+  status value counts as a proper name, and the hook pushes the English word into Hebrew notes.
+- Class: words / "a capitalised common word counted as a name because of its position".
+- Pattern searched: label values a rendering translates (`Done`, `High`, `Low`, `Medium`,
+  `Closed`, `Blocked`, `Pending`, `Ready`, `Active`, `None`) against `PROPER_STOP`, which had
+  `yes`, `no`, `open` only.
+- Other hits: the ten values above, all added to `PROPER_STOP`; `- **Stack:** Postgres` is still
+  checked (finding 8 kept).
+- Test (failed before the fix): `test_a_status_value_after_a_bold_label_is_not_a_name`.
+- Prevention: `PROPER_STOP` is the single list for common capitalised words; the comment names
+  the label-value group so the next value goes there.
+
+### 19. Low: `MAY` beside any acronym was the modal, so the CHANGELOG claim was false (edge of 15)
+- Where: `keyline/keyline_check.py` `_all_caps_line`: `\b[A-Z]{2,}\b` matched `UTC`, `API`,
+  `PR`, `DB`, which share almost every dated line with an all-caps month.
+- Reproduced: "ship: MAY, 14:02 UTC" against its Hebrew rendering failed with "hedges lost:
+  possibility (may)".
+- Class: words / "a heuristic keyed on one neighbouring token instead of the line's shape".
+- Pattern searched: every use of `_all_caps_line` (one caller, `hedges()`).
+- Fixed: the line is all-caps only when it has no lowercase letter and another all-caps word
+  ("WE MAY FAIL"); a mixed-case line makes `MAY` the month. The CHANGELOG sentence is now true.
+- Test (failed before the fix): `test_upper_case_may_beside_an_acronym_is_the_month`.
+- Prevention: the test pins the acronym case next to the all-caps-sentence case.
+
+### 20. Low: a symlinked `notes/` or `plans/` folder inside the project was no longer watched (edge of 1)
+- Where: `keyline/keyline_hook.py` `watched()`: the outside-project check resolved the file path
+  but compared it with the unresolved project root, so a `notes/` folder symlinked to Dropbox,
+  iCloud or another repo looked outside the project and the hook went silent.
+- Class: neighbors / "one side of a path comparison resolved, the other not".
+- Pattern searched: `resolve()` and `relative_to` across `keyline/` and `config/`
+  (`config/install.py` `_runnable` and the symlink checks compare like with like).
+- Other hits: none.
+- Fixed: the lexical absolute pair is tried first (a symlinked folder inside the tree matches
+  there), then the resolved pair; only when both fail is the file outside the project.
+- Test (failed before the fix): `tests/test_keyline_hook.py`
+  `test_a_symlinked_notes_folder_inside_the_project_is_watched` (skipped on Windows).
+- Prevention: the test, beside the outside-project test from finding 1.
+
+### 21. Low: `_write_bytes` on a read-only target: a stray temp file on Windows, a silent overwrite on POSIX (edge of 12)
+- Where: `config/install.py` `_write_bytes`, `config/add_to_repo.py` `_write_bytes`.
+- Reproduced: on POSIX a `chmod 444` `settings.json` was replaced by the rename (main's plain
+  write refused it with `PermissionError`). On Windows `os.replace` fails on a read-only target,
+  and the `finally` block's `os.remove` failed on the read-only temp file (mode copied from the
+  target), leaving `.settings.json-xxxx` behind and masking the real error.
+- Class: endings / "a cleanup step that can itself fail for the reason the write failed".
+- Pattern searched: `mkstemp` (the two helpers; uninstall uses install's).
+- Other hits: both helpers, fixed the same way.
+- Fixed: an existing target that is not writable is refused up front with
+  `PermissionError(EACCES, "the file is read-only; make it writable first")`, as main did; the
+  `finally` block chmods the temp file to 0600 before removing it, so the remove cannot fail on
+  the mode.
+- Tests: `tests/test_install.py`
+  `test_write_bytes_removes_the_temp_file_even_when_the_target_is_read_only` (passes on POSIX,
+  documents the Windows case, runs on both CI runners) and `test_write_bytes_refuses_a_read_only_target`
+  (failed before the fix; skipped as root, where `os.access` says writable).
+- Prevention: the two helpers remain the only writers; both tests run in CI on Windows.
+
+### 22. Low: `verify()` reported a hook interpreter written with `~` or `$HOME` as "not found" (edge of 6)
+- Where: `config/install.py` `_runnable`.
+- Reproduced: a hand-edited command (README "Manual install" step 1) such as
+  `~/.venv/bin/python3 ...` or `$HOME/.venv/bin/python3 ...` failed verification although the
+  shell expands both; a Git-Bash `/c/Python312/python.exe` on Windows did too.
+- Class: words / "a path checked as typed, not as the shell will read it".
+- Other hits: none (`_interpreter` writes an absolute path, so only hand edits reach this).
+- Fixed: `expanduser` and `expandvars` before the check; on Windows a `/`-rooted path passes.
+- Test (failed before the fix):
+  `test_verify_accepts_a_hook_interpreter_written_with_tilde_or_a_variable`.
+- Prevention: the test; `_runnable` is the one place the interpreter is checked.
+
+### 23. Low: `test_usage_breakdown_runs_on_a_cp1252_console` passed on the old code (edge of 3)
+- Where: `tests/test_utf8_output.py`.
+- Reproduced: `scripts/usage_breakdown.py` prints only ASCII, so the cp1252 run could not tell
+  the fixed script from the old one; the test was not evidence.
+- Class: failure is not empty / "a regression test that passes without the fix".
+- Fixed: the test is removed; a comment says why, and `tests/test_source_rules.py` keeps the
+  script's UTF-8 stdout wrapper.
+- Prevention: the failing-first rule of the fix routine (every other new test in this PR was
+  run against the old code first).
+
+### 24. Low: Hebrew hedge words with plain senses fail a Hebrew source against an unhedged English rendering (edge of 13)
+- Where: `keyline/keyline_check.py` `HEDGE_HE`: ניתן is also "was given", סביר also
+  "reasonable", so a Hebrew source using the plain sense gains a hedge class that a correct
+  English rendering lacks.
+- Class: words / "a word list used as a sense list".
+- Decision: not changed. Dropping the words would bring back finding 13's false "hedges lost"
+  for the common hedge sense; the check is symmetric by design. Documented in
+  `keyline/README.md` Honest limits so the FAIL is explainable.
+- Prevention: the README entry; the hook's message names the hedge class, which points at it.
+
+### 25. Low: `hedges()` kept list markers and `__Bold__` was a dunder (edges of 8 and 7)
+- Where: `keyline/keyline_check.py` `hedges()` and the `snake` alternative of `INVARIANT`.
+- Reproduced: `hedges("2) May we proceed?")` gave no hedge (the `)` marker made `May` look
+  mid-sentence) while `1. May we proceed?` and `- May we proceed?` gave the modal;
+  `invariants("__Important__ note")` listed `__Important__` as a dunder, so a Hebrew rendering of
+  a markdown note using `__text__` emphasis failed with "missing __Important__".
+- Class: neighbors / "a normalisation applied in one extractor and not its sibling".
+- Pattern searched: `LIST_MARKER` uses (`invariants()` only, before the fix) and the dunder
+  regex (two places, both changed).
+- Fixed: `hedges()` strips `LIST_MARKER` first, as `invariants()` does; a dunder is
+  `__[a-z0-9]+__` (every real dunder, no bold word) in the extractor and the skip check.
+- Tests (failed before the fix): `test_hedges_skip_list_markers_like_invariants`,
+  `test_markdown_bold_with_underscores_is_not_a_dunder`.
+- Prevention: the tests pin both extractors against the same inputs.
 
 ## Checked and found correct
 - hooks/context_check.py: band logic, compaction reset, state pruning and log trimming, the
