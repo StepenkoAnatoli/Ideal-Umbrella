@@ -1,11 +1,11 @@
-# Ideal-Umbrella review follow-up — resume point (2026-10-25, PR #12 merged, leftovers PR open)
+# Ideal-Umbrella review follow-up — resume point (2026-10-25, done: PR #12 and the leftovers PR #13 merged)
 
 ## Request (user)
 "Review the repo for correctness, errors and bugs then report in summary", then "fix the two high items and push", then "when finished, work on the medium and low", then "check your work ... then merge", then "fix the two leftover items too".
 The earlier sweep (PR #9, #10) is done; its findings are in `research/review-findings-2026-10-25.md`.
 
 ## State
-- PR #12 merged into main (596614a). Branch `ccr-866ae3a7-ac9ajn` restarted from that main for the leftovers; a new draft PR carries them.
+- PR #12 merged into main (596614a). Branch `ccr-866ae3a7-ac9ajn` restarted from that main for the leftovers, PR #13; the user asked for it to be reviewed and merged on 2026-10-25.
 - Fixed: `config/install.py` hook command ends in `|| exit 0` (same in `config/user-settings.json`), so a synced settings.json on a machine without the hook file or interpreter no longer blocks every prompt. `config/uninstall.py` keeps `CLAUDE.md` and reports it when the recorded backup is missing, instead of deleting it; the record keeps the `claude_md` entry.
 - Tests: `test_hook_command_does_not_block_prompts_when_the_hook_file_is_missing` (tests/test_install.py), `test_missing_claude_md_backup_keeps_the_file` (tests/test_uninstall.py). pytest 49 passed, keyline 34/34, pyflakes clean, JSON templates valid.
 - CHANGELOG (Unreleased > Fixed) and README (Uninstall paragraph) updated.
@@ -23,4 +23,4 @@ The earlier sweep (PR #9, #10) is done; its findings are in `research/review-fin
 - Checks: pytest 57 passed (all 8 new tests fail on the old code, except the UTF-8 stdin one which only differs on a non-UTF-8 locale), keyline 35/35, pyflakes clean (64 pytest after the leftovers), JSON templates valid.
 
 ## Open items
-- Merge the leftovers PR once CI is green on Ubuntu and Windows, after the user says OK.
+- None. Every review finding is fixed and merged; a new task starts the branch again from main.
