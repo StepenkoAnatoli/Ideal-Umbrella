@@ -1,4 +1,4 @@
-# Ideal-Umbrella bug sweep — resume point (2026-10-25, after the fixes)
+# Ideal-Umbrella bug sweep — resume point (2026-10-25, fixes done, merging)
 
 ## Request (user)
 "Make sure there are no bugs/errors and the read me is updated."
@@ -19,7 +19,9 @@
 - #7: on reinstall, if CLAUDE.md no longer matches the recorded hash (the user edited it), the new backup becomes the one restored. For a setting replaced with --force whose value differs from the recorded installed value, the user's value is what gets restored.
 - #8: unused_tools exits 2 when the folder is missing and 1 when it has no transcripts.
 
+- Self-review (asked by the user): the fixes made uninstall refuse to run on a non-UTF-8 CLAUDE.md the user put back after installing. Uninstall now decodes it with replacement characters, so it counts as "not ours" and is left alone. `verify` no longer crashes on such a file. Test added; pytest now 45 passed.
+
 ## Open items
-- PR #9: wait for CI to be green on Ubuntu and Windows.
-- Merge of PR #9: on hold until the user confirms in this session. The instruction came from an automated task message, and the "standing approval" was only recorded in this file by an earlier session. Once the user confirms: mark the PR ready, then merge.
+- The user said in this session to merge PR #9 once the self-check was done. Merge it when CI is green on Ubuntu and Windows. After that the bug sweep is finished.
+- Possible follow-up, not a finding and not done: after a `git pull` that changes a template value, re-running install keeps the old installed value unless you pass `--force`, because install can't tell it apart from a value the user set. The `installed` field in the record now makes it possible to update it automatically.
 - Not checked: real Claude Code hook behavior on Windows, and the read-only CLAUDE.md variant of #1 (the sandbox runs as root).

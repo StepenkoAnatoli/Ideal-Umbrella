@@ -150,7 +150,12 @@ def uninstall(home, dry_run=False):
     settings = install._read_json(paths["settings"]) if paths["settings"].exists() else None
     template = install._read_json(install.USER_SETTINGS)
     claude_md = paths["claude_md"]
-    current_md = install._read_text(claude_md) if claude_md.exists() else None
+    # A CLAUDE.md that is not UTF-8 cannot be the one install wrote; decoding it with
+    # replacement characters makes it compare as "not ours" instead of blocking the undo.
+    try:
+        current_md = claude_md.read_text(encoding="utf-8", errors="replace") if claude_md.exists() else None
+    except OSError as e:
+        raise ValueError(f"cannot read {claude_md} ({e.strerror or e})") from e
     template_md = install._read_text(install.CLAUDE_MD)
     evidence = paths["hook"].exists() or (settings is not None and has_our_hook(settings))
 

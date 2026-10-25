@@ -222,3 +222,17 @@ def test_malformed_hook_entry_survives_uninstall(install_module, uninstall_modul
     install_module.install(home)
     uninstall_module.uninstall(home)
     assert read_settings(home)["hooks"] == {"UserPromptSubmit": [{"hooks": ["echo hi"]}]}
+
+
+def test_non_utf8_claude_md_does_not_block_uninstall(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes("caf\xe9\n".encode("cp1252"))
+    ok, issues, _ = install_module.verify(home)
+    assert not ok and any("CLAUDE.md" in i for i in issues)
+
+    _, notices = uninstall_module.uninstall(home)
+    assert read_settings(home) == {}
+    assert md.read_bytes() == "caf\xe9\n".encode("cp1252")
+    assert any("CLAUDE.md" in n for n in notices)

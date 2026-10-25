@@ -382,7 +382,7 @@ def verify(home):
 
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
-    elif paths["claude_md"].read_text(encoding="utf-8") != CLAUDE_MD.read_text(encoding="utf-8"):
+    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != CLAUDE_MD.read_text(encoding="utf-8"):
         issues.append("CLAUDE.md content differs from config/CLAUDE.md")
 
     if not paths["hook"].exists():
