@@ -85,11 +85,14 @@ def _template_hook(entries):
     return None
 
 
-def merge_settings(existing, template, home, force=False, record=None):
+def merge_settings(existing, template, home, force=False, record=None, previous=None):
     """Merge template into existing; return (changes, notices).
 
     When record is a dict, it is filled with what was added or replaced so it can be undone.
+    previous holds the values an earlier install wrote; a key still holding one of those is
+    updated to a changed template value without --force, since it is not the user's own.
     """
+    previous = previous if isinstance(previous, dict) else {}
     if record is None:
         record = {}
     record.setdefault("added_keys", [])
@@ -111,7 +114,12 @@ def merge_settings(existing, template, home, force=False, record=None):
             record["installed"][key] = value
             changes.append(f"{key}: added {value!r}")
         elif existing[key] != value:
-            if force:
+            if key in previous and existing[key] == previous[key]:
+                old = existing[key]
+                existing[key] = value
+                record["installed"][key] = value
+                changes.append(f"{key}: {old!r} -> {value!r} (template changed)")
+            elif force:
                 old = existing[key]
                 existing[key] = value
                 record["replaced"][key] = old
@@ -291,7 +299,8 @@ def install(home, force=False, verify_only=False):
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
-    setting_changes, setting_notices = merge_settings(existing, template, home, force, record)
+    setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
+                                                      old_record.get("installed"))
     notices.extend(setting_notices)
     if verify_only:
         if current_hook != hook_bytes:
@@ -346,7 +355,9 @@ def verify(home):
         settings = _read_json(paths["settings"])
         # install keeps a user's own value for these unless --force, so a different value is a
         # warning; a missing one means the install did not happen.
-        for key, expected in (("autoCompactWindow", 250000), ("skillListingBudgetFraction", 0.005)):
+        template = _read_json(USER_SETTINGS)
+        for key in ("autoCompactWindow", "skillListingBudgetFraction"):
+            expected = template.get(key)
             if key not in settings:
                 issues.append(f"{key} is missing, expected {expected!r}")
             elif settings[key] != expected:

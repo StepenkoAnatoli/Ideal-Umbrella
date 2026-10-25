@@ -20,6 +20,7 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 - A malformed hook entry (a hook that is not an object) no longer crashes install, uninstall or verify.
 - Uninstall and verify no longer fail on a `CLAUDE.md` that is not UTF-8; uninstall leaves it as is.
 - Reinstalling after editing `CLAUDE.md` or a setting by hand: uninstall now restores those edits, not the state before the first install.
+- Re-running `config/install.py` after a `git pull` that changes a template value now updates a setting that still holds the value an earlier install wrote; it used to keep the old value unless you passed `--force`. Values you set yourself are still kept. Verification checks against the current template instead of hardcoded values.
 - `scripts/unused_tools.py` exits with an error when the folder is missing or holds no transcripts, instead of reporting that no denied tool was used.
 - Keyline test "absolute pattern matches backslash, other-case path" runs only on Windows; it failed on Linux and macOS, where backslashes and case are significant in paths.
 

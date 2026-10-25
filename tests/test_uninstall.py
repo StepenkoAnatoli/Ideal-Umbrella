@@ -236,3 +236,35 @@ def test_non_utf8_claude_md_does_not_block_uninstall(install_module, uninstall_m
     assert read_settings(home) == {}
     assert md.read_bytes() == "caf\xe9\n".encode("cp1252")
     assert any("CLAUDE.md" in n for n in notices)
+
+
+def test_reinstall_updates_a_value_an_earlier_install_wrote(uninstall_module, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    inst = uninstall_module.install
+    inst.install(home)
+    changed_templates(uninstall_module, tmp_path, monkeypatch)
+
+    changes, _ = inst.install(home)
+    assert any("template changed" in change for change in changes)
+    assert read_settings(home)["autoCompactWindow"] == 300000
+    ok, issues, warnings = inst.verify(home)
+    assert ok, issues
+    assert warnings == []
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"model": "opus"}
+
+
+def test_reinstall_keeps_a_value_the_user_set_after_install(uninstall_module, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    seed(home, {})
+    inst = uninstall_module.install
+    inst.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 100000
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changed_templates(uninstall_module, tmp_path, monkeypatch)
+
+    _, notices = inst.install(home)
+    assert any("autoCompactWindow" in notice for notice in notices)
+    assert read_settings(home)["autoCompactWindow"] == 100000
