@@ -274,19 +274,22 @@ def install(home, force=False, verify_only=False):
 
 
 def verify(home):
+    """Return (ok, issues, warnings). Warnings do not fail verification."""
     paths = layout(home)
-    issues = []
+    issues, warnings = [], []
 
     if not paths["settings"].exists():
         issues.append(f"Missing: {paths['settings']}")
     else:
         settings = _read_json(paths["settings"])
-        if settings.get("autoCompactWindow") != 250000:
-            issues.append(f"autoCompactWindow is {settings.get('autoCompactWindow')!r}, expected 250000")
-        if settings.get("skillListingBudgetFraction") != 0.005:
-            issues.append(
-                f"skillListingBudgetFraction is {settings.get('skillListingBudgetFraction')!r}, expected 0.005"
-            )
+        # install keeps a user's own value for these unless --force, so a different value is a
+        # warning; a missing one means the install did not happen.
+        for key, expected in (("autoCompactWindow", 250000), ("skillListingBudgetFraction", 0.005)):
+            if key not in settings:
+                issues.append(f"{key} is missing, expected {expected!r}")
+            elif settings[key] != expected:
+                warnings.append(f"{key} is {settings[key]!r}, template has {expected!r}; "
+                                "kept as your own value (use --force to replace it)")
         permissions = settings.get("permissions")
         if not isinstance(permissions, dict):
             issues.append("permissions is not an object")
@@ -323,7 +326,7 @@ def verify(home):
     elif paths["hook"].read_bytes() != HOOK_SRC.read_bytes():
         issues.append("Hook content differs from hooks/context_check.py")
 
-    return len(issues) == 0, issues
+    return len(issues) == 0, issues, warnings
 
 
 def main(argv=None):
@@ -351,13 +354,16 @@ def main(argv=None):
     else:
         print("Verifying installation...")
 
-    ok, issues = verify(Path(args.home))
+    ok, issues, warnings = verify(Path(args.home))
     if ok:
         print("\n[OK] Installation verified successfully.")
     else:
         print("\n[FAIL] Verification failed:")
         for issue in issues:
             print(f"  - {issue}")
+    for warning in warnings:
+        print(f"  warning: {warning}")
+    if not ok:
         return 1
 
     print("\nTo verify in a new Claude Code session, run:")

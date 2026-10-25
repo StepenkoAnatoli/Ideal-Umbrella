@@ -61,7 +61,7 @@ The installer is **idempotent** and merges instead of replacing:
 - An existing Ideal-Umbrella hook is updated in place; sibling hooks in the same entry stay.
 - The hook command records the Python executable that ran the installer, so it does not depend on `python3` being on `PATH` (the Windows Store alias is often broken).
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
-- Existing scalar settings are kept unless you pass `--force`; verification then reports the mismatch.
+- Existing scalar settings are kept unless you pass `--force`; verification then prints a warning for each kept value and still passes. A missing value fails verification.
 
 ### Manual install
 

@@ -11,6 +11,7 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `config/install.py` verification no longer fails when you keep your own `autoCompactWindow` or `skillListingBudgetFraction` (left as is without `--force`); it prints a warning. A missing value still fails.
 - Keyline test "absolute pattern matches backslash, other-case path" runs only on Windows; it failed on Linux and macOS, where backslashes and case are significant in paths.
 
 ## 2026-10-25 - audit fixes (#4)

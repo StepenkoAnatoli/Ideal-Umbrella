@@ -17,5 +17,8 @@
 - Uninstall leaves any value the user changed after installing as it is and prints a note, because it never overwrites user edits.
 - If there is no record (an older install), uninstall leaves permissions.deny alone, because it cannot tell which entries were ours.
 
-## Open item (waiting on the user)
-- `config/install.py` verify exits 1 ("Verification failed") when the user keeps their own autoCompactWindow, which install did not replace without --force. Proposal: report it as a warning and exit 0. Not changed yet.
+## Follow-up (user approved, 2026-10-25)
+- `config/install.py` verify: when the user keeps their own autoCompactWindow or skillListingBudgetFraction, it now prints a warning and passes (exit 0). A missing value still fails. Why: install keeps these by design unless --force, so failing on them was wrong.
+
+## Open items
+- None.
