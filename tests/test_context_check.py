@@ -122,3 +122,43 @@ def test_unexpected_error_is_logged_not_raised(tmp_path):
     assert "unexpected error" in result.stderr
     log = (tmp_path / "context_check.log").read_text(encoding="utf-8")
     assert "JSONDecodeError" in log
+
+
+def test_stdin_is_read_as_utf8_whatever_the_locale(context_check, tmp_path, monkeypatch, capsys):
+    import io
+    path = transcript(tmp_path, {"input_tokens": 160_000}, name="sessión.jsonl")
+    monkeypatch.setenv("IDEAL_UMBRELLA_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("IDEAL_UMBRELLA_LOG", str(tmp_path / "context_check.log"))
+    # A cp1252 text layer over UTF-8 bytes is what a Windows host hands the hook; the hook
+    # must read the bytes underneath as UTF-8 or the transcript path never matches.
+    raw = io.BytesIO(json.dumps(event(path)).encode("utf-8"))
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(raw, encoding="cp1252"))
+    context_check.run()
+    assert "context about 160k tokens" in capsys.readouterr().out
+
+
+def test_old_state_files_are_pruned(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    old, recent = state / "old-session", state / "recent-session"
+    old.write_text("0", encoding="utf-8")
+    recent.write_text("0", encoding="utf-8")
+    long_ago = 40 * 24 * 3600
+    os.utime(old, (os.path.getmtime(old) - long_ago, os.path.getmtime(old) - long_ago))
+    path = transcript(tmp_path, {"input_tokens": 160_000})
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    assert not old.exists()
+    assert recent.exists()
+    assert (state / "session-1").exists()
+
+
+def test_log_is_trimmed_when_it_grows_past_the_cap(tmp_path):
+    log = tmp_path / "context_check.log"
+    log.write_text("old line\n" * 150_000, encoding="utf-8")   # about 1.3 MB
+    before = log.stat().st_size
+    path = transcript(tmp_path, {"input_tokens": 160_000})
+    result = run_hook(tmp_path, event(path), threshold="150k")
+    assert result.returncode == 0
+    assert log.stat().st_size < before
+    assert "not an integer" in log.read_text(encoding="utf-8").splitlines()[-1]

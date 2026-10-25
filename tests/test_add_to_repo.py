@@ -30,7 +30,7 @@ def test_merge_preserves_custom_keys_and_sibling_hooks(add_to_repo):
             }]
         },
     }
-    changes = add_to_repo.merge(settings, TEMPLATE)
+    changes, notices = add_to_repo.merge(settings, TEMPLATE)
     assert settings["customKey"] == "keep-me"
     assert settings["autoCompactWindow"] == 250000
     assert len(settings["hooks"]["UserPromptSubmit"]) == 1
@@ -40,7 +40,8 @@ def test_merge_preserves_custom_keys_and_sibling_hooks(add_to_repo):
     assert len(ours) == 1
     assert ours[0]["timeout"] == 5
     assert changes
-    assert add_to_repo.merge(settings, TEMPLATE) == []
+    assert notices == []
+    assert add_to_repo.merge(settings, TEMPLATE) == ([], [])
 
 
 def test_adds_entry_without_touching_other_events(add_to_repo):
@@ -85,3 +86,29 @@ def test_second_run_is_idempotent(tmp_path):
     assert second.returncode == 0, second.stderr
     assert "already up to date" in second.stdout
     assert (repo / ".claude" / "settings.json").read_bytes() == before
+
+
+def test_repo_own_value_is_kept_unless_forced(add_to_repo, tmp_path):
+    # A repository that sets its own autoCompactWindow used to have it silently replaced.
+    settings = {"autoCompactWindow": 100000}
+    changes, notices = add_to_repo.merge(settings, TEMPLATE)
+    assert settings["autoCompactWindow"] == 100000
+    assert not any("autoCompactWindow" in change for change in changes)
+    assert any("autoCompactWindow is 100000" in notice and "--force" in notice for notice in notices)
+
+    changes, notices = add_to_repo.merge(settings, TEMPLATE, force=True)
+    assert settings["autoCompactWindow"] == TEMPLATE["autoCompactWindow"]
+    assert any("autoCompactWindow: 100000 ->" in change for change in changes)
+    assert notices == []
+
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(json.dumps({"autoCompactWindow": 100000}), encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "note: autoCompactWindow is 100000" in result.stdout
+    assert json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == 100000
+    forced = subprocess.run([sys.executable, "-I", str(ADD), "--force", str(repo)], cwd=ROOT,
+                            capture_output=True, text=True, encoding="utf-8")
+    assert forced.returncode == 0, forced.stderr
+    assert json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == TEMPLATE["autoCompactWindow"]

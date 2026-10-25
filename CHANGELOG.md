@@ -12,6 +12,12 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 
 ### Fixed
 - The user-level hook command `config/install.py` writes now ends in `|| exit 0`. A `settings.json` synced to a machine without `~/.claude/ballast/context_check.py` (or without that Python) used to exit 2 there, which blocks every prompt.
+- `config/add_to_repo.py` keeps a scalar value the repository already sets and reports it, instead of replacing it silently; `--force` replaces it. `merge()` now returns `(changes, notices)`.
+- `scripts/usage_breakdown.py` no longer crashes on a transcript line that is a JSON list or string.
+- `keyline/keyline_check.py` reports an empty source as `INCONCLUSIVE`; it used to `PASS` with 0 invariants.
+- `config/install.py` verification fails when `permissions.deny` is not a list (a string used to pass by substring match), passes when the home path contains a quote, and reports a file-system error (for example `~/.claude/ballast` existing as a file) as one line instead of a traceback. The unused `verify_only` argument of `install()` is gone.
+- `hooks/context_check.py` reads its stdin as UTF-8 regardless of the locale (a non-ASCII transcript path on a cp1252 Windows host was never matched), removes per-session state files older than 30 days, and trims its log past 1 MB.
+- `config/verify-tokens.py` says how to install tiktoken when it is missing instead of raising ImportError.
 - `config/uninstall.py` no longer deletes `CLAUDE.md` when the backup it should restore from is missing; it leaves the file, reports the missing backup, and keeps the record so a later run can still restore it.
 - `config/install.py` verification no longer fails when you keep your own `autoCompactWindow` or `skillListingBudgetFraction` (left as is without `--force`); it prints a warning. A missing value still fails.
 - `config/install.py` reads and checks everything before writing and writes `settings.json` last. A failed install (for example a non-UTF-8 `CLAUDE.md`) used to leave a hook entry pointing at a missing file, which blocked every prompt.

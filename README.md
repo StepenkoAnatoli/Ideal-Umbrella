@@ -86,7 +86,7 @@ Cloud sessions don't read `~/.claude/`; they only read the repository's committe
 2. Commit the two files it writes: `.claude/settings.json` and `.claude/hooks/context_check.py`.
 3. The hook runs only when `CLAUDE_CODE_REMOTE=true` (cloud), so local sessions are unaffected.
 
-`add_to_repo.py` preserves other keys and hooks, updates an existing Ideal-Umbrella hook in place, and changes nothing on a second run.
+`add_to_repo.py` preserves other keys and hooks, updates an existing Ideal-Umbrella hook in place, and changes nothing on a second run. A scalar value the repository already sets (its own `autoCompactWindow`, say) is kept and reported; pass `--force` to replace it.
 
 ### Multi-repository cloud sessions (limitation)
 

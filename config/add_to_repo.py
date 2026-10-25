@@ -3,14 +3,15 @@
 Cloud sessions read only the repository's committed .claude/settings.json, not
 ~/.claude/. This copies hooks/context_check.py to <repo>/.claude/hooks/ and
 merges config/repo-settings.json into <repo>/.claude/settings.json. Other keys,
-other hook entries and sibling hooks inside the same entry are preserved. An
-existing Ideal-Umbrella hook is updated in place, not duplicated. Running it
-again changes nothing.
+other hook entries and sibling hooks inside the same entry are preserved. A
+scalar value the repository already sets (for example its own autoCompactWindow)
+is kept and reported unless --force is given. An existing Ideal-Umbrella hook is
+updated in place, not duplicated. Running it again changes nothing.
 
 The hook exits at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep
 only the user-level hook. Stdlib only; run with
-`python -I config/add_to_repo.py <repo>`, then commit the two files in that
-repository.
+`python -I config/add_to_repo.py [--force] <repo>`, then commit the two files in
+that repository.
 """
 import json
 import os
@@ -55,19 +56,29 @@ def _replace_hook(entry, replacement):
     return changed
 
 
-def merge(settings, template):
-    """Merge template into settings in place; return human-readable changes."""
+def merge(settings, template, force=False):
+    """Merge template into settings in place; return (changes, notices), both human-readable.
+
+    A scalar key the settings already hold with another value is left alone and reported in
+    notices, unless force is true: the repository's own choice wins over the template."""
     if not isinstance(settings, dict):
         raise ValueError("settings must be a JSON object")
     if not isinstance(template, dict):
         raise ValueError("template must be a JSON object")
-    changes = []
+    changes, notices = [], []
     for key, value in template.items():
         if key == "hooks":
             continue
-        if settings.get(key) != value:
-            changes.append(f"{key}: {settings.get(key)} -> {value}")
+        if key not in settings:
+            changes.append(f"{key}: added {value!r}")
             settings[key] = value
+        elif settings[key] != value:
+            if force:
+                changes.append(f"{key}: {settings[key]!r} -> {value!r}")
+                settings[key] = value
+            else:
+                notices.append(f"{key} is {settings[key]!r}, template has {value!r}; "
+                               "left unchanged (use --force)")
 
     template_hooks = template.get("hooks", {})
     if not isinstance(template_hooks, dict):
@@ -93,7 +104,7 @@ def merge(settings, template):
         elif not existing:
             current.extend(entries)
             changes.append(f"hooks.{event}: Ideal-Umbrella entry added")
-    return changes
+    return changes, notices
 
 
 def _read_json(path):
@@ -123,15 +134,17 @@ def _write_json(path, data):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    force = "--force" in argv
+    argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
-        sys.exit("usage: python -I config/add_to_repo.py <repo folder>")
+        sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
     repo = argv[0]
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     try:
-        changes = merge(settings, template)
+        changes, notices = merge(settings, template, force=force)
     except ValueError as e:
         sys.exit(f"{path}: {e}; nothing written")
 
@@ -152,6 +165,8 @@ def main(argv=None):
         changes.append(".claude/hooks/context_check.py written")
 
     print("\n".join(changes) or "already up to date")
+    for notice in notices:
+        print(f"note: {notice}")
     if changes:
         print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
     return 0

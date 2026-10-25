@@ -162,7 +162,8 @@ def check(source, rendering):
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)
-    inconclusive = bool(source.strip()) and not inv and not source_hedges
+    # An empty source has nothing to check either: INCONCLUSIVE, never a vacuous PASS.
+    inconclusive = not inv and not source_hedges
     ok = not missing and not missing_hedges and nr >= ns and not inconclusive
     return CheckResult(ok, missing, missing_hedges, ns, nr, len(inv), inconclusive)
 
