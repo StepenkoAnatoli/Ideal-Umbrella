@@ -134,6 +134,8 @@ def _write_json(path, data):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")   # the repo path may not fit the ANSI code page
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):

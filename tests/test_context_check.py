@@ -162,3 +162,26 @@ def test_log_is_trimmed_when_it_grows_past_the_cap(tmp_path):
     assert result.returncode == 0
     assert log.stat().st_size < before
     assert "not an integer" in log.read_text(encoding="utf-8").splitlines()[-1]
+
+
+def test_compaction_boundary_without_post_tokens_reports_zero(context_check, tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 200_000},
+                      extra=[{"subtype": "compact_boundary", "compactMetadata": {"preTokens": 200_000}}])
+    assert context_check.context_tokens(str(path)) == 0
+
+
+def test_compaction_above_threshold_starts_the_bands_again(tmp_path):
+    # 240k -> reminder (band 3); a compaction landing at 160k is still over the threshold, and
+    # the band-3 state used to keep the hook silent until 250k.
+    path = transcript(tmp_path, {"input_tokens": 240_000})
+    first = run_hook(tmp_path, event(path))
+    assert "context about 240k tokens" in json.loads(first.stdout)["systemMessage"]
+
+    write_jsonl(path, [
+        {"subtype": "compact_boundary", "compactMetadata": {"postTokens": 160_000}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 160_000}}},
+    ])
+    after = run_hook(tmp_path, event(path))
+    assert after.returncode == 0, after.stderr
+    assert "context about 160k tokens" in json.loads(after.stdout)["systemMessage"]
+    assert run_hook(tmp_path, event(path)).stdout.strip() == ""

@@ -57,7 +57,13 @@ IDENT_CHARS = re.compile(r"[/\\_.=@#$%&*+<>|~]")
 
 def _tiktoken():
     os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(CACHE_DIR / "tiktoken"))
-    import tiktoken
+    try:
+        import tiktoken
+    except ImportError:
+        # The single-token word list is built once from the o200k vocabulary; a fresh clone has
+        # no cache/ yet (it is gitignored), so the first run needs tiktoken.
+        raise SystemExit("tiktoken is not installed; run: python -m pip install -r "
+                         "keyline/requirements.txt (needed once, to build keyline/cache/)") from None
     return tiktoken
 
 
@@ -152,8 +158,11 @@ def lint_text(text, words, allow):
 def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
     words = load_words() if words is None else words
     allow = load_allow(path, extra_allow, use_allow_files)
-    with open(path, encoding="utf-8-sig") as f:
-        text = f.read()
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            text = f.read()
+    except UnicodeDecodeError as e:
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
     return list(lint_text(text, words, allow))
 
 

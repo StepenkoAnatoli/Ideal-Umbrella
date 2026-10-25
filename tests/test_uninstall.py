@@ -288,3 +288,70 @@ def test_missing_claude_md_backup_keeps_the_file(install_module, uninstall_modul
     record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
     assert record["uninstalled"] is True
     assert record["claude_md"]["backup"] == backups[0].name
+
+
+def test_unreadable_record_is_not_overwritten(install_module, uninstall_module, tmp_path, capsys):
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = home / ".claude" / "ballast" / "install-record.json"
+    record.write_text("{broken", encoding="utf-8")
+    settings_before = settings_file(home).read_text(encoding="utf-8")
+
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "not valid JSON" in err and "nothing written" in err
+    assert record.read_text(encoding="utf-8") == "{broken"
+    assert settings_file(home).read_text(encoding="utf-8") == settings_before
+    assert (home / ".claude" / "ballast" / "context_check.py").exists()
+
+
+def test_os_error_mid_undo_is_reported_not_raised(install_module, uninstall_module, tmp_path, capsys):
+    # The hook path replaced by a folder: unlink() raises after settings.json was already
+    # undone. The message says so; a second run after removing the folder finishes the undo.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    hook = home / ".claude" / "ballast" / "context_check.py"
+    hook.unlink()
+    hook.mkdir()
+
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and "run again" in err
+    assert "Traceback" not in err and "nothing written" not in err
+    assert read_settings(home) == {"model": "opus"}
+
+    hook.rmdir()
+    assert uninstall_module.main(["--home", str(home)]) == 0
+    assert not (home / ".claude" / "ballast" / "context_check.py").exists()
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record == {"uninstalled": True}
+
+
+def test_record_without_claude_md_entry_keeps_the_file_and_says_so(install_module, uninstall_module, tmp_path):
+    # A record without a claude_md entry means the install never wrote CLAUDE.md (it already
+    # matched the template), so the file is the user's own. It used to be passed over in
+    # silence; now the uninstall says why it stays.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md=TEMPLATE_MD)
+    install_module.install(home)
+    assert "claude_md" not in json.loads(
+        (home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert not any("CLAUDE.md" in c for c in changes), changes
+    assert any("not written by this install" in n for n in notices), notices
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+
+
+def test_non_string_backup_name_in_record_does_not_crash(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["claude_md"]["backup"] = 1
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md deleted" in changes, (changes, notices)

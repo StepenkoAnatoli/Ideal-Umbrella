@@ -13,7 +13,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     env:
-      # The keyline scripts print Hebrew; keep child processes off the Windows ANSI code page.
+      # For pytest and run_tests.py themselves. The scripts they start run with -I, which
+      # ignores PYTHON* variables, so each script sets UTF-8 output on its own.
       PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4

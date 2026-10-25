@@ -20,20 +20,23 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 ## Setup
 
-The venv lives in `.venv/` and holds only tiktoken 0.14.0. To rebuild it:
+The scripts need Python 3 (CI runs 3.12) and tiktoken (pinned in `requirements.txt`). Install it
+into the interpreter you will run them with, for example a venv in this folder:
 
 ```bash
-py -3.14 -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt
-.venv/Scripts/python.exe keyline_lint.py --rebuild-cache
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt        # Windows: .venv\Scripts\python.exe
+.venv/bin/python keyline_lint.py --rebuild-cache
 ```
 
-All commands below use `.venv/Scripts/python.exe` from this folder.
+All commands below are run from this folder with `python` standing for that interpreter. The
+word cache in `cache/` is built on first use, so the first run needs tiktoken; without it the
+scripts stop with a one-line install hint.
 
 ## keyline_check.py
 
 ```bash
-.venv/Scripts/python.exe keyline_check.py tests/incident.keyline.txt tests/incident.keyline.he.txt tests/incident.glyph.txt
+python keyline_check.py tests/incident.keyline.txt tests/incident.keyline.he.txt tests/incident.glyph.txt
 ```
 
 ```
@@ -64,7 +67,7 @@ Negations counted, English and Hebrew together in both texts:
 ## keyline_lint.py
 
 ```bash
-.venv/Scripts/python.exe keyline_lint.py notes/*.txt
+python keyline_lint.py notes/*.txt
 ```
 
 - Furniture: a line starting with a bullet (`- `, `* `, `+ `), a numbered item (`1. `, `2) `) or a
@@ -88,7 +91,7 @@ Negations counted, English and Hebrew together in both texts:
 ## measure.py
 
 ```bash
-.venv/Scripts/python.exe measure.py tests/notes.markdown.md tests/notes.keyline.txt
+python measure.py tests/notes.markdown.md tests/notes.keyline.txt
 ```
 
 ```
@@ -112,8 +115,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    and only acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
    absolute pattern matches the absolute path, a relative one the path from the project dir).
-   Live example: `gittoken/.claude/settings.local.json` and `rk-wt/.claude/settings.local.json`
-   watch only `C:/Users/PC/Desktop/gittoken/rk-wt/PROGRESS.md`.
+   Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
+   checks only that file, wherever it is written from.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt`. The hook then checks it whenever
    either file is written or edited.
 4. Optional: add `keyline-allow.txt` at the repo root for project names that split into tokens.
@@ -128,7 +131,7 @@ The hook has been tested by piping simulated PostToolUse events through the gene
 ## Reproduction
 
 ```bash
-.venv/Scripts/python.exe tests/run_tests.py
+python tests/run_tests.py
 ```
 
 The suite prints its final count; the current tree passes `35/35` on Linux and macOS and `36/36` on Windows (one path check is Windows only). Token counts match the panel exactly:

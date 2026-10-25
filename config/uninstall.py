@@ -180,7 +180,8 @@ def uninstall(home, dry_run=False):
             ours = install.text_hash(current_md) == entry["sha256"]
         else:
             ours = current_md == template_md
-        backup = claude_md.with_name(entry["backup"]) if isinstance(entry, dict) and entry.get("backup") else None
+        backup_name = entry.get("backup") if isinstance(entry, dict) else None
+        backup = claude_md.with_name(backup_name) if isinstance(backup_name, str) and backup_name else None
         if not ours:
             claude_md_left = True
             notices.append("CLAUDE.md differs from what was installed; left as is"
@@ -201,6 +202,10 @@ def uninstall(home, dry_run=False):
             changes.append("CLAUDE.md deleted")
             if not dry_run:
                 claude_md.unlink()
+        elif record is not None and entry is None:
+            # The record says this install never wrote CLAUDE.md (the file already matched the
+            # template), so it is the user's own: say so rather than pass over it in silence.
+            notices.append("CLAUDE.md matches the template but was not written by this install; left as is")
         elif record is None and evidence:
             # Without a record it may be the user's own copy: keep one.
             if dry_run:
@@ -221,11 +226,20 @@ def main(argv=None):
     parser.add_argument("--home", default=str(Path.home()), help="home folder to uninstall from (default: current home)")
     parser.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     args = parser.parse_args(argv)
+    # Paths in the output may hold characters outside the Windows ANSI code page.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
 
     try:
         changes, notices = uninstall(Path(args.home).expanduser().resolve(), dry_run=args.dry_run)
     except ValueError as e:
+        # Raised while reading, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # e.g. the hook path is a folder, or a file is read-only. Files already undone stay
+        # undone; a second run after fixing the cause finishes the rest.
+        print(f"Error: {e}; the undo stopped part way, fix the cause and run again", file=sys.stderr)
         return 1
     if changes:
         print("Would change:" if args.dry_run else "Changes:")

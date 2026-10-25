@@ -1,6 +1,6 @@
 """keyline_check.py - deterministic fact check between a source note and a rendering of it.
 
-Extracts every date, time, version, number, percentage, UPPER_CASE identifier, file path,
+Extracts every date, timestamp, time, version, number, percentage, UPPER_CASE identifier, file path,
 CamelCase name, proper noun, file name and snake_case token from SOURCE and fails if any is
 missing from a RENDERING (English prose, Hebrew, JSON, markdown...). Also fails if the
 rendering drops a hedge class (could/may, likely, should, can) or has fewer negation words
@@ -24,14 +24,15 @@ R = r"(?![A-Za-z0-9_]|\.\d)"
 INVARIANT = re.compile(
     L
     + r"""(?:
-      (?P<date>\d{4}-\d{2}-\d{2})
+      (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
+    | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>\d{1,2}:\d{2}(?::\d{2})?Z?)
     | (?P<version>v\d+(?:\.\d+)+|\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<path>(?:[A-Za-z]:)?[\w.~-]*[/\\][\w.~/\\-]*)
     | (?P<file>[\w-]{2,}(?:\.[A-Za-z][A-Za-z0-9]*)+)
     | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*)
     | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
-    | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:[-'][A-Za-z0-9]+)*)
+    | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
     | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*)
     | (?P<number>\d+(?:[.,]\d+)*(?:%|[A-Za-z]+)?)
 )"""
@@ -127,6 +128,8 @@ def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     found = {}
     for m in HEDGE.finditer(text):
+        if m.group(0) == "May" and re.match(r"\s+\d", text[m.end():]):
+            continue          # "May 2026", "May 14": the month, not the modal verb
         word = m.group(0).lower()
         for group, words in HEDGE_GROUPS.items():
             if word in words:
@@ -137,7 +140,11 @@ def hedges(text):
 
 def present(tok, kind, text):
     tail = r"Z?" if kind == "time" else ""
-    return re.search(L + re.escape(tok) + tail + R, text) is not None
+    body = re.escape(tok)
+    if kind == "datetime":
+        # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
+        body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
+    return re.search(L + body + tail + R, text) is not None
 
 
 def negations(text):
@@ -169,8 +176,12 @@ def check(source, rendering):
 
 
 def read(path):
-    with open(path, encoding="utf-8-sig") as f:
-        return f.read()
+    """Read a UTF-8 (optionally BOM-marked) text file; any other encoding is a read error."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
 
 
 def report(src_path, out_path, source, rendering):

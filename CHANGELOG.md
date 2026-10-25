@@ -11,6 +11,12 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `keyline/keyline_check.py` extracts an ISO 8601 timestamp (`2026-10-25T10:00:00Z`) as one invariant; it used to split into two numbers and a time, so a rendering that changed the day or hour passed. A possessive (`Claude's`) no longer makes the `'s` part of the name, and `May 2026` is the month, not a hedge. A note that is not UTF-8 is a read error (exit 2, one line) in `keyline_check.py`, `keyline_lint.py` and the hook, not a traceback.
+- `keyline/keyline_lint.py` says how to install tiktoken when the word cache has to be built and tiktoken is missing; the hook used to show a traceback on every write of a watched note.
+- `config/install.py` and `config/uninstall.py` refuse to run on an `install-record.json` that exists but is not valid JSON, instead of treating it as absent and overwriting it; a `settings.json` or `CLAUDE.md` that is a symlink to a missing target is reported before anything is written; output is UTF-8 so a non-ASCII home path cannot crash the listing on Windows.
+- `config/uninstall.py` reports a file-system error during the undo as one line (a second run finishes the undo), tolerates a record whose backup name is not a string, and says why a template-matching `CLAUDE.md` the install never wrote is left in place.
+- `hooks/context_check.py` fires again after a compaction that still lands above the threshold (the earlier band kept it silent until the next band), and its comment on `compact_boundary` now matches what Claude Code records (`postTokens`).
+- Docs: `keyline/README.md` and `README.md` no longer describe one machine's venv, project folder and settings paths; the CI comment on `PYTHONUTF8` says what it covers (the `-I` children set UTF-8 output themselves).
 - `scripts/toolresult_share.py`, `scripts/usertext_split.py` and `scripts/usertext_top.py` no longer crash on a transcript line that is a JSON list or string, print usage when run without arguments, and report an empty transcript instead of dividing by zero.
 - `scripts/unused_tools.py` no longer counts a `tool_use` block without a name as a tool called `None`.
 - `config/install.py` writes the install record after `settings.json`, so a failed settings write no longer leaves a record of values that were not installed.
