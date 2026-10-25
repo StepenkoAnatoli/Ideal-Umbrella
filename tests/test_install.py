@@ -2,6 +2,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from conftest import ROOT
 
 INSTALL = ROOT / "config" / "install.py"
@@ -138,3 +140,63 @@ def test_hook_command_quotes_the_running_interpreter(install_module, tmp_path):
     assert "context_check.py" in command
     # The interpreter is recorded by full path, not as a bare "python3" looked up on PATH.
     assert not command.startswith("python3 ")
+
+
+def test_failed_install_writes_nothing(install_module, tmp_path, capsys):
+    # A CLAUDE.md saved as cp1252 used to fail after settings.json already had the hook entry,
+    # leaving a hook that points at a missing file and blocks every prompt.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    original = json.dumps({"model": "opus"})
+    settings_file(home).write_text(original, encoding="utf-8")
+    (claude / "CLAUDE.md").write_bytes("caf\xe9\n".encode("cp1252"))
+
+    assert install_module.main(["--home", str(home)]) == 1
+    assert "not UTF-8" in capsys.readouterr().err
+    assert settings_file(home).read_text(encoding="utf-8") == original
+    assert not (claude / "ballast").exists()
+
+
+@pytest.mark.parametrize("home_arg", [".", "~"])
+def test_relative_home_gives_absolute_hook_path(install_module, tmp_path, monkeypatch, home_arg):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    assert install_module.main(["--home", home_arg]) == 0
+
+    settings = json.loads(settings_file(tmp_path).read_text(encoding="utf-8"))
+    command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert str((tmp_path / ".claude" / "ballast" / "context_check.py").resolve()) in command
+
+
+def test_symlinked_settings_stay_symlinks(install_module, tmp_path):
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "settings.json").write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    try:
+        settings_file(home).symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+    install_module.install(home)
+    assert settings_file(home).is_symlink()
+    settings = json.loads((dotfiles / "settings.json").read_text(encoding="utf-8"))
+    assert settings["model"] == "opus"
+    assert settings["autoCompactWindow"] == 250000
+
+
+def test_malformed_hook_entry_does_not_crash(install_module, tmp_path):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": ["echo hi"]}]}}),
+                                   encoding="utf-8")
+
+    install_module.install(home)
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    entries = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
+    assert {"hooks": ["echo hi"]} in entries

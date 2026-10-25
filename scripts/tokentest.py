@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Measure token cost of the SAME incident report in different notations."""
-import sys, gzip, base64, json, io
+import sys, gzip, base64, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 A = ("I've completed the investigation into the outage. The authentication service began failing at 15:00 UTC "

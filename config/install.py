@@ -21,6 +21,7 @@ config/uninstall.py can put back the values that were there before.
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import shutil
@@ -72,7 +73,8 @@ def _hook_entries(entry):
 
 
 def _is_ours(entry):
-    return any("context_check.py" in str(h.get("command", "")) for h in _hook_entries(entry))
+    return any(isinstance(h, dict) and "context_check.py" in str(h.get("command", ""))
+               for h in _hook_entries(entry))
 
 
 def _template_hook(entries):
@@ -93,6 +95,7 @@ def merge_settings(existing, template, home, force=False, record=None):
     record.setdefault("added_keys", [])
     record.setdefault("replaced", {})
     record.setdefault("deny_added", [])
+    record.setdefault("installed", {})
     if not isinstance(existing, dict):
         raise ValueError("settings must be a JSON object")
     if not isinstance(template, dict):
@@ -105,12 +108,14 @@ def merge_settings(existing, template, home, force=False, record=None):
         if key not in existing:
             existing[key] = value
             record["added_keys"].append(key)
+            record["installed"][key] = value
             changes.append(f"{key}: added {value!r}")
         elif existing[key] != value:
             if force:
                 old = existing[key]
                 existing[key] = value
                 record["replaced"][key] = old
+                record["installed"][key] = value
                 changes.append(f"{key}: {old!r} -> {value!r}")
             else:
                 notices.append(f"{key} is {existing[key]!r}, template has {value!r}; left unchanged (use --force)")
@@ -191,6 +196,8 @@ def _backup(path):
 
 
 def _write_json(path, data):
+    # Write through a symlink (dotfiles, stow, home-manager) instead of replacing the link.
+    path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=path.parent)
     try:
@@ -203,30 +210,67 @@ def _write_json(path, data):
             os.remove(tmp)
 
 
-def _merge_record(path, new):
-    """Fold this run's record into the saved one. The first value seen for a key wins, so a
-    second install never overwrites what was there before the first."""
-    old = {}
-    if path.exists():
-        try:
-            with open(path, encoding="utf-8") as f:
-                old = json.load(f)
-        except ValueError:
-            old = {}
-    if not isinstance(old, dict):
-        old = {}
-    first_added = old.get("added_keys", [])
-    replaced = {k: v for k, v in new.get("replaced", {}).items() if k not in first_added}
-    replaced.update(old.get("replaced", {}))
-    added = [k for k in old.get("added_keys", []) if k not in replaced]
+def _read_text(path):
+    """Read a UTF-8 file; any failure is a ValueError naming the file."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e}); save it as UTF-8 first") from e
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
+
+
+def _read_bytes(path):
+    try:
+        return path.read_bytes()
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
+
+
+def text_hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_record(path):
+    """The saved install record, or None when there is none or it is unreadable."""
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _merge_record(old, new):
+    """Fold this run's record into the saved one.
+
+    What was there before the first install wins, so a second install never overwrites it,
+    unless the user changed an installed value since: then their newer value is what an
+    uninstall puts back. Records from before "installed" existed keep first-wins.
+    """
+    old_installed = old.get("installed")
+    tracked = list(old.get("added_keys", [])) + list(old.get("replaced", {}))
+    replaced = dict(old.get("replaced", {}))
+    added = list(old.get("added_keys", []))
+    for key, value in new.get("replaced", {}).items():
+        if key in tracked and (not isinstance(old_installed, dict) or key not in old_installed
+                               or old_installed[key] == value):
+            continue  # value is one an earlier install wrote
+        replaced[key] = value
+        if key in added:
+            added.remove(key)
     added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
     deny = list(old.get("deny_added", []))
     deny += [t for t in new.get("deny_added", []) if t not in deny]
-    merged = {"added_keys": added, "replaced": replaced, "deny_added": deny}
-    if "claude_md" in old:
-        merged["claude_md"] = old["claude_md"]
-    elif "claude_md" in new:
+    installed = dict(old_installed) if isinstance(old_installed, dict) else {}
+    installed.update(new.get("installed", {}))
+    merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed}
+    if "claude_md" in new:
         merged["claude_md"] = new["claude_md"]
+    elif "claude_md" in old:
+        merged["claude_md"] = old["claude_md"]
     return merged
 
 
@@ -235,42 +279,60 @@ def install(home, force=False, verify_only=False):
     changes, notices = [], []
     record = {}
 
+    # Read and check everything before writing anything, and write settings.json last: its
+    # hook entry must never point at a hook file that was not copied (a missing hook file
+    # exits 2, which blocks every prompt).
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
-    setting_changes, setting_notices = merge_settings(existing, template, home, force, record)
-    changes.extend(setting_changes)
-    notices.extend(setting_notices)
-    if setting_changes and not verify_only:
-        if paths["settings"].exists():
-            backup = _backup(paths["settings"])
-            changes.append(f"settings backup: {backup.name}")
-        _write_json(paths["settings"], existing)
-
-    claude_md = CLAUDE_MD.read_text(encoding="utf-8")
+    old_record = read_record(paths["record"]) or {}
+    claude_md = _read_text(CLAUDE_MD)
     claude_md_exists = paths["claude_md"].exists()
-    if not claude_md_exists or paths["claude_md"].read_text(encoding="utf-8") != claude_md:
-        if not verify_only:
-            paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
-            backup = None
-            if claude_md_exists:
-                backup = _backup(paths["claude_md"])
-                changes.append(f"CLAUDE.md backup: {backup.name}")
-            record["claude_md"] = {"backup": backup.name if backup else None}
-            paths["claude_md"].write_text(claude_md, encoding="utf-8", newline="\n")
-        changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
-
-    hook_bytes = HOOK_SRC.read_bytes()
+    current_md = _read_text(paths["claude_md"]) if claude_md_exists else None
+    hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
-    if not hook_exists or paths["hook"].read_bytes() != hook_bytes:
-        if not verify_only:
-            paths["hook"].parent.mkdir(parents=True, exist_ok=True)
-            paths["hook"].write_bytes(hook_bytes)
+    current_hook = _read_bytes(paths["hook"]) if hook_exists else None
+    setting_changes, setting_notices = merge_settings(existing, template, home, force, record)
+    notices.extend(setting_notices)
+    if verify_only:
+        if current_hook != hook_bytes:
+            changes.append(f"hook {'updated' if hook_exists else 'written'}")
+        if current_md != claude_md:
+            changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
+        return setting_changes + changes, notices
+
+    if current_hook != hook_bytes:
+        paths["hook"].parent.mkdir(parents=True, exist_ok=True)
+        paths["hook"].write_bytes(hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
 
-    if changes and not verify_only:
-        _write_json(paths["record"], _merge_record(paths["record"], record))
+    if current_md != claude_md:
+        paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
+        backup = None
+        if claude_md_exists:
+            backup = _backup(paths["claude_md"])
+            changes.append(f"CLAUDE.md backup: {backup.name}")
+        old_md = old_record.get("claude_md")
+        # Keep the first backup when the file is still what an earlier install wrote. If the
+        # user edited it since, their edits are what an uninstall should put back.
+        if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md
+                                         or old_md["sha256"] == text_hash(current_md)):
+            record["claude_md"] = dict(old_md, sha256=text_hash(claude_md))
+        else:
+            record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
+            if isinstance(old_md, dict) and backup is not None:
+                notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
+        paths["claude_md"].write_text(claude_md, encoding="utf-8", newline="\n")
+        changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
 
-    return changes, notices
+    if setting_changes or changes:
+        _write_json(paths["record"], _merge_record(old_record, record))
+
+    if setting_changes:
+        if paths["settings"].exists():
+            backup = _backup(paths["settings"])
+            setting_changes.append(f"settings backup: {backup.name}")
+        _write_json(paths["settings"], existing)
+    return setting_changes + changes, notices
 
 
 def verify(home):
@@ -308,6 +370,8 @@ def verify(home):
         found = False
         for entry in hooks:
             for hook in _hook_entries(entry):
+                if not isinstance(hook, dict):
+                    continue
                 command = str(hook.get("command", ""))
                 if "context_check.py" in command:
                     found = True
@@ -318,7 +382,7 @@ def verify(home):
 
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
-    elif paths["claude_md"].read_text(encoding="utf-8") != CLAUDE_MD.read_text(encoding="utf-8"):
+    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != CLAUDE_MD.read_text(encoding="utf-8"):
         issues.append("CLAUDE.md content differs from config/CLAUDE.md")
 
     if not paths["hook"].exists():
@@ -335,11 +399,14 @@ def main(argv=None):
     parser.add_argument("--force", action="store_true", help="replace differing scalar settings")
     parser.add_argument("--verify-only", action="store_true", help="check the installation without writing")
     args = parser.parse_args(argv)
+    # A relative or literal "~" home would put a relative path in the hook command, which
+    # Claude Code runs from the project folder.
+    home = Path(args.home).expanduser().resolve()
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")
         try:
-            changes, notices = install(Path(args.home), force=args.force)
+            changes, notices = install(home, force=args.force)
         except ValueError as e:
             print(f"Error: {e}; nothing written", file=sys.stderr)
             return 1
@@ -354,7 +421,7 @@ def main(argv=None):
     else:
         print("Verifying installation...")
 
-    ok, issues, warnings = verify(Path(args.home))
+    ok, issues, warnings = verify(home)
     if ok:
         print("\n[OK] Installation verified successfully.")
     else:
