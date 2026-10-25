@@ -1,4 +1,4 @@
-import collections, json, re, sys
+import collections, json, sys
 marks = [("evidence-rule hook", "EVIDENCE RULE"), ("compaction summary", "being continued from a previous conversation"),
          ("pasted content", "<pasted_content"), ("deferred-tool list", "deferred tools are now available"),
          ("MCP auth/failed notice", "require authentication before"), ("other system-reminder", "<system-reminder>")]

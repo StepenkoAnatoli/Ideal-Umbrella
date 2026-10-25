@@ -1,5 +1,5 @@
 """Compare old vs new abbreviation rule on real repo text and on known invented abbreviations."""
-import importlib.util, re, sys, io, glob, collections
+import importlib.util, sys, io, glob, collections
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 K = "C:/Users/PC/Desktop/gittoken/keyline"
 sys.path.insert(0, K)

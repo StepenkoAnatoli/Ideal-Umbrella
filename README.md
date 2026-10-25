@@ -51,6 +51,7 @@ The install steps below reproduce the settings, `CLAUDE.md` and hook rows. The c
 ```bash
 python -I config/install.py              # install or update
 python -I config/install.py --verify-only  # check only
+python -I config/install.py --force        # also replace values you set yourself
 python -I config/uninstall.py --dry-run    # preview the undo
 python -I config/uninstall.py              # undo
 ```
@@ -90,7 +91,7 @@ In multi-repo cloud sessions the repo-level compact window and hook are not appl
 
 ### Cloud setup script
 
-`config/cloud-setup.sh` writes `~/.claude/CLAUDE.md` inside the cloud session (cloud sessions don't read your local one). Paste it into the cloud environment's setup script.
+`config/cloud-setup.sh` writes `~/.claude/CLAUDE.md` inside the cloud session (cloud sessions don't read your local one). It holds the rules from `config/CLAUDE.md` plus one cloud-only line: commit and push the progress file before offering a fresh session, because the cloud machine is discarded. Paste it into the cloud environment's setup script.
 
 ## Verify
 
@@ -106,7 +107,7 @@ Expected: context categories include `cache_read`, `cache_creation`, `input`, `o
 
 Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. Values you changed after installing are left alone and reported. `settings.json` is backed up first. Installs made before the record existed: the two keys and the hook are removed, `permissions.deny` is left for you.
 
-By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md` and `~/.claude/ballast/context_check.py`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
+By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md`, `~/.claude/ballast/context_check.py` and `~/.claude/ballast/install-record.json`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
 
 Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000); `IDEAL_UMBRELLA_TAIL_BYTES` (default 4 MB) sets how much of the transcript end the hook reads. Folder-level `.claude/settings.local.json` files override user settings.
 
@@ -130,7 +131,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 - `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
-- `research/` - the full progress log and the 13-agent panel results
+- `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
 - `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine. `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used.
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 
