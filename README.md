@@ -63,6 +63,9 @@ The installer is **idempotent** and merges instead of replacing:
 - The hook command records the Python executable that ran the installer, so it does not depend on `python3` being on `PATH` (the Windows Store alias is often broken).
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
 - Existing scalar settings are kept unless you pass `--force`; verification then prints a warning for each kept value and still passes. A missing value fails verification.
+- Everything is read and checked before anything is written, and `settings.json` is written last, so a failed install (for example a `CLAUDE.md` that is not UTF-8) changes nothing.
+- A symlinked `settings.json` or `CLAUDE.md` (dotfiles, stow, home-manager) is written through; the link stays a link.
+- `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder.
 
 ### Manual install
 
@@ -105,7 +108,7 @@ Expected: context categories include `cache_read`, `cache_creation`, `input`, `o
 
 ## Undo
 
-Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. Values you changed after installing are left alone and reported. `settings.json` is backed up first. Installs made before the record existed: the two keys and the hook are removed, `permissions.deny` is left for you.
+Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. It compares against the values the install wrote, so a `git pull` that changes the templates in between does not get in the way. Values you changed after installing are left alone and reported. If you edited `CLAUDE.md` after installing and then reinstalled, the backup holding those edits is the one restored. `settings.json` is backed up first. Afterwards the record stays as a marker, so running the uninstaller again changes nothing. Installs made before the record existed: the two keys are removed only if they still hold the template values and the Ideal-Umbrella hook is installed, `CLAUDE.md` is backed up before it is deleted, the hook is removed, and `permissions.deny` is left for you.
 
 By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md`, `~/.claude/ballast/context_check.py` and `~/.claude/ballast/install-record.json`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
 
@@ -132,7 +135,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
-- `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine. `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used.
+- `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine. `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts.
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 
 ## Measured numbers

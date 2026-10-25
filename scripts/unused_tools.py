@@ -41,7 +41,13 @@ def main(argv=None):
     parser.add_argument("--top", type=int, default=40)
     args = parser.parse_args(argv)
 
+    if not Path(args.dir).is_dir():
+        print(f"error: {args.dir} is not a folder", file=sys.stderr)
+        return 2
     sessions, called = tool_calls(args.dir)
+    if not sessions:
+        print(f"error: no *.jsonl transcripts under {args.dir}", file=sys.stderr)
+        return 1
     print(f"{sessions} transcripts, {sum(called.values())} tool calls, {len(called)} distinct tools\n")
     for name, n in called.most_common(args.top):
         print(f"  {name}: {n}")

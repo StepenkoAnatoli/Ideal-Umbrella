@@ -108,6 +108,8 @@ def _read_json(path):
 
 
 def _write_json(path, data):
+    # Write through a symlink instead of replacing the link.
+    path = os.path.realpath(path)
     fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
