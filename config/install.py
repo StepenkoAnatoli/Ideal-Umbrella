@@ -187,13 +187,17 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
 
 
 def _read_json(path):
-    with open(path, encoding="utf-8-sig") as f:
-        try:
+    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
+    naming the file, which main() reports as one line before anything is written."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-        except ValueError as e:
-            sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     if not isinstance(data, dict):
-        sys.exit(f"{path} must contain a JSON object, not {type(data).__name__}; nothing written")
+        raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data
 
 
@@ -413,7 +417,7 @@ def verify(home):
 
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
-    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != CLAUDE_MD.read_text(encoding="utf-8"):
+    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != _read_text(CLAUDE_MD):
         issues.append("CLAUDE.md content differs from config/CLAUDE.md")
 
     if not paths["hook"].exists():
@@ -459,7 +463,15 @@ def main(argv=None):
     else:
         print("Verifying installation...")
 
-    ok, issues, warnings = verify(home)
+    try:
+        ok, issues, warnings = verify(home)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # e.g. the hook path is a folder: the same one-line report as a failed install.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     if ok:
         print("\n[OK] Installation verified successfully.")
     else:

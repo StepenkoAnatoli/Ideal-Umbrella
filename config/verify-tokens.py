@@ -40,7 +40,7 @@ def count_tiktoken(text: str) -> tuple[int, int]:
     try:
         import tiktoken
     except ImportError:
-        sys.exit("tiktoken is not installed; run: pip install tiktoken")
+        raise ImportError("tiktoken is not installed; run: pip install tiktoken") from None
     o200k = tiktoken.get_encoding("o200k_base")
     cl100k = tiktoken.get_encoding("cl100k_base")
     return (
@@ -113,8 +113,15 @@ def main(argv=None):
             print(f"Warning: {path} not found, skipping", file=sys.stderr)
             continue
 
-        text = path.read_text(encoding="utf-8-sig")
-        o200k, cl100k = count_tiktoken(text)
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+            o200k, cl100k = count_tiktoken(text)
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"Error reading {path}: {e}", file=sys.stderr)
+            continue
+        except ImportError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
 
         try:
             anth = count_anthropic(client, text, args.model)

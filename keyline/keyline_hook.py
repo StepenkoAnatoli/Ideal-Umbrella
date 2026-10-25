@@ -152,6 +152,9 @@ def main():
     except OSError as e:
         print(f"keyline hook: cannot read {path}: {e}", file=sys.stderr)
         return 1                                   # non-blocking error
+    except keyline_lint.TiktokenMissing as e:
+        print(f"keyline hook: {e}", file=sys.stderr)
+        return 1                                   # non-blocking: the note cannot be linted yet
     if problems:
         print("keyline: this machine note breaks the Keyline rules; fix the file.", file=sys.stderr)
         print("\n".join(problems), file=sys.stderr)

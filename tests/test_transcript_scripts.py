@@ -65,3 +65,13 @@ def test_usertext_top_groups_by_head(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "<system-reminder>" in result.stdout
     assert "please list the" in result.stdout
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_non_utf8_transcript_does_not_crash(script, tmp_path):
+    # The sibling scripts (unused_tools.py, usage_breakdown.py) read with errors=; these three
+    # used to raise UnicodeDecodeError on a stray byte.
+    odd = tmp_path / "odd.jsonl"
+    odd.write_bytes(b'{"message": {"role": "user", "content": "caf\xe9 please"}}\n')
+    result = run(script, str(odd))
+    assert "Traceback" not in result.stderr, result.stderr

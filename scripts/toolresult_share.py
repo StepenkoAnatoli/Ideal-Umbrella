@@ -30,7 +30,7 @@ def short(name):
 names, res, cnt, other = {}, collections.Counter(), collections.Counter(), collections.Counter()
 big = collections.Counter()
 for path in sys.argv[1:]:
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
             try:
                 e = json.loads(line)

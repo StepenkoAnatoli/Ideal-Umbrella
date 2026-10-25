@@ -55,6 +55,14 @@ chdir rmdir mkdir chmod chown stdin stdout stderr docx xlsx pptx csv tsv httpx g
 IDENT_CHARS = re.compile(r"[/\\_.=@#$%&*+<>|~]")
 
 
+class TiktokenMissing(ImportError):
+    """tiktoken is not installed; str(error) is the install hint.
+
+    An Exception, not SystemExit: token_count() catches it to report "not one token", and the
+    entry points (main() here, keyline_hook.py) turn it into one line and an exit code.
+    """
+
+
 def _tiktoken():
     os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(CACHE_DIR / "tiktoken"))
     try:
@@ -62,9 +70,18 @@ def _tiktoken():
     except ImportError:
         # The single-token word list is built once from the o200k vocabulary; a fresh clone has
         # no cache/ yet (it is gitignored), so the first run needs tiktoken.
-        raise SystemExit("tiktoken is not installed; run: python -m pip install -r "
-                         "keyline/requirements.txt (needed once, to build keyline/cache/)") from None
+        raise TiktokenMissing("tiktoken is not installed; run: python -m pip install -r "
+                              "keyline/requirements.txt (needed once, to build keyline/cache/)") from None
     return tiktoken
+
+
+def read(path):
+    """Read a UTF-8 (optionally BOM-marked) text file; any other encoding is a read error."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
 
 
 def build_cache():
@@ -89,8 +106,8 @@ def build_cache():
 def load_words():
     if not WORDS_CACHE.exists():
         return build_cache()
-    with open(WORDS_CACHE, encoding="utf-8") as f:
-        return {w.strip() for w in f if w.strip() and not w.startswith("#")}
+    lines = read(WORDS_CACHE).splitlines()
+    return {w.strip() for w in lines if w.strip() and not w.startswith("#")}
 
 
 def load_allow(path, extra, use_files=True):
@@ -102,11 +119,10 @@ def load_allow(path, extra, use_files=True):
             if f.is_file():
                 files.append(f)
     for f in files:
-        with open(f, encoding="utf-8-sig") as fh:
-            for line in fh:
-                w = line.split("#", 1)[0].strip().lower()
-                if w:
-                    allow.add(w)
+        for line in read(f).splitlines():
+            w = line.split("#", 1)[0].strip().lower()
+            if w:
+                allow.add(w)
     return allow
 
 
@@ -158,12 +174,7 @@ def lint_text(text, words, allow):
 def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
     words = load_words() if words is None else words
     allow = load_allow(path, extra_allow, use_allow_files)
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            text = f.read()
-    except UnicodeDecodeError as e:
-        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
-    return list(lint_text(text, words, allow))
+    return list(lint_text(read(path), words, allow))
 
 
 def main(argv):
@@ -173,7 +184,11 @@ def main(argv):
     it = iter(argv)
     for a in it:
         if a == "--rebuild-cache":
-            print(f"{len(build_cache())} words -> {WORDS_CACHE}")
+            try:
+                print(f"{len(build_cache())} words -> {WORDS_CACHE}")
+            except (TiktokenMissing, OSError) as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
             return 0
         elif a == "--allow":
             extra.append(next(it, None))
@@ -187,7 +202,13 @@ def main(argv):
     if not files or None in extra:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    words = load_words()
+    try:
+        words = load_words()
+    except (TiktokenMissing, OSError) as e:
+        # No cache and no tiktoken, or the cache folder is in the way: one line, like a note
+        # that cannot be read.
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     bad = False
     for path in files:
         try:

@@ -128,8 +128,11 @@ def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     found = {}
     for m in HEDGE.finditer(text):
-        if m.group(0) == "May" and re.match(r"\s+\d", text[m.end():]):
-            continue          # "May 2026", "May 14": the month, not the modal verb
+        if m.group(0) == "May" and (re.match(r"\s+\d", text[m.end():])
+                                    or not _is_sentence_start(text, m.start())):
+            # "May 2026", "May 14", "in May because": the month. The modal verb is capitalised
+            # only at a sentence start ("May I help?").
+            continue
         word = m.group(0).lower()
         for group, words in HEDGE_GROUPS.items():
             if word in words:

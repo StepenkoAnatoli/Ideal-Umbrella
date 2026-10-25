@@ -320,3 +320,25 @@ def test_generated_hook_command_runs_the_hook(install_module, tmp_path):
         capture_output=True, text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, result.stderr
     assert "context about 160k tokens" in json.loads(result.stdout)["systemMessage"]
+
+
+def test_verify_reports_a_file_system_error_in_one_line(install_module, tmp_path, capsys):
+    # verify() ran outside the handler that install() has: a hook path that is a folder gave
+    # a traceback from --verify-only and from the verification after an install.
+    home = tmp_path / "home"
+    install_module.install(home)
+    hook = home / ".claude" / "ballast" / "context_check.py"
+    hook.unlink()
+    hook.mkdir()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and "Traceback" not in err
+
+
+def test_non_utf8_settings_say_so(install_module, tmp_path, capsys):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_bytes(b'{"a": "caf\xe9"}')
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "not UTF-8" in err and "Traceback" not in err

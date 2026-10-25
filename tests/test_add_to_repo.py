@@ -112,3 +112,23 @@ def test_repo_own_value_is_kept_unless_forced(add_to_repo, tmp_path):
                             capture_output=True, text=True, encoding="utf-8")
     assert forced.returncode == 0, forced.stderr
     assert json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == TEMPLATE["autoCompactWindow"]
+
+
+def test_file_system_error_is_one_line(tmp_path):
+    # `.claude` as a regular file stops os.makedirs: it used to be a traceback.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".claude").write_text("in the way", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
+
+
+def test_non_utf8_settings_say_so(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_bytes(b'{"a": "caf\xe9"}')
+    result = run(repo)
+    assert result.returncode == 1
+    assert "not UTF-8" in result.stderr and "Traceback" not in result.stderr
+    assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'

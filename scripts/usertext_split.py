@@ -11,7 +11,7 @@ marks = [("evidence-rule hook", "EVIDENCE RULE"), ("compaction summary", "being 
          ("MCP auth/failed notice", "require authentication before"), ("other system-reminder", "<system-reminder>")]
 c, n = collections.Counter(), collections.Counter()
 for path in sys.argv[1:]:
-    for line in open(path, encoding="utf-8"):
+    for line in open(path, encoding="utf-8", errors="replace"):
         try: e = json.loads(line)
         except ValueError: continue
         m = e.get("message") if isinstance(e, dict) else None

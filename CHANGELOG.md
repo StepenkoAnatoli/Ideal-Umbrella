@@ -11,6 +11,11 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `keyline/keyline_lint.py` with the word cache present and tiktoken missing reports an abbreviation as "not one token" instead of stopping with the install hint (a regression of the hint fix: the exit escaped `token_count()`). A `keyline-allow.txt` or word cache that is not UTF-8 is a one-line read error, not a traceback; so is a cache path that cannot be read.
+- `keyline/keyline_check.py` treats a capitalised `May` inside a sentence ("in May because") as the month, not a possibility hedge.
+- `config/install.py` reports a file-system error or a bad `settings.json` met during verification (after an install or with `--verify-only`) as one line; `config/add_to_repo.py` does the same for a `.claude` that is a file or a read-only folder. A `settings.json` that is not UTF-8 is reported as such, not as "not valid JSON".
+- `scripts/usertext_split.py`, `scripts/usertext_top.py`, `scripts/toolresult_share.py` and `config/verify-tokens.py` no longer crash on a file that is not UTF-8.
+- `tests/test_source_rules.py` keeps two rules on every script: `sys.exit` only in `main()`, and every text read either passes `errors=` or handles `UnicodeDecodeError`.
 - `keyline/keyline_check.py` extracts an ISO 8601 timestamp (`2026-10-25T10:00:00Z`) as one invariant; it used to split into two numbers and a time, so a rendering that changed the day or hour passed. A possessive (`Claude's`) no longer makes the `'s` part of the name, and `May 2026` is the month, not a hedge. A note that is not UTF-8 is a read error (exit 2, one line) in `keyline_check.py`, `keyline_lint.py` and the hook, not a traceback.
 - `keyline/keyline_lint.py` says how to install tiktoken when the word cache has to be built and tiktoken is missing; the hook used to show a traceback on every write of a watched note.
 - `config/install.py` and `config/uninstall.py` refuse to run on an `install-record.json` that exists but is not valid JSON, instead of treating it as absent and overwriting it; a `settings.json` or `CLAUDE.md` that is a symlink to a missing target is reported before anything is written; output is UTF-8 so a non-ASCII home path cannot crash the listing on Windows.

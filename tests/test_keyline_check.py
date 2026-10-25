@@ -71,3 +71,13 @@ def test_non_utf8_note_is_a_read_error_not_a_traceback(tmp_path):
                                 capture_output=True, text=True, encoding="utf-8")
         assert result.returncode == 2, result.stderr
         assert "not UTF-8" in result.stderr and "Traceback" not in result.stderr
+
+
+def test_month_may_mid_sentence_is_not_a_hedge(keyline_check):
+    # A capitalised "May" inside a sentence is the month ("in May because"); only the modal is
+    # capitalised at a sentence start ("May I help?"). A Hebrew rendering that writes the month
+    # as מאי used to be reported as a lost possibility hedge.
+    assert keyline_check.hedges("It shipped in May because the fix landed.") == {}
+    assert keyline_check.hedges("Shipped in May; it may slip.") == {"possibility": ["may"]}
+    assert keyline_check.hedges("- May we proceed?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("Plan.\nMay I help?") == {"possibility": ["may"]}

@@ -108,13 +108,17 @@ def merge(settings, template, force=False):
 
 
 def _read_json(path):
-    with open(path, encoding="utf-8-sig") as f:
-        try:
+    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
+    naming the file, which main() reports as one line before anything is written."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-        except ValueError as e:
-            sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     if not isinstance(data, dict):
-        sys.exit(f"{path} must contain a JSON object, not {type(data).__name__}; nothing written")
+        raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data
 
 
@@ -140,7 +144,27 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
-    repo = argv[0]
+    try:
+        changes, notices = _add(argv[0], force)
+    except ValueError as e:
+        # Raised while reading or merging, before any write.
+        print(f"Error: {e}; nothing written", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # e.g. <repo>/.claude is a regular file, or the folder is read-only.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print("\n".join(changes) or "already up to date")
+    for notice in notices:
+        print(f"note: {notice}")
+    if changes:
+        print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
+    return 0
+
+
+def _add(repo, force):
+    """Merge the template into <repo>/.claude/settings.json and copy the hook; return
+    (changes, notices)."""
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     settings = _read_json(path) if os.path.exists(path) else {}
@@ -148,7 +172,7 @@ def main(argv=None):
     try:
         changes, notices = merge(settings, template, force=force)
     except ValueError as e:
-        sys.exit(f"{path}: {e}; nothing written")
+        raise ValueError(f"{path}: {e}") from None
 
     if changes:
         os.makedirs(claude_dir, exist_ok=True)
@@ -165,13 +189,7 @@ def main(argv=None):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copyfile(SCRIPT, target)
         changes.append(".claude/hooks/context_check.py written")
-
-    print("\n".join(changes) or "already up to date")
-    for notice in notices:
-        print(f"note: {notice}")
-    if changes:
-        print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
-    return 0
+    return changes, notices
 
 
 if __name__ == "__main__":
