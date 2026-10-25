@@ -240,3 +240,23 @@ def test_home_with_a_quote_in_its_path_verifies(install_module, tmp_path):
     install_module.install(home)
     ok, issues, _ = install_module.verify(home)
     assert ok, issues
+
+
+def test_record_is_written_after_settings(install_module, tmp_path, monkeypatch):
+    # A record of an install whose settings.json write failed would make uninstall report
+    # values that were never installed, so settings.json goes first and the record last.
+    home = tmp_path / "home"
+    paths = install_module.layout(home)
+    real_write = install_module._write_json
+
+    def failing_write(path, data):
+        if path == paths["settings"]:
+            raise OSError("disk full")
+        real_write(path, data)
+
+    monkeypatch.setattr(install_module, "_write_json", failing_write)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    assert not paths["record"].exists()
+    assert not paths["settings"].exists()
+    assert paths["hook"].exists()

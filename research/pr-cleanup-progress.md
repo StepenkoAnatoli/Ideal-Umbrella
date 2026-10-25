@@ -1,4 +1,4 @@
-# Ideal-Umbrella review follow-up — resume point (2026-10-25, done: PR #12 and the leftovers PR #13 merged)
+# Ideal-Umbrella review follow-up — resume point (2026-10-25; PR #12 and #13 merged, second review open as draft PR #14)
 
 ## Request (user)
 "Review the repo for correctness, errors and bugs then report in summary", then "fix the two high items and push", then "when finished, work on the medium and low", then "check your work ... then merge", then "fix the two leftover items too".
@@ -23,4 +23,15 @@ The earlier sweep (PR #9, #10) is done; its findings are in `research/review-fin
 - Checks: pytest 57 passed (all 8 new tests fail on the old code, except the UTF-8 stdin one which only differs on a non-UTF-8 locale), keyline 35/35, pyflakes clean (64 pytest after the leftovers), JSON templates valid.
 
 ## Open items
-- None. Every review finding is fixed and merged; a new task starts the branch again from main.
+- Draft PR #14 (https://github.com/StepenkoAnatoli/Ideal-Umbrella/pull/14, branch `ccr-866ae3a7-ac9ajn`
+  from main 913ab0c) holds only docs: `research/review-findings-main-913ab0c.md` (the second full review
+  of main: no high, 2 medium, 8 low) and this file. CI is green. Waiting on the user: fix the findings
+  on this same branch/PR, or merge the docs as they are, or close it.
+- Medium findings to fix if asked: `scripts/toolresult_share.py`, `scripts/usertext_split.py`,
+  `scripts/usertext_top.py` crash on a transcript line that is a JSON list or string (no isinstance
+  check before `.get`); `toolresult_share.py` divides by zero on empty input. Low items are listed in
+  the findings file.
+- Session housekeeping: PR #14 is subscribed for events in session
+  https://claude.ai/code/session_0193pb4gRvJoAzxr41eWRGCN with one safety-net check-in armed
+  (trigger trig_01HL61NvEyBfZqG5nsL8Cxxm, fires 2026-10-25T18:07Z). A fresh session that takes over
+  should subscribe to PR #14 itself; the old one stops after its first quiet check-in.

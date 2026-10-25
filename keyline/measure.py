@@ -13,7 +13,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(HERE / "cache" / "tiktoken"))
-import tiktoken  # noqa: E402
+try:
+    import tiktoken
+except ImportError:
+    sys.exit("tiktoken is not installed; run: python -m pip install -r keyline/requirements.txt")
 
 SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 

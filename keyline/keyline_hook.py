@@ -8,7 +8,7 @@ Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extensio
 inside a notes/ or plans/ folder of the project, or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
-project dir). Example: keyline_hook.py --watch C:/Users/PC/Desktop/gittoken/rk-wt/PROGRESS.md
+project dir). Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
     incident.he.txt exists, run keyline_check.py note -> rendering;
   - a rendering (incident.he.txt): run keyline_check.py against its note (incident.txt / .md /
