@@ -42,6 +42,8 @@ def main(argv=None):
     parser.add_argument("dir")
     parser.add_argument("--top", type=int, default=40)
     args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
 
     if not Path(args.dir).is_dir():
         print(f"error: {args.dir} is not a folder", file=sys.stderr)

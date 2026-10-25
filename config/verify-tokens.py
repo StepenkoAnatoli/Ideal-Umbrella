@@ -74,6 +74,8 @@ def main(argv=None):
                         help="list models reported by the API and exit")
     parser.add_argument("files", nargs="*", help="files to analyze (default: keyline test fixtures)")
     args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
 
     if not anthropic:
         print("Error: anthropic package not installed. Install with: pip install anthropic", file=sys.stderr)

@@ -4,6 +4,9 @@ Usage: python -I scripts/toolresult_share.py TRANSCRIPT.jsonl [TRANSCRIPT.jsonl 
 """
 import collections, json, sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+
 if len(sys.argv) < 2:
     sys.exit("usage: python -I scripts/toolresult_share.py <transcript.jsonl> [more transcripts]")
 

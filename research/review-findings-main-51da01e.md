@@ -13,7 +13,7 @@ The two previous reviews had already found this class twice (third review, findi
 second review, findings 7 and 10): the fixes covered the reported line, not the pattern, which
 is why it came back.
 
-Status: all findings fixed in the PR that carries this report. After the fixes: pytest 112
+Status: all findings fixed in the PR that carries this report. After the fixes: pytest 118
 passed, keyline suite 35/35, pyflakes clean, JSON files parse.
 
 ## High
@@ -33,7 +33,7 @@ None.
    caller catches Exception".
    Pattern: `sys.exit(` or `raise SystemExit` in any function other than `main()`.
    Other hits (all fixed): config/install.py:194,196 `_read_json` (same bug: the exit escaped
-   `verify()`, see finding 4); config/add_to_repo.py:115,117 `_read_json` (same bug);
+   `verify()`, see finding 5); config/add_to_repo.py:115,117 `_read_json` (same bug);
    config/verify-tokens.py:43 `count_tiktoken` (same bug: exits from inside the file loop).
    Safe: keyline/measure.py:19 (module level, the script's own entry), the scripts' module-level
    usage exits, every `sys.exit(main())`.
@@ -44,8 +44,32 @@ None.
    Prevention: tests/test_source_rules.py `test_only_main_exits` scans every script with `ast`
    and fails CI on an exit outside `main()`.
 
+2. scripts/usertext_top.py:26 (found by CI on Windows after the first push of this PR): the
+   script runs with `-I`, which ignores `PYTHONUTF8` and `PYTHONIOENCODING`, so its stdout is
+   the console code page (cp1252). The first non-ASCII character in a user's text, or the
+   U+FFFD a replaced byte becomes after finding 3's `errors="replace"`, ends the script with
+   `UnicodeEncodeError`. Reproduced on Linux with UTF-8 mode off and stdout forced to cp1252
+   (tests/test_utf8_output.py), and by the Windows CI job. Any non-English transcript hits it.
+
+   Class: words / "a script that prints input-derived text without setting UTF-8 output"
+   (the class of the Windows fix in PR #16 for install.py, which covered the three installers).
+   Pattern: a `print()` to stdout in a script with no `sys.stdout.reconfigure(encoding="utf-8")`.
+   Other hits (all fixed): scripts/toolresult_share.py:81,86 and scripts/unused_tools.py:55
+   (tool names from the transcript; same bug), config/verify-tokens.py:141,143 (file names;
+   same bug), scripts/lint_validate.py:71-80 (corpus words; same bug), scripts/plugin_cost.py:111
+   (plugin names; same bug), scripts/tokentest.py:69 (decoded token pieces; it wrapped stdout
+   in its own `TextIOWrapper`, the same fix spelt differently; now the common form).
+   Safe but brought under the rule: scripts/usertext_split.py:27 and scripts/usage_breakdown.py
+   (fixed labels and numbers), hooks/context_check.py:172 (`json.dumps` is ASCII). Stderr needs
+   nothing: Python writes it with `backslashreplace`.
+   Fixed: every script sets UTF-8 stdout before its first print (the installers and keyline
+   scripts already did).
+   Prevention: tests/test_source_rules.py `test_scripts_that_print_set_utf8_stdout` fails CI
+   on a script that prints to stdout without the reconfigure; tests/test_utf8_output.py runs
+   five scripts on a cp1252 console with non-ASCII input.
+
 ## Low
-2. keyline/keyline_lint.py:105: a `keyline-allow.txt` (or `--allow` file) that is not UTF-8
+3. keyline/keyline_lint.py:105: a `keyline-allow.txt` (or `--allow` file) that is not UTF-8
    raises `UnicodeDecodeError` out of `load_allow()`, which `lint_file()`'s UTF-8 handling at
    :160-165 does not cover: traceback from the linter and from the hook on every write of a
    note under that folder. Reproduced with a Latin-1 allow file beside a clean note.
@@ -69,7 +93,7 @@ None.
    `load_words`, `load_allow` and `lint_file`; the others as listed.
    Prevention: tests/test_source_rules.py `test_text_reads_handle_a_decode_error` scans every
    script and fails CI on a text read with neither `errors=` nor a decode handler.
-3. keyline/keyline_check.py:127-138: `hedges()` skips a capitalised "May" only when a number
+4. keyline/keyline_check.py:127-138: `hedges()` skips a capitalised "May" only when a number
    follows, so "It shipped in May because the fix landed" counts a possibility hedge. A Hebrew
    rendering that writes the month as מאי is then reported as "hedges lost: possibility (may)".
    Reproduced with that sentence against its Hebrew rendering: FAIL. (The month is also
@@ -83,7 +107,7 @@ None.
    Fixed: a capitalised "May" that is not at a sentence start is the month; "May I help?" at a
    sentence start or after a list marker is still the modal.
    Prevention: tests/test_keyline_check.py pins the four forms.
-4. config/install.py:462: `verify()` runs outside the `try` that reports a `ValueError` or
+5. config/install.py:462: `verify()` runs outside the `try` that reports a `ValueError` or
    `OSError` from `install()`, both after an install and under `--verify-only`. A hook path
    that is a folder gives `IsADirectoryError` from `read_bytes()` (:421) as a traceback, and a
    bad settings.json exited from `_read_json` with "nothing written" after the install had
@@ -113,4 +137,4 @@ None.
   usage_breakdown.py: tolerant reads, non-object lines. CI: both runners, PYTHONUTF8 comment.
 - README.md, keyline/README.md, CHANGELOG.md: the suite counts (35, 36 on Windows), the
   one-line install hint, the install ordering claims; the CHANGELOG line on install's
-  file-system errors is now true for the verification step too (finding 4).
+  file-system errors is now true for the verification step too (finding 5).

@@ -8,6 +8,10 @@
    under a `try` that handles `UnicodeDecodeError` (or `ValueError` / `Exception`, which
    include it). A note, allow file, settings file or transcript that is not UTF-8 is a one-line
    error, never a traceback.
+3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first. The
+   scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
+   the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
+   replaced byte becomes) used to end the script with UnicodeEncodeError.
 """
 import ast
 
@@ -80,6 +84,20 @@ def _is_text_read(node):
     return False
 
 
+def _prints_to_stdout(node):
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"):
+        return False
+    target = next((k.value for k in node.keywords if k.arg == "file"), None)
+    return target is None or (isinstance(target, ast.Attribute) and target.attr == "stdout")
+
+
+def _sets_utf8_stdout(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "reconfigure"
+            and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
+                    for k in node.keywords))
+
+
 def test_only_main_exits():
     bad = []
     for path, tree in sources():
@@ -96,3 +114,13 @@ def test_text_reads_handle_a_decode_error():
             if _is_text_read(node) and not guarded:
                 bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not bad, "text read with no errors= and no UnicodeDecodeError handler:\n" + "\n".join(bad)
+
+
+def test_scripts_that_print_set_utf8_stdout():
+    bad = []
+    for path, tree in sources():
+        nodes = [node for node, _, _ in _walk(tree)]
+        prints = [node for node in nodes if _prints_to_stdout(node)]
+        if prints and not any(_sets_utf8_stdout(node) for node in nodes):
+            bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
+    assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8"):\n' + "\n".join(bad)
