@@ -211,11 +211,19 @@ def _backup(path):
     return backup
 
 
+def _umask():
+    """The process umask; os.umask can only read it by setting it."""
+    value = os.umask(0)
+    os.umask(value)
+    return value
+
+
 def _write_bytes(path, data):
     """Write a user file whole or not at all: to a temp file beside it, then rename over it.
     A write that fails part way (disk full, a killed process) leaves the old file as it was
     instead of a truncated one. Writes through a symlink (dotfiles, stow, home-manager)
-    instead of replacing the link, and keeps the file's mode."""
+    instead of replacing the link, and keeps the file's mode; a new file gets the mode a
+    plain write would give it."""
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
@@ -224,6 +232,8 @@ def _write_bytes(path, data):
             f.write(data)
         if path.exists():
             os.chmod(tmp, path.stat().st_mode & 0o7777)
+        else:
+            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

@@ -13,7 +13,8 @@ The two previous reviews had already found this class twice (third review, findi
 second review, findings 7 and 10): the fixes covered the reported line, not the pattern, which
 is why it came back.
 
-Status: all 15 findings fixed in the PR that carries this report. After the fixes: pytest 143
+Status: all 15 findings fixed in the PR that carries this report, plus one regression of the
+fixes (16) found in the pre-merge self-review. After the fixes: pytest 143
 passed, keyline suite 35/35, pyflakes clean, JSON files parse. Findings 1-5 are the first
 reviewer's, 6-15 the second reviewer's (its finding 4 is finding 1 here); the second reviewer
 ran against the tree before the first five fixes and found none of them fixed by accident.
@@ -357,6 +358,30 @@ None.
 - Halfway: see finding 12 (parent-folder permission, mode copy).
 - Endings: `_write_bytes` removes its temp file on every failure path; the tests assert no
   `.CLAUDE.md-*` leftovers.
+
+## Pre-merge self-review
+
+### 16. Low: a file the installers create for the first time got mode 0600 (regression of 12)
+- Where: `config/install.py` `_write_bytes` and `config/add_to_repo.py` `_write_bytes` (the
+  atomic-write helpers added for finding 12).
+- Reproduced: on the committed branch, `_write_bytes` on a path that does not exist left the file
+  at 0600 under umask 022 (`mkstemp` creates the temp file private, and the mode was copied only
+  from an existing target). On main the hook and `CLAUDE.md` were written with `write_bytes` /
+  `write_text` / `copyfile` and got 0644; `settings.json` already came out of `mkstemp` at 0600
+  there. A fresh `<repo>/.claude/hooks/context_check.py` or `<repo>/.claude/settings.json` that is
+  read by another account, or a backup tool that preserves modes, sees the stricter mode.
+- Class: neighbors / "a temp file created by mkstemp is renamed into place without resetting its
+  mode": the helper kept the mode of an existing file and forgot the new-file branch.
+- Pattern searched: `mkstemp` across the repository.
+- Other hits: `config/install.py` `_write_bytes` (same bug, fixed), `config/add_to_repo.py`
+  `_write_bytes` (same bug, fixed), `config/uninstall.py` (uses `install._write_bytes`, covered).
+  No other `mkstemp` in the repo.
+- Fixed: a new file gets `0o666 & ~umask` (what a plain write gives); an existing file keeps its
+  mode as before. `_umask()` reads the umask by setting and restoring it.
+- Tests (verified failing on the committed helpers: both wrote 0600): `tests/test_install.py`
+  `test_new_files_get_the_umask_mode_not_the_temp_file_mode`, `tests/test_add_to_repo.py`
+  same name. Skipped on Windows, where `st_mode` carries only the read-only bit.
+- Prevention: the two helpers are the only writers of user files, and each has the mode test.
 
 ## Checked and found correct
 - hooks/context_check.py: band logic, compaction reset, state pruning and log trimming, the

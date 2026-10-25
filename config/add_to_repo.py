@@ -121,9 +121,17 @@ def _read_json(path):
     return data
 
 
+def _umask():
+    """The process umask; os.umask can only read it by setting it."""
+    value = os.umask(0)
+    os.umask(value)
+    return value
+
+
 def _write_bytes(path, data):
     """Write whole or not at all (temp file beside the target, then rename), through a
-    symlink instead of replacing the link, keeping the file's mode."""
+    symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
+    plain write would give it."""
     path = os.path.realpath(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
@@ -132,6 +140,8 @@ def _write_bytes(path, data):
             f.write(data)
         if os.path.exists(path):
             os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        else:
+            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

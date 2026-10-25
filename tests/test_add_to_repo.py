@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 
@@ -152,3 +153,14 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
     assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    add_to_repo._add(str(repo), force=False)
+    expected = 0o666 & ~add_to_repo._umask()
+    for name in ("settings.json", os.path.join("hooks", "context_check.py")):
+        path = repo / ".claude" / name
+        assert path.stat().st_mode & 0o777 == expected, name

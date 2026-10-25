@@ -417,3 +417,15 @@ def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(
     assert "symlink to a missing target" in err and "nothing written" in err, err
     assert not settings_file(home).exists()
     assert not (home / ".claude" / "CLAUDE.md").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path):
+    """A file written for the first time gets the mode a plain write would give it (0644 under
+    umask 022), not the private 0600 of the temp file it was written through."""
+    home = tmp_path / "home"
+    install_module.install(home)
+    expected = 0o666 & ~install_module._umask()
+    for name in ("settings.json", "CLAUDE.md", os.path.join("ballast", "context_check.py")):
+        path = home / ".claude" / name
+        assert path.stat().st_mode & 0o777 == expected, name
