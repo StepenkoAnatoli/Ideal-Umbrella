@@ -53,6 +53,14 @@ def test_context_tokens_counts_all_output(context_check, tmp_path):
     assert context_check.context_tokens(str(path)) == 220_000
 
 
+def test_tail_bytes_bounds_how_far_back_the_hook_reads(context_check, tmp_path, monkeypatch):
+    padding = [{"type": "user", "message": {"content": "x" * 1000}} for _ in range(5)]
+    path = transcript(tmp_path, {"input_tokens": 200_000}, extra=padding)
+    assert context_check.context_tokens(str(path)) == 200_000
+    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "2000")
+    assert context_check.context_tokens(str(path)) == 0
+
+
 def test_context_tokens_uses_compaction_boundary(context_check, tmp_path):
     path = transcript(
         tmp_path,

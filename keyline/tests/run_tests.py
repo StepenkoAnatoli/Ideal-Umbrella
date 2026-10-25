@@ -7,6 +7,7 @@ incident.keyline.he.txt, incident.glyph.txt, notes.markdown.md, notes.keyline.tx
 renderings the panel measured but did not print there come from its synth_measure.py:
 notes.keyline.he.txt and incident.prose.he.txt. All are stored LF, no BOM, no trailing newline.
 """
+import os
 import re
 import subprocess
 import sys
@@ -134,8 +135,11 @@ target = (T / "notes.keyline.txt").resolve()
 abs_pat = target.as_posix()
 expect("hook --watch: absolute pattern matches forward-slash path",
        keyline_hook.watched(target, K, [abs_pat]))
-expect("hook --watch: absolute pattern matches backslash, other-case path",
-       keyline_hook.watched(Path(str(target).replace("/", "\\").upper()), K, [abs_pat]))
+# Backslash separators and case-insensitive matching are Windows path rules; on Linux and macOS
+# a backslash is an ordinary filename character and case matters, so the check is Windows only.
+if os.name == "nt":
+    expect("hook --watch: absolute pattern matches backslash, other-case path",
+           keyline_hook.watched(Path(str(target).replace("/", "\\").upper()), K, [abs_pat]))
 expect("hook --watch: relative pattern matches from project dir",
        keyline_hook.watched(target, K, ["tests/notes.keyline.txt"]))
 expect("hook --watch: other file in same folder not matched",

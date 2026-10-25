@@ -11,6 +11,8 @@ Environment:
   IDEAL_UMBRELLA_HANDOFF_STEP  repeat interval in tokens (default 25000)
   IDEAL_UMBRELLA_STATE_DIR     override the per-session state folder (tests)
   IDEAL_UMBRELLA_LOG           override the error log path
+  IDEAL_UMBRELLA_TAIL_BYTES    how much of the transcript end to read (default 4 MB);
+                               raise it if a single turn writes more than that
 
 Invalid integer settings fall back to the defaults with a warning; they never
 crash the hook before it can read the prompt event.
@@ -83,7 +85,7 @@ def context_tokens(path):
     """Context size at the last main-chain call, or after the last compaction."""
     size = os.path.getsize(path)
     with open(path, "rb") as f:
-        f.seek(max(0, size - TAIL_BYTES))
+        f.seek(max(0, size - parse_int("IDEAL_UMBRELLA_TAIL_BYTES", TAIL_BYTES)))
         lines = f.read().splitlines()
     for raw in reversed(lines):
         try:
