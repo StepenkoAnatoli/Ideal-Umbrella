@@ -193,3 +193,44 @@ def test_markdown_bold_with_underscores_is_not_a_dunder(keyline_check):
     inv = keyline_check.invariants("__Important__ note at 14:02 in __init__")
     assert "__Important__" not in inv
     assert inv["__init__"] == "snake"
+
+
+def test_number_is_not_found_inside_a_date_a_percentage_or_a_slash_pair(keyline_check):
+    # "10" used to be found as the month of "2026-10-25", in "10%" and in "10/25", so a
+    # rendering that dropped the number passed on the anchor "14:02".
+    date = "on 2026-10-25 at 14:02"
+    for number in ("10", "25", "2026"):
+        assert keyline_check.check(f"max {number} at 14:02", date).missing == [number], number
+    assert keyline_check.check("max 10 at 14:02", "cap 10% at 14:02").missing == ["10"]
+    assert keyline_check.check("max 10 at 14:02", "ratio 10/25 at 14:02").missing == ["10"]
+    assert keyline_check.check("max 25 at 14:02", "ratio 10/25 at 14:02").missing == ["25"]
+    assert keyline_check.check("max 10 at 14:02", "10 ב-14:02").ok
+    assert keyline_check.check("cap 10% at 14:02", "10% ב-14:02").ok
+    # Both ends of a range stay findable, and so does a number after a dash.
+    assert keyline_check.check("pages 5-10 at 14:02", "עמודים 5-10 ב-14:02").ok
+    assert keyline_check.check("max 10 at 14:02", "מקסימום ב-10 ב-14:02").ok
+
+
+def test_time_is_not_found_at_the_end_of_a_longer_time(keyline_check):
+    # "00:30" used to be found inside "10:00:30".
+    assert keyline_check.check("at 00:30 and 14:02", "at 10:00:30 and 14:02").missing == ["00:30"]
+    assert keyline_check.check("at 00:30 and 14:02", "ב-00:30 וב-14:02").ok
+
+
+def test_an_upper_case_acronym_is_not_a_hebrew_month_or_day(keyline_check):
+    # The Hebrew calendar forms were accepted for every token kind, so "DEC" (an acronym) was
+    # present wherever December was, and "SAT" wherever Saturday was.
+    for token, hebrew in (("DEC", "דצמבר"), ("SAT", "שבת"), ("MAR", "מרץ")):
+        assert keyline_check.check(f"code: {token} at 14:02", f"קוד: {hebrew} ב-14:02").missing == [token]
+    assert keyline_check.check("due: Dec at 14:02", "יעד: דצמבר ב-14:02").ok
+    assert keyline_check.check("due: MAY at 14:02", "יעד: מאי ב-14:02").ok
+
+
+def test_a_long_dash_joined_run_is_extracted_in_linear_time(keyline_check):
+    # The path and file alternatives rescanned the rest of a dash-joined run from every word in
+    # it: 8000 pairs took seconds, and a hook has a 30 s budget.
+    import time
+    text = "-".join("ab-cd" for _ in range(8000))
+    start = time.perf_counter()
+    keyline_check.invariants(text)
+    assert time.perf_counter() - start < 2.0

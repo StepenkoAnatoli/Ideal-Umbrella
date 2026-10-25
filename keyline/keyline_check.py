@@ -5,8 +5,8 @@ CamelCase name, proper noun, file name, snake_case token, git hash and lowercase
 digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
 Hebrew, JSON, markdown...). A month or weekday name may appear in its Hebrew form. Also fails if
 the rendering drops a hedge class (could/may, likely, should, can; English or Hebrew words) or
-has fewer negation words than the source. A source with no extractable invariant is
-INCONCLUSIVE, never PASS.
+has fewer negation words than the source. A source with no extractable invariant and no hedge
+is INCONCLUSIVE, never PASS.
 
 Usage:
   python keyline_check.py SOURCE RENDERING [RENDERING ...]
@@ -21,11 +21,18 @@ from dataclasses import dataclass
 # ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5".
 L = r"(?<![A-Za-z0-9_])"
 R = r"(?![A-Za-z0-9_]|\.\d)"
-# For a number looked up in a rendering: "10" is not present in "10:00", nor "2" in "2,500".
-L_NUMBER = r"(?<![A-Za-z0-9_])(?<!\d[.,:])"
-R_NUMBER = r"(?![A-Za-z0-9_]|[.,:]\d)"
+# For a number looked up in a rendering: "10" is not present in "10:00", nor "2" in "2,500",
+# nor "10" in "10%", "10/25" or the date "2026-10-25" (its year included). A dash on its own is
+# not a joint: both ends of the range "5-10" stay findable, and so does "10" in "ב-10".
+L_NUMBER = r"(?<![A-Za-z0-9_])(?<!\d[.,:/])(?<!\d{4}-)(?<!\d{4}-\d{2}-)"
+R_NUMBER = r"(?![A-Za-z0-9_]|[.,:/]\d|%|-\d{2}-\d{2}(?!\d))"
+# For a time: "00:30" is not present at the end of "10:00:30".
+L_TIME = L + r"(?<!\d:)"
 
 
+# The path and file alternatives look ahead for a "/" or "." through the dash-joined words that
+# follow; the bound on that look-ahead keeps a long run ("ab-cd-ab-cd-...") from costing a
+# rescan of the whole rest of the run from every word in it.
 INVARIANT = re.compile(
     L
     + r"""(?:
@@ -33,8 +40,8 @@ INVARIANT = re.compile(
     | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>\d{1,2}:\d{2}(?::\d{2})?Z?)
     | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
-    | (?P<path>(?:[A-Za-z]:)?[\w.~-]*[/\\][\w.~/\\-]*)
-    | (?P<file>[\w-]{2,}(?:\.[A-Za-z][A-Za-z0-9]*)+)
+    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{0,200}[/\\][\w.~/\\-]*)
+    | (?P<file>[\w-]{2,200}(?:\.[A-Za-z][A-Za-z0-9]*)+)
     | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*s?)
     | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
     | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
@@ -210,12 +217,15 @@ def present(tok, kind, text):
     if kind == "datetime":
         # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
         body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
-    left, right = (L_NUMBER, R_NUMBER) if kind == "number" else (L, R)
+    left, right = (L_NUMBER, R_NUMBER) if kind == "number" else (L_TIME if kind == "time" else L, R)
     forms = [left + body + tail + right]
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
-    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day.
-    forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-              for form in CALENDAR.get(tok.lower(), ())]
+    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
+    # a capitalised name is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
+    # שבת ("MAY" is the one all-caps month, see hedges()).
+    if kind == "proper" or tok == "MAY":
+        forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+                  for form in CALENDAR.get(tok.lower(), ())]
     return re.search("(?:" + "|".join(forms) + ")", text) is not None
 
 

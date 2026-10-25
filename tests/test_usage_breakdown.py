@@ -110,3 +110,15 @@ def test_non_object_lines_are_skipped(usage_breakdown, tmp_path):
     totals, _, turns = usage_breakdown.summarize([path])
     assert turns == 1
     assert totals["input_tokens"] == 10
+
+
+def test_folder_with_glob_characters_is_found(usage_breakdown, tmp_path, capsys):
+    # The folder went into glob.glob unescaped, so "proj[1]" matched "proj1" and found nothing.
+    folder = tmp_path / "proj[1]"
+    folder.mkdir()
+    write_jsonl(folder / "t.jsonl", [{
+        "type": "assistant",
+        "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": []},
+    }])
+    assert usage_breakdown.main([str(folder)]) == 0
+    assert "1 transcripts" in capsys.readouterr().out

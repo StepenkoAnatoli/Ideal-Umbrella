@@ -12,12 +12,22 @@
    scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
    the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
    replaced byte becomes) used to end the script with UnicodeEncodeError.
+4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
+   folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
+   no transcript at all.
+5. A test that starts a script of this repository (`[sys.executable, ...]` in `tests/` and
+   `keyline/tests/`) passes `-I` right after the interpreter, so the suite runs the scripts
+   the way the docs say to run them: `-I` ignores `PYTHON*` variables and the script folder on
+   `sys.path`. `tests/test_utf8_output.py` is the exception: it sets `PYTHONIOENCODING` on
+   purpose, which `-I` would discard.
 """
 import ast
 
 from conftest import ROOT
 
 FOLDERS = ["config", "hooks", "keyline", "scripts"]
+TEST_FOLDERS = ["tests", "keyline/tests"]
+RUNS_WITHOUT_ISOLATION = {"tests/test_utf8_output.py"}
 DECODE_HANDLERS = {"UnicodeDecodeError", "ValueError", "Exception", "BaseException"}
 
 
@@ -124,3 +134,42 @@ def test_scripts_that_print_set_utf8_stdout():
         if prints and not any(_sets_utf8_stdout(node) for node in nodes):
             bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
     assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8"):\n' + "\n".join(bad)
+
+
+def _glob_call(node, names):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and _name(node.func.value) == "glob" and node.func.attr in names)
+
+
+def test_glob_patterns_escape_the_folder():
+    bad = []
+    for path, tree in sources():
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            calls = [n for n in ast.walk(function) if _glob_call(n, {"glob", "iglob"})]
+            if calls and not any(_glob_call(n, {"escape"}) for n in ast.walk(function)):
+                bad.append(f"{path.relative_to(ROOT)}:{calls[0].lineno} in {function.name}()")
+    assert not bad, "glob.glob() without glob.escape() in the same function:\n" + "\n".join(bad)
+
+
+def _starts_script(node):
+    return (isinstance(node, ast.List) and node.elts
+            and isinstance(node.elts[0], ast.Attribute) and node.elts[0].attr == "executable"
+            and _name(node.elts[0].value) == "sys")
+
+
+def test_tests_start_scripts_with_isolation():
+    bad = []
+    for folder in TEST_FOLDERS:
+        for path in sorted((ROOT / folder).glob("*.py")):
+            if path.relative_to(ROOT).as_posix() in RUNS_WITHOUT_ISOLATION:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            for node in ast.walk(tree):
+                if not _starts_script(node):
+                    continue
+                second = node.elts[1] if len(node.elts) > 1 else None
+                if not (isinstance(second, ast.Constant) and second.value == "-I"):
+                    bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert not bad, '[sys.executable, ...] without "-I" second:\n' + "\n".join(bad)

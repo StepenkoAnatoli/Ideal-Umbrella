@@ -167,15 +167,21 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
+    progress = []
     try:
-        changes, notices = _add(argv[0], force)
+        changes, notices = _add(argv[0], force, progress=progress)
     except ValueError as e:
         # Raised while reading or merging, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
         return 1
     except OSError as e:
-        # e.g. <repo>/.claude is a regular file, or the folder is read-only.
+        # e.g. <repo>/.claude is a regular file, or the folder is read-only. Every file is
+        # written whole or not at all; name what was done before the error.
         print(f"Error: {e}", file=sys.stderr)
+        if progress:
+            print("Done before the error:", file=sys.stderr)
+            for line in progress:
+                print(f"  - {line}", file=sys.stderr)
         return 1
     print("\n".join(changes) or "already up to date")
     for notice in notices:
@@ -185,9 +191,13 @@ def main(argv=None):
     return 0
 
 
-def _add(repo, force):
+def _add(repo, force, progress=None):
     """Merge the template into <repo>/.claude/settings.json and copy the hook; return
-    (changes, notices)."""
+    (changes, notices). Each file written is appended to `progress` (when given) as it is
+    done. The hook is copied before settings.json is written: a hook entry that points at a
+    hook file that was never copied would exit 2 on every prompt."""
+    if progress is None:
+        progress = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
@@ -201,17 +211,20 @@ def _add(repo, force):
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None
 
-    if changes:
-        _write_json(path, settings)
-
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
             old = f.read()
     with open(SCRIPT, "rb") as f:
         source = f.read()
-    if source != old:
+    hook_changed = source != old
+    if hook_changed:
         _write_bytes(target, source)
+        progress.append(".claude/hooks/context_check.py written")
+    if changes:
+        _write_json(path, settings)
+        progress.append(".claude/settings.json written")
+    if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
     return changes, notices
 

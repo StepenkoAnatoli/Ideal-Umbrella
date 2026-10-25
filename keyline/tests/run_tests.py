@@ -35,7 +35,7 @@ results = []
 
 
 def run(script, *args):
-    r = subprocess.run([sys.executable, str(K / script), *map(str, args)],
+    r = subprocess.run([sys.executable, "-I", str(K / script), *map(str, args)],
                        capture_output=True, text=True, encoding="utf-8")
     return r.returncode, r.stdout + r.stderr
 
@@ -152,7 +152,7 @@ expect("hook --watch: other file in same folder not matched",
 
 def hook(file_path, *args):
     event = json.dumps({"tool_name": "Write", "cwd": str(K), "tool_input": {"file_path": str(file_path)}})
-    r = subprocess.run([sys.executable, str(K / "keyline_hook.py"), *args], input=event,
+    r = subprocess.run([sys.executable, "-I", str(K / "keyline_hook.py"), *args], input=event,
                        capture_output=True, text=True, encoding="utf-8")
     return r.returncode, r.stdout + r.stderr
 

@@ -30,7 +30,7 @@ jobs:
       - name: pytest
         run: python -m pytest -q
       - name: Keyline suite
-        run: python keyline/tests/run_tests.py
+        run: python -I keyline/tests/run_tests.py
       - name: JSON configs parse
         run: |
           python -m json.tool config/user-settings.json

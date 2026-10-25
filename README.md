@@ -64,7 +64,8 @@ The installer is **idempotent** and merges instead of replacing:
 - A differing `~/.claude/CLAUDE.md` and `settings.json` are backed up before they are replaced.
 - Existing scalar settings are kept unless you pass `--force`. A value an earlier install wrote and you have not changed is updated when the template changes (for example after a `git pull`), without `--force`. Verification compares against the current template and prints a warning for each kept value, but still passes. A missing value fails verification.
 - Everything is read and checked before anything is written, and `settings.json` is written after the hook file and `CLAUDE.md` (the install record last, since it describes what was written), so an install that fails while reading or checking (for example a `CLAUDE.md` that is not UTF-8, or any of the four files being a symlink to a missing target) changes nothing. Every file is written whole or not at all (to a temp file beside it, then renamed over it), so a write that fails part way (disk full, a folder in the way) leaves the old file as it was and no hook entry in `settings.json`; the error message lists the backups and files written before it.
-- A symlinked `settings.json`, `CLAUDE.md` or hook file (dotfiles, stow, home-manager) is written through; the link stays a link.
+- A symlinked `settings.json`, `CLAUDE.md` or hook file (dotfiles, stow, home-manager) is written through; the link stays a link. A hard-linked file becomes a new file: the other links keep the old content.
+- `CLAUDE_CONFIG_DIR`, when set, is where the files go (it is where Claude Code reads them); `--home` overrides it.
 - Verification also checks that the Python the hook command names still exists (a deleted venv or a pyenv bump leaves a command that `|| exit 0` silences); run `install.py` again to point it at the current Python.
 - `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder.
 
@@ -111,7 +112,7 @@ Expected: context categories include `cache_read`, `cache_creation`, `input`, `o
 
 Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. It compares against the values the install wrote, so a `git pull` that changes the templates in between does not get in the way. Values you changed after installing are left alone and reported. If you edited `CLAUDE.md` after installing and then reinstalled, the backup holding those edits is the one restored. If that backup has been deleted, `CLAUDE.md` is left in place and reported rather than deleted. `settings.json` is backed up first. Afterwards the record stays as a marker, so running the uninstaller again changes nothing. Installs made before the record existed: the two keys are removed only if they still hold the template values and the Ideal-Umbrella hook is installed, `CLAUDE.md` is backed up before it is deleted, the hook is removed, and `permissions.deny` is left for you.
 
-By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md`, `~/.claude/ballast/context_check.py` and `~/.claude/ballast/install-record.json`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
+By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md`, `~/.claude/ballast/context_check.py`, `~/.claude/ballast/install-record.json` and what the hook wrote while it ran: `~/.claude/ballast/state/` and `~/.claude/ballast/context_check.log`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
 
 Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000); `IDEAL_UMBRELLA_TAIL_BYTES` (default 4 MB) sets how much of the transcript end the hook reads. Folder-level `.claude/settings.local.json` files override user settings.
 
@@ -164,7 +165,7 @@ python -I config/verify-tokens.py --model <current-model-id>
 
 `keyline/` provides a terse `key: item; item` note format with:
 
-- **Fact checker** (`keyline_check.py`): verifies that dates, numbers, identifiers, proper nouns, hedges and negations survive a rendering (Hebrew, prose, etc.). A source with no extractable invariants is `INCONCLUSIVE`, not `PASS`.
+- **Fact checker** (`keyline_check.py`): verifies that dates, numbers, identifiers, proper nouns, hedges and negations survive a rendering (Hebrew, prose, etc.). A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`.
 - **Style linter** (`keyline_lint.py`): flags markdown furniture and *invented* abbreviations; real tech terms are allowed via `keyline-allow.txt`.
 - **Token measure** (`measure.py`): o200k_base/cl100k_base counts.
 - **PostToolUse hook** (`keyline_hook.py`): runs lint + check on write/edit in `notes/` or `plans/` of the project (a file outside the project is ignored); `--print-config` generates a ready-to-paste hook entry.

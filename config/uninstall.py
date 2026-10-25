@@ -2,8 +2,9 @@
 """Ideal-Umbrella: undo what config/install.py did.
 
 Puts back the settings values that were there before the install, removes only the
-permissions.deny tools and the hook entry the installer added, deletes the copied hook,
-and restores the CLAUDE.md backup (or removes a CLAUDE.md the installer created).
+permissions.deny tools and the hook entry the installer added, deletes the copied hook with
+the state folder and log it wrote (<home>/.claude/ballast/state/, context_check.log), and
+restores the CLAUDE.md backup (or removes a CLAUDE.md the installer created).
 settings.json is backed up before it is rewritten.
 
 It works from <home>/.claude/ballast/install-record.json, which install.py writes, and
@@ -19,6 +20,7 @@ Usage:
   python -I config/uninstall.py [--home PATH] [--dry-run]
 """
 import argparse
+import shutil
 import sys
 from pathlib import Path
 
@@ -147,10 +149,21 @@ def _leftover_record(record, left, claude_md_left):
     return leftover
 
 
-def uninstall(home, dry_run=False, progress=None):
+def _backup_of(claude_md, name):
+    """The backup file a record names, beside CLAUDE.md; None when the name is not a plain
+    file name (not a string, empty, or holding a separator), which the install never writes."""
+    if not isinstance(name, str) or not name or Path(name).name != name:
+        return None
+    try:
+        return claude_md.with_name(name)
+    except ValueError:
+        return None
+
+
+def uninstall(home, dry_run=False, progress=None, config_dir=None):
     """Undo the install; return (changes, notices). Each change is appended to `progress`
     (when given) once it is done, so an OSError part way can still name the backups made."""
-    paths = install.layout(home)
+    paths = install.layout(home, config_dir)
     record = install.read_record(paths["record"])
     changes, notices = [], []
     if progress is None:
@@ -189,6 +202,19 @@ def uninstall(home, dry_run=False, progress=None):
         else:
             paths["hook"].unlink()
             done("hook deleted")
+    # What the hook wrote while it ran: the per-session state files and its log.
+    if paths["state"].is_dir():
+        if dry_run:
+            changes.append("state folder deleted")
+        else:
+            shutil.rmtree(paths["state"])
+            done("state folder deleted")
+    if paths["log"].is_file():
+        if dry_run:
+            changes.append("log deleted")
+        else:
+            paths["log"].unlink()
+            done("log deleted")
 
     entry = (record or {}).get("claude_md")
     claude_md_left = False
@@ -197,8 +223,7 @@ def uninstall(home, dry_run=False, progress=None):
             ours = install.text_hash(current_md) == entry["sha256"]
         else:
             ours = current_md == template_md
-        backup_name = entry.get("backup") if isinstance(entry, dict) else None
-        backup = claude_md.with_name(backup_name) if isinstance(backup_name, str) and backup_name else None
+        backup = _backup_of(claude_md, entry.get("backup") if isinstance(entry, dict) else None)
         if not ours:
             claude_md_left = True
             notices.append("CLAUDE.md differs from what was installed; left as is"
@@ -245,17 +270,18 @@ def uninstall(home, dry_run=False, progress=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.strip(),
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--home", default=str(Path.home()), help="home folder to uninstall from (default: current home)")
+    parser.add_argument("--home", default=None, help="home folder to uninstall from (default: current home, "
+                                                     "or CLAUDE_CONFIG_DIR when it is set)")
     parser.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    home, config_dir = install.target(args.home)
     progress = []
     try:
-        changes, notices = uninstall(Path(args.home).expanduser().resolve(), dry_run=args.dry_run,
-                                     progress=progress)
+        changes, notices = uninstall(home, dry_run=args.dry_run, progress=progress, config_dir=config_dir)
     except ValueError as e:
         # Raised while reading, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)

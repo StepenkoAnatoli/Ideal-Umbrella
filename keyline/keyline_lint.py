@@ -5,16 +5,16 @@ or a header ('# ' to '###### '), or any line containing '**' or a backtick.
 Abbreviations: a lowercase ASCII word that is not a single o200k_base token (with its leading
 space, as it appears mid-line) AND has the shape of an invented abbreviation:
   - a numeronym (k8s, i18n, a11y), or
-  - 2-5 letters with no vowel (rst, xh, mgmt, pnpm), or 4-5 letters with one vowel (alrt, srvc).
+  - 2-5 letters with no vowel (rst, xh, mgmt, tmpl), or 4-5 letters with one vowel (alrt, srvc).
 Everything else that splits into several tokens is let through, because it is almost always a real
 word or a real identifier: long words and compounds (uncommitted, harmlessly, worktree), anything
 containing a digit (cp1252, sha256, x2, git hashes such as b07b3b6). Single-token abbreviations
 (cfg, env, prod) cost nothing and pass, and so does a plural whose stem is one token (diffs, slugs).
-Common developer tool names (mcp, npx, venv, pwsh...) are allowed by a built-in list.
+Common developer tool names (mcp, npx, pnpm, venv, pwsh...) are allowed by a built-in list.
 Identifiers, paths and capitalised names are skipped.
 The single-token word list is built once with tiktoken and cached in cache/.
 
-Project words that are real but split into several tokens (tool names such as 'pnpm') go in a
+Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
 keyline-allow.txt, one word per line; every keyline-allow.txt in the file's folder or any parent
 folder is read.
 
@@ -28,6 +28,7 @@ Exit: 0 clean, 1 findings, 2 usage or read error.
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -99,7 +100,16 @@ def build_cache():
     CACHE_DIR.mkdir(exist_ok=True)
     header = (f"# lowercase ASCII words that are one o200k_base token with a leading space; "
               f"built by keyline_lint.py with tiktoken {tiktoken.__version__}; {len(words)} words\n")
-    WORDS_CACHE.write_text(header + "\n".join(sorted(words)) + "\n", encoding="utf-8")
+    # Whole or not at all: a build cut short (disk full, a killed process) must not leave a
+    # short list that the next run would trust.
+    fd, tmp = tempfile.mkstemp(prefix=f".{WORDS_CACHE.name}-", dir=CACHE_DIR)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(header + "\n".join(sorted(words)) + "\n")
+        os.replace(tmp, WORDS_CACHE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return words
 
 
@@ -107,7 +117,12 @@ def load_words():
     if not WORDS_CACHE.exists():
         return build_cache()
     lines = read(WORDS_CACHE).splitlines()
-    return {w.strip() for w in lines if w.strip() and not w.startswith("#")}
+    words = {w.strip() for w in lines if w.strip() and not w.startswith("#")}
+    # The header says how many words the build wrote; fewer means the file was cut short.
+    expected = re.search(r"; (\d+) words$", lines[0]) if lines else None
+    if expected is None or int(expected.group(1)) != len(words):
+        return build_cache()
+    return words
 
 
 def load_allow(path, extra, use_files=True):
@@ -166,6 +181,8 @@ def lint_text(text, words, allow):
                 if not looks_invented(part, words):
                     continue
                 n = token_count(part)
+                if n == 1:
+                    continue                  # one token after all: the word list is not complete
                 size = f"{n} tokens" if n else "not one token"
                 yield no, (f"abbreviation: '{part}' is {size} under o200k_base; spell it out, "
                            f"or add it to {ALLOW_NAME} if it is a real name")

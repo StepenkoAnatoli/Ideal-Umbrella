@@ -15,6 +15,7 @@ project dir). Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
     .keyline / no extension).
 Exit 0 when clean or not applicable. Exit 2 with the findings on stderr when anything fails:
 for PostToolUse the file is already written, and Claude Code shows stderr to Claude so it fixes it.
+Exit 1 (non-blocking, one line on stderr) when the file cannot be read or tiktoken is missing.
 """
 import fnmatch
 import io
