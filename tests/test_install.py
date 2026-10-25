@@ -59,14 +59,15 @@ def test_install_preserves_user_data_and_is_idempotent(install_module, tmp_path)
     assert backups and backups[0].read_text(encoding="utf-8") == "my own rules\n"
     assert list(claude.glob("settings.json.bak-*"))
 
-    ok, issues = install_module.verify(home)
+    ok, issues, warnings = install_module.verify(home)
     assert ok, issues
+    assert warnings == []
 
     second_changes, _ = install_module.install(home)
     assert second_changes == []
 
 
-def test_existing_scalar_is_not_overwritten_without_force(install_module, tmp_path):
+def test_existing_scalar_is_not_overwritten_without_force(install_module, tmp_path, capsys):
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -77,15 +78,31 @@ def test_existing_scalar_is_not_overwritten_without_force(install_module, tmp_pa
     settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     assert settings["autoCompactWindow"] == 100000
 
-    ok, issues = install_module.verify(home)
-    assert not ok
-    assert any("autoCompactWindow" in issue for issue in issues)
+    # Keeping your own value is what install does without --force: a warning, not a failure.
+    ok, issues, warnings = install_module.verify(home)
+    assert ok, issues
+    assert any("autoCompactWindow" in warning for warning in warnings)
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 0
+    assert "warning: autoCompactWindow is 100000" in capsys.readouterr().out
 
     install_module.install(home, force=True)
     settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     assert settings["autoCompactWindow"] == 250000
-    ok, issues = install_module.verify(home)
+    ok, issues, warnings = install_module.verify(home)
     assert ok, issues
+    assert warnings == []
+
+
+def test_missing_scalar_still_fails_verification(install_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    del settings["autoCompactWindow"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+
+    ok, issues, _ = install_module.verify(home)
+    assert not ok
+    assert any("autoCompactWindow is missing" in issue for issue in issues)
 
 
 def test_verify_only_does_not_create_files(install_module, tmp_path, capsys):
