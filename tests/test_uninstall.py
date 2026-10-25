@@ -268,3 +268,23 @@ def test_reinstall_keeps_a_value_the_user_set_after_install(uninstall_module, tm
     _, notices = inst.install(home)
     assert any("autoCompactWindow" in notice for notice in notices)
     assert read_settings(home)["autoCompactWindow"] == 100000
+
+
+def test_missing_claude_md_backup_keeps_the_file(install_module, uninstall_module, tmp_path):
+    # The install replaced the user's CLAUDE.md and recorded the backup name. If that backup is
+    # gone, deleting the installed file would leave the user with nothing: keep it and say so.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="my own rules\n")
+    install_module.install(home, force=True)
+    claude = home / ".claude"
+    backups = list(claude.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 1
+    backups[0].unlink()
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert not any("CLAUDE.md deleted" in change for change in changes)
+    assert any("CLAUDE.md left as is" in notice and backups[0].name in notice for notice in notices)
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["uninstalled"] is True
+    assert record["claude_md"]["backup"] == backups[0].name

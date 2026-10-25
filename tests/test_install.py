@@ -200,3 +200,14 @@ def test_malformed_hook_entry_does_not_crash(install_module, tmp_path):
     assert ok, issues
     entries = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
     assert {"hooks": ["echo hi"]} in entries
+
+
+def test_hook_command_does_not_block_prompts_when_the_hook_file_is_missing(install_module, tmp_path):
+    # A settings.json synced to a machine without ~/.claude/ballast/context_check.py used to
+    # make the shell exit 2 (python: can't open file), which Claude Code treats as "block the
+    # prompt": every prompt on that machine was refused.
+    command = install_module.hook_command(tmp_path)
+    assert command.endswith("|| exit 0")
+    assert not (tmp_path / ".claude" / "ballast" / "context_check.py").exists()
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

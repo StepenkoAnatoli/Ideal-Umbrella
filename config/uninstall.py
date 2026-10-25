@@ -191,6 +191,12 @@ def uninstall(home, dry_run=False):
                 # Copy, not rename, so a symlinked CLAUDE.md is written through, not replaced.
                 shutil.copyfile(backup, claude_md)
                 backup.unlink()
+        elif backup is not None:
+            # The install replaced a file of yours and its backup is gone: deleting now would
+            # lose the only copy left, so keep it and say so.
+            claude_md_left = True
+            notices.append(f"CLAUDE.md left as is: the backup {backup.name} it should be restored "
+                           "from is missing")
         elif record is not None and entry is not None:
             changes.append("CLAUDE.md deleted")
             if not dry_run:

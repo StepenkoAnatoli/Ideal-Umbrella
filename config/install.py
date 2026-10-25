@@ -64,7 +64,9 @@ def quote(value):
 
 
 def hook_command(home):
-    return f"{quote(sys.executable)} -I {quote(layout(home)['hook'])}"
+    # "|| exit 0": if this settings.json is synced to a machine without the hook file or this
+    # interpreter, the shell's failure (exit 2 or 127) must not block every prompt there.
+    return f"{quote(sys.executable)} -I {quote(layout(home)['hook'])} || exit 0"
 
 
 def _hook_entries(entry):

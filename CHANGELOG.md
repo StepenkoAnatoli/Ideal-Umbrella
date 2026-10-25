@@ -11,6 +11,8 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- The user-level hook command `config/install.py` writes now ends in `|| exit 0`. A `settings.json` synced to a machine without `~/.claude/ballast/context_check.py` (or without that Python) used to exit 2 there, which blocks every prompt.
+- `config/uninstall.py` no longer deletes `CLAUDE.md` when the backup it should restore from is missing; it leaves the file, reports the missing backup, and keeps the record so a later run can still restore it.
 - `config/install.py` verification no longer fails when you keep your own `autoCompactWindow` or `skillListingBudgetFraction` (left as is without `--force`); it prints a warning. A missing value still fails.
 - `config/install.py` reads and checks everything before writing and writes `settings.json` last. A failed install (for example a non-UTF-8 `CLAUDE.md`) used to leave a hook entry pointing at a missing file, which blocked every prompt.
 - `config/uninstall.py` run a second time no longer deletes your own values that match the template, or an identical `CLAUDE.md`: the record stays as an "uninstalled" marker. Without a record, keys are removed only when the Ideal-Umbrella hook is installed, and `CLAUDE.md` is backed up before it is deleted.
