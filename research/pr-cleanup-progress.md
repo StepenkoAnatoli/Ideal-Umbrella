@@ -1,7 +1,7 @@
-# Ideal-Umbrella review follow-up — resume point (2026-10-25; fourth review of main 51da01e merged as PR #18, main 86f16e7, no open items)
+# Ideal-Umbrella review follow-up — resume point (2026-10-25; fourth review of main 51da01e merged as PR #18, main 86f16e7; fifth review of main 86f16e7 in progress)
 
 ## Request (user)
-"Review the repo for correctness, errors and bugs then report in summary", then "fix the two high items and push", then "when finished, work on the medium and low", then "check your work ... then merge", then "fix the two leftover items too", then "Run the full review again on main", then "Fix the two medium and the low items and merge once CI is green", then "merge it", then "Run the full review again on main" (third pass), then "When finished the review, fix all issues(high/medium/low) and then check your work for possible bugs/errors and then if all good merge", then "Run the full review again on main, fix the class each time" (fourth pass), then "Review the work and if good merge".
+"Review the repo for correctness, errors and bugs then report in summary", then "fix the two high items and push", then "when finished, work on the medium and low", then "check your work ... then merge", then "fix the two leftover items too", then "Run the full review again on main", then "Fix the two medium and the low items and merge once CI is green", then "merge it", then "Run the full review again on main" (third pass), then "When finished the review, fix all issues(high/medium/low) and then check your work for possible bugs/errors and then if all good merge", then "Run the full review again on main, fix the class each time" (fourth pass), then "Review the work and if good merge" (PR #18 merged), then "Run another review" (fifth pass on main 86f16e7).
 
 ## State
 - main is 86f16e7 (merge of PR #18, the fourth review and all 25 fixes). PRs #9, #10, #12, #13, #14, #15, #16, #17 and #18 are merged. Branch `ccr-866ae3a7-ac9ajn` was restarted from that main and carries only this resume point.
@@ -21,4 +21,4 @@
 - Finding 11 (record without a `claude_md` entry): the second reviewer's suggested deletion was rejected; a missing entry means the install never wrote CLAUDE.md, so the file is the user's own. A notice is printed instead. Pinned by `test_second_uninstall_keeps_the_users_own_values` and `test_record_without_claude_md_entry_keeps_the_file_and_says_so`.
 
 ## Open items
-- None. The next review pass, if asked, runs against main 86f16e7 from a branch restarted there; the per-review reports live in `research/review-findings-*.md`.
+- Fifth full review of main 86f16e7 ("Run another review"): two fresh-context reviewers run in parallel, A on keyline/ + scripts/, B on config/ + hooks/ + tests + CI; their reports go to scratchpad `review5/a/report.md` and `review5/b/report.md` (not in the repo). Consolidate into `research/review-findings-main-86f16e7.md`, commit on `ccr-866ae3a7-ac9ajn` (draft PR #19 carries it), report to the user. Fixes only if asked, as in the earlier passes.
