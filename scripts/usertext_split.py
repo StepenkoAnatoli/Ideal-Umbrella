@@ -4,6 +4,9 @@ Usage: python -I scripts/usertext_split.py TRANSCRIPT.jsonl [TRANSCRIPT.jsonl ..
 """
 import collections, json, sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+
 if len(sys.argv) < 2:
     sys.exit("usage: python -I scripts/usertext_split.py <transcript.jsonl> [more transcripts]")
 marks = [("evidence-rule hook", "EVIDENCE RULE"), ("compaction summary", "being continued from a previous conversation"),
@@ -11,7 +14,7 @@ marks = [("evidence-rule hook", "EVIDENCE RULE"), ("compaction summary", "being 
          ("MCP auth/failed notice", "require authentication before"), ("other system-reminder", "<system-reminder>")]
 c, n = collections.Counter(), collections.Counter()
 for path in sys.argv[1:]:
-    for line in open(path, encoding="utf-8"):
+    for line in open(path, encoding="utf-8", errors="replace"):
         try: e = json.loads(line)
         except ValueError: continue
         m = e.get("message") if isinstance(e, dict) else None

@@ -185,6 +185,9 @@ def run():
 
 def main():
     try:
+        # The JSON printed is ASCII, but keep the rule every script follows: UTF-8 output.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
         run()
     except Exception:
         # Never block the user's prompt. Leave a trace so a broken install is visible.

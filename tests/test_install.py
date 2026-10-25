@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -320,3 +321,158 @@ def test_generated_hook_command_runs_the_hook(install_module, tmp_path):
         capture_output=True, text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, result.stderr
     assert "context about 160k tokens" in json.loads(result.stdout)["systemMessage"]
+
+
+def test_verify_reports_a_file_system_error_in_one_line(install_module, tmp_path, capsys):
+    # verify() ran outside the handler that install() has: a hook path that is a folder gave
+    # a traceback from --verify-only and from the verification after an install.
+    home = tmp_path / "home"
+    install_module.install(home)
+    hook = home / ".claude" / "ballast" / "context_check.py"
+    hook.unlink()
+    hook.mkdir()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and "Traceback" not in err
+
+
+def test_non_utf8_settings_say_so(install_module, tmp_path, capsys):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "settings.json").write_bytes(b'{"a": "caf\xe9"}')
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "not UTF-8" in err and "Traceback" not in err
+
+
+def test_verify_fails_when_the_hook_interpreter_is_missing(install_module, tmp_path, monkeypatch):
+    # The command embeds the interpreter that ran the installer; after a deleted venv or a pyenv
+    # bump the hook never runs ("|| exit 0" hides it) and verify() used to say all is well.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    hook = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    gone = str(tmp_path / "gone venv" / "bin" / "python")
+    hook["command"] = hook["command"].replace(install_module.quote(sys.executable), install_module.quote(gone))
+    assert gone in hook["command"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok
+    assert any(gone in issue and "interpreter" in issue for issue in issues), issues
+
+    # A bare name found on PATH (a hand-edited command) is fine.
+    monkeypatch.setenv("PATH", str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""))
+    hook["command"] = hook["command"].replace(install_module.quote(gone), Path(sys.executable).name)
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+
+
+def test_failed_claude_md_write_keeps_the_file_and_names_the_backup(install_module, tmp_path, monkeypatch, capsys):
+    # CLAUDE.md was overwritten in place: a write error left a truncated file, and the backup
+    # that holds the original was never named because the error path dropped the changes list.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    real_write_text, real_replace = Path.write_text, os.replace
+
+    def truncating_write_text(self, data, *args, **kwargs):
+        if self.name == "CLAUDE.md":
+            with open(self, "w", encoding="utf-8") as f:
+                f.write(data[:5])
+            raise OSError(28, "No space left on device")
+        return real_write_text(self, data, *args, **kwargs)
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if str(dst).endswith("CLAUDE.md"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", truncating_write_text)
+    monkeypatch.setattr(install_module.os, "replace", failing_replace)
+    assert install_module.main(["--home", str(home)]) == 1
+    out, err = capsys.readouterr()
+    assert "No space left" in err and "Traceback" not in err
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    backups = [p.name for p in claude.glob("CLAUDE.md.bak-*")]
+    assert len(backups) == 1
+    assert backups[0] in out + err
+    assert not list(claude.glob(".*CLAUDE*")), "temp file left behind"
+
+
+@pytest.mark.parametrize("name", ["hook", "record"])
+def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(install_module, tmp_path, capsys, name):
+    # settings.json and CLAUDE.md had this check; the hook and the record did not, so a
+    # dangling link there gave "No such file or directory" naming a temp file.
+    home = tmp_path / "home"
+    target = install_module.layout(home)[name]
+    target.parent.mkdir(parents=True)
+    try:
+        target.symlink_to(tmp_path / "missing" / target.name)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert not settings_file(home).exists()
+    assert not (home / ".claude" / "CLAUDE.md").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path):
+    """A file written for the first time gets the mode a plain write would give it (0644 under
+    umask 022), not the private 0600 of the temp file it was written through."""
+    home = tmp_path / "home"
+    install_module.install(home)
+    expected = 0o666 & ~install_module._umask()
+    for name in ("settings.json", "CLAUDE.md", os.path.join("ballast", "context_check.py")):
+        path = home / ".claude" / name
+        assert path.stat().st_mode & 0o777 == expected, name
+
+
+def test_write_bytes_removes_the_temp_file_even_when_the_target_is_read_only(install_module, tmp_path, monkeypatch):
+    # With a read-only target the temp file got the read-only mode too; on Windows the failing
+    # rename then left it behind, since os.remove cannot delete a read-only file.
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        def boom(src, dst):
+            raise PermissionError(13, "simulated rename failure", dst)
+        monkeypatch.setattr(install_module.os, "replace", boom)
+        with pytest.raises(PermissionError, match="simulated|read-only"):
+            install_module._write_bytes(target, b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
+    finally:
+        target.chmod(0o644)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_write_bytes_refuses_a_read_only_target(install_module, tmp_path):
+    # Replacing the file through a rename ignored the read-only bit the user set; main's plain
+    # write raised PermissionError and changed nothing.
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            install_module._write_bytes(target, b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
+    finally:
+        target.chmod(0o644)
+
+
+def test_verify_accepts_a_hook_interpreter_written_with_tilde_or_a_variable(install_module, tmp_path, monkeypatch):
+    # README's manual install writes the hook path with ~; _runnable looked for the literal "~".
+    home = tmp_path / "home"
+    install_module.install(home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    exe = home / "venv" / "bin" / "python"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    for form in ("~/venv/bin/python", "$HOME/venv/bin/python"):
+        assert install_module._runnable(form), form

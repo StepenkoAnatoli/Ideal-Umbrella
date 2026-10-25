@@ -21,9 +21,11 @@ config/uninstall.py can put back the values that were there before.
 """
 import argparse
 import datetime
+import errno
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -61,8 +63,6 @@ def quote(value):
         # double quote cannot appear in a Windows path, so the escape below never triggers in
         # practice; it only keeps a quoted value from ending the string early.
         return '"' + str(value).replace('"', '\\"') + '"'
-    import shlex
-
     return shlex.quote(str(value))
 
 
@@ -187,13 +187,17 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
 
 
 def _read_json(path):
-    with open(path, encoding="utf-8-sig") as f:
-        try:
+    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
+    naming the file, which main() reports as one line before anything is written."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-        except ValueError as e:
-            sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     if not isinstance(data, dict):
-        sys.exit(f"{path} must contain a JSON object, not {type(data).__name__}; nothing written")
+        raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data
 
 
@@ -208,19 +212,43 @@ def _backup(path):
     return backup
 
 
-def _write_json(path, data):
-    # Write through a symlink (dotfiles, stow, home-manager) instead of replacing the link.
+def _umask():
+    """The process umask; os.umask can only read it by setting it."""
+    value = os.umask(0)
+    os.umask(value)
+    return value
+
+
+def _write_bytes(path, data):
+    """Write a user file whole or not at all: to a temp file beside it, then rename over it.
+    A write that fails part way (disk full, a killed process) leaves the old file as it was
+    instead of a truncated one. Writes through a symlink (dotfiles, stow, home-manager)
+    instead of replacing the link, and keeps the file's mode; a new file gets the mode a
+    plain write would give it. A read-only target is refused, as a plain write refuses it."""
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=path.parent)
+    if path.exists() and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if path.exists():
+            os.chmod(tmp, path.stat().st_mode & 0o7777)
+        else:
+            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
+            try:
+                os.chmod(tmp, 0o600)   # Windows cannot remove a read-only file
+            except OSError:
+                pass
             os.remove(tmp)
+
+
+def _write_json(path, data):
+    _write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
 
 
 def _read_text(path):
@@ -295,15 +323,20 @@ def _merge_record(old, new):
     return merged
 
 
-def install(home, force=False):
+def install(home, force=False, progress=None):
+    """Install into home; return (changes, notices). Every file-level change is also appended
+    to `progress` (when given) as it happens, so a later OSError can still name the backups
+    and files written before it."""
     paths = layout(home)
     changes, notices = [], []
+    if progress is None:
+        progress = []
     record = {}
 
     # Read and check everything before writing anything, and write settings.json after the
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
-    for name in ("settings", "claude_md"):
+    for name in ("settings", "claude_md", "hook", "record"):
         if paths[name].is_symlink() and not paths[name].exists():
             raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
@@ -320,9 +353,9 @@ def install(home, force=False):
     notices.extend(setting_notices)
 
     if current_hook != hook_bytes:
-        paths["hook"].parent.mkdir(parents=True, exist_ok=True)
-        paths["hook"].write_bytes(hook_bytes)
+        _write_bytes(paths["hook"], hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
+        progress.append(changes[-1])
 
     if current_md != claude_md:
         paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
@@ -330,6 +363,7 @@ def install(home, force=False):
         if claude_md_exists:
             backup = _backup(paths["claude_md"])
             changes.append(f"CLAUDE.md backup: {backup.name}")
+            progress.append(changes[-1])
         old_md = old_record.get("claude_md")
         # Keep the first backup when the file is still what an earlier install wrote. If the
         # user edited it since, their edits are what an uninstall should put back.
@@ -340,14 +374,17 @@ def install(home, force=False):
             record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
             if isinstance(old_md, dict) and backup is not None:
                 notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
-        paths["claude_md"].write_text(claude_md, encoding="utf-8", newline="\n")
+        _write_bytes(paths["claude_md"], claude_md.encode("utf-8"))
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
+        progress.append(changes[-1])
 
     if setting_changes:
         if paths["settings"].exists():
             backup = _backup(paths["settings"])
             setting_changes.append(f"settings backup: {backup.name}")
+            progress.append(setting_changes[-1])
         _write_json(paths["settings"], existing)
+        progress.append("settings.json written")
 
     # The record describes what was written, so it comes after settings.json: a record of an
     # install that failed would make uninstall report values it never installed. Without a
@@ -357,8 +394,36 @@ def install(home, force=False):
     return setting_changes + changes, notices
 
 
+def _interpreter(command):
+    """The first word of a hook command: the interpreter it runs. Empty when unreadable."""
+    command = command.strip()
+    if os.name == "nt":
+        if command.startswith('"'):
+            end = command.find('"', 1)
+            return command[1:end] if end > 0 else ""
+        return command.split(" ", 1)[0]
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ""
+    return words[0] if words else ""
+
+
+def _runnable(exe):
+    """True when exe is a path that exists or a bare name found on PATH. ~ and $VAR are expanded
+    as the shell would; a Git-Bash path (/c/Users/...) on Windows cannot be checked and passes."""
+    exe = os.path.expanduser(os.path.expandvars(exe))
+    if os.name == "nt" and exe.startswith("/"):
+        return True
+    if os.sep in exe or (os.altsep and os.altsep in exe):
+        return os.path.exists(exe)
+    return shutil.which(exe) is not None
+
+
 def verify(home):
-    """Return (ok, issues, warnings). Warnings do not fail verification."""
+    """Return (ok, issues, warnings). Warnings do not fail verification. The hook command
+    embeds the interpreter that ran install.py; a deleted venv or a pyenv bump leaves a
+    command that "|| exit 0" silences, so the interpreter is checked too."""
     paths = layout(home)
     issues, warnings = [], []
 
@@ -408,12 +473,16 @@ def verify(home):
                     # (it's/.claude/...) only appears in its quoted form.
                     if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
                         issues.append(f"Hook command does not point at {paths['hook']}: {command}")
+                    exe = _interpreter(command)
+                    if exe and not _runnable(exe):
+                        issues.append(f"Hook interpreter not found: {exe}; run install.py again "
+                                      "to point the hook at the current Python")
         if not found:
             issues.append("Ideal-Umbrella hook not found in UserPromptSubmit")
 
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
-    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != CLAUDE_MD.read_text(encoding="utf-8"):
+    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != _read_text(CLAUDE_MD):
         issues.append("CLAUDE.md content differs from config/CLAUDE.md")
 
     if not paths["hook"].exists():
@@ -439,14 +508,20 @@ def main(argv=None):
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")
+        progress = []
         try:
-            changes, notices = install(home, force=args.force)
+            changes, notices = install(home, force=args.force, progress=progress)
         except ValueError as e:
             print(f"Error: {e}; nothing written", file=sys.stderr)
             return 1
         except OSError as e:
-            # e.g. ~/.claude/ballast exists as a regular file, or a folder is read-only.
+            # e.g. ~/.claude/ballast exists as a regular file, or a folder is read-only. Every
+            # file is written whole or not at all; name what was done so the backups are findable.
             print(f"Error: {e}", file=sys.stderr)
+            if progress:
+                print("Done before the error:", file=sys.stderr)
+                for line in progress:
+                    print(f"  - {line}", file=sys.stderr)
             return 1
         if changes:
             print("Changes:")
@@ -459,7 +534,15 @@ def main(argv=None):
     else:
         print("Verifying installation...")
 
-    ok, issues, warnings = verify(home)
+    try:
+        ok, issues, warnings = verify(home)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # e.g. the hook path is a folder: the same one-line report as a failed install.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
     if ok:
         print("\n[OK] Installation verified successfully.")
     else:

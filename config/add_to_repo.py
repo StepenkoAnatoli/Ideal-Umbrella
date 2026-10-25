@@ -13,9 +13,9 @@ only the user-level hook. Stdlib only; run with
 `python -I config/add_to_repo.py [--force] <repo>`, then commit the two files in
 that repository.
 """
+import errno
 import json
 import os
-import shutil
 import sys
 import tempfile
 
@@ -108,28 +108,55 @@ def merge(settings, template, force=False):
 
 
 def _read_json(path):
-    with open(path, encoding="utf-8-sig") as f:
-        try:
+    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
+    naming the file, which main() reports as one line before anything is written."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
-        except ValueError as e:
-            sys.exit(f"{path} is not valid JSON ({e}); fix it first, nothing written")
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+    except ValueError as e:
+        raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     if not isinstance(data, dict):
-        sys.exit(f"{path} must contain a JSON object, not {type(data).__name__}; nothing written")
+        raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data
 
 
-def _write_json(path, data):
-    # Write through a symlink instead of replacing the link.
+def _umask():
+    """The process umask; os.umask can only read it by setting it."""
+    value = os.umask(0)
+    os.umask(value)
+    return value
+
+
+def _write_bytes(path, data):
+    """Write whole or not at all (temp file beside the target, then rename), through a
+    symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
+    plain write would give it. A read-only target is refused, as a plain write refuses it."""
     path = os.path.realpath(path)
-    fd, tmp = tempfile.mkstemp(prefix=".settings-", suffix=".json", dir=os.path.dirname(path))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        if os.path.exists(path):
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        else:
+            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
+            try:
+                os.chmod(tmp, 0o600)   # Windows cannot remove a read-only file
+            except OSError:
+                pass
             os.remove(tmp)
+
+
+def _write_json(path, data):
+    _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
 def main(argv=None):
@@ -140,21 +167,43 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
-    repo = argv[0]
+    try:
+        changes, notices = _add(argv[0], force)
+    except ValueError as e:
+        # Raised while reading or merging, before any write.
+        print(f"Error: {e}; nothing written", file=sys.stderr)
+        return 1
+    except OSError as e:
+        # e.g. <repo>/.claude is a regular file, or the folder is read-only.
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print("\n".join(changes) or "already up to date")
+    for notice in notices:
+        print(f"note: {notice}")
+    if changes:
+        print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
+    return 0
+
+
+def _add(repo, force):
+    """Merge the template into <repo>/.claude/settings.json and copy the hook; return
+    (changes, notices)."""
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
+    target = os.path.join(claude_dir, "hooks", "context_check.py")
+    for p in (path, target):
+        if os.path.islink(p) and not os.path.exists(p):
+            raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     try:
         changes, notices = merge(settings, template, force=force)
     except ValueError as e:
-        sys.exit(f"{path}: {e}; nothing written")
+        raise ValueError(f"{path}: {e}") from None
 
     if changes:
-        os.makedirs(claude_dir, exist_ok=True)
         _write_json(path, settings)
 
-    target = os.path.join(claude_dir, "hooks", "context_check.py")
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
@@ -162,16 +211,9 @@ def main(argv=None):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     if source != old:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        shutil.copyfile(SCRIPT, target)
+        _write_bytes(target, source)
         changes.append(".claude/hooks/context_check.py written")
-
-    print("\n".join(changes) or "already up to date")
-    for notice in notices:
-        print(f"note: {notice}")
-    if changes:
-        print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
-    return 0
+    return changes, notices
 
 
 if __name__ == "__main__":

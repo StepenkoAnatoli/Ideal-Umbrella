@@ -1,6 +1,9 @@
 import json
+import os
 import subprocess
 import sys
+
+import pytest
 
 from conftest import ROOT
 
@@ -112,3 +115,52 @@ def test_repo_own_value_is_kept_unless_forced(add_to_repo, tmp_path):
                             capture_output=True, text=True, encoding="utf-8")
     assert forced.returncode == 0, forced.stderr
     assert json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))["autoCompactWindow"] == TEMPLATE["autoCompactWindow"]
+
+
+def test_file_system_error_is_one_line(tmp_path):
+    # `.claude` as a regular file stops os.makedirs: it used to be a traceback.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".claude").write_text("in the way", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
+
+
+def test_non_utf8_settings_say_so(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_bytes(b'{"a": "caf\xe9"}')
+    result = run(repo)
+    assert result.returncode == 1
+    assert "not UTF-8" in result.stderr and "Traceback" not in result.stderr
+    assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
+
+
+@pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
+def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
+    # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two
+    # kinds of file, did not: the error named a temp file in the missing target folder.
+    repo = tmp_path / "repo"
+    link = repo / ".claude" / relative
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(tmp_path / "gone" / link.name)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "settings.json").is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    add_to_repo._add(str(repo), force=False)
+    expected = 0o666 & ~add_to_repo._umask()
+    for name in ("settings.json", os.path.join("hooks", "context_check.py")):
+        path = repo / ".claude" / name
+        assert path.stat().st_mode & 0o777 == expected, name

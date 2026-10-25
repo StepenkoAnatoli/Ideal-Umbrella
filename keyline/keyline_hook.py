@@ -5,7 +5,7 @@ Usage:
   python keyline_hook.py --print-config   print a ready-to-paste hook entry for this install
 
 Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extension-less files
-inside a notes/ or plans/ folder of the project, or, when one or more --watch PATTERN arguments
+inside a notes/ or plans/ folder of the project (a file outside the project is ignored), or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
 project dir). Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
@@ -74,10 +74,18 @@ def watched(path, root, patterns=()):
             elif rel is not None and fnmatch.fnmatchcase(rel, pat_n):
                 return True
         return False
-    try:
-        rel = path.resolve().relative_to(Path(root).resolve())
-    except (ValueError, OSError):
-        rel = path
+    # The path as written first (a notes/ folder that is a symlink to Dropbox stays inside the
+    # project), then with symlinks resolved; a file outside the project by both readings
+    # (~/notes/todo.md) is not a project note.
+    for candidate, base in ((Path(os.path.abspath(path)), Path(os.path.abspath(root))),
+                            (path.resolve(), Path(root).resolve())):
+        try:
+            rel = candidate.relative_to(base)
+            break
+        except (ValueError, OSError):
+            continue
+    else:
+        return False
     return bool({p.lower() for p in rel.parent.parts} & WATCHED_DIRS)
 
 
@@ -152,6 +160,9 @@ def main():
     except OSError as e:
         print(f"keyline hook: cannot read {path}: {e}", file=sys.stderr)
         return 1                                   # non-blocking error
+    except keyline_lint.TiktokenMissing as e:
+        print(f"keyline hook: {e}", file=sys.stderr)
+        return 1                                   # non-blocking: the note cannot be linted yet
     if problems:
         print("keyline: this machine note breaks the Keyline rules; fix the file.", file=sys.stderr)
         print("\n".join(problems), file=sys.stderr)

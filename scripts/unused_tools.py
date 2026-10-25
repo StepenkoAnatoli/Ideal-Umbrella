@@ -42,6 +42,8 @@ def main(argv=None):
     parser.add_argument("dir")
     parser.add_argument("--top", type=int, default=40)
     args = parser.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
 
     if not Path(args.dir).is_dir():
         print(f"error: {args.dir} is not a folder", file=sys.stderr)
@@ -56,8 +58,12 @@ def main(argv=None):
     if len(called) > args.top:
         print(f"  ... and {len(called) - args.top} more")
 
-    with open(USER_SETTINGS, encoding="utf-8") as f:
-        denied = json.load(f).get("permissions", {}).get("deny", [])
+    try:
+        with open(USER_SETTINGS, encoding="utf-8") as f:
+            denied = json.load(f).get("permissions", {}).get("deny", [])
+    except (OSError, ValueError) as e:
+        print(f"error: cannot read {USER_SETTINGS}: {e}", file=sys.stderr)
+        return 1
     print("\nDenied in config/user-settings.json:")
     for tool in denied:
         n = called.get(tool, 0)

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Measure token cost of the SAME incident report in different notations."""
-import sys, gzip, base64, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+import sys, gzip, base64
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 A = ("I've completed the investigation into the outage. The authentication service began failing at 15:00 UTC "
      "shortly after the deployment of version 2.4.1. The root cause was that the database connection pool, which "
