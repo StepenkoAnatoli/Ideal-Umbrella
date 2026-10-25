@@ -119,4 +119,5 @@ def test_hook_command_quotes_the_running_interpreter(install_module, tmp_path):
     command = install_module.hook_command(tmp_path)
     assert sys.executable in command
     assert "context_check.py" in command
-    assert "python3" not in command
+    # The interpreter is recorded by full path, not as a bare "python3" looked up on PATH.
+    assert not command.startswith("python3 ")
