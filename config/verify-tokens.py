@@ -37,7 +37,10 @@ DEFAULT_FIXTURES = [
 
 def count_tiktoken(text: str) -> tuple[int, int]:
     """Return (o200k_base, cl100k_base) token counts."""
-    import tiktoken
+    try:
+        import tiktoken
+    except ImportError:
+        sys.exit("tiktoken is not installed; run: pip install tiktoken")
     o200k = tiktoken.get_encoding("o200k_base")
     cl100k = tiktoken.get_encoding("cl100k_base")
     return (

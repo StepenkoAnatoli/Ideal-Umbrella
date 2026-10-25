@@ -95,6 +95,10 @@ code, out = run("keyline_check.py", T / "no-invariants.source.txt", T / "no-inva
 expect("check source with no invariants: INCONCLUSIVE, exit 1",
        code == 1 and out.startswith("INCONCLUSIVE"), out)
 
+# An empty source used to PASS with 0 invariants; it has nothing to check and is INCONCLUSIVE.
+empty = keyline_check.check("", "anything at all")
+expect("check empty source: INCONCLUSIVE, not PASS", empty.inconclusive and not empty.ok)
+
 
 # ---- keyline_lint.py ----
 for name in ("incident.keyline.txt", "notes.keyline.txt"):

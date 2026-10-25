@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I ~/.claude/ballast/context_check.py",
+            "command": "python3 -I ~/.claude/ballast/context_check.py || exit 0",
             "timeout": 15
           }
         ]

@@ -69,8 +69,10 @@ def summarize(files):
                     event = json.loads(line)
                 except ValueError:
                     continue
-                message = event.get("message") or {}
-                if event.get("type") != "assistant" or not isinstance(message, dict):
+                if not isinstance(event, dict) or event.get("type") != "assistant":
+                    continue
+                message = event.get("message")
+                if not isinstance(message, dict):
                     continue
                 message_id = message.get("id")
                 usage = message.get("usage") or {}

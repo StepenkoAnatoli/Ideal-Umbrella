@@ -18,14 +18,18 @@ Invalid integer settings fall back to the defaults with a warning; they never
 crash the hook before it can read the prompt event.
 """
 import datetime
+import io
 import json
 import os
 import sys
+import time
 import traceback
 
 DEFAULT_THRESHOLD = 150000
 DEFAULT_STEP = 25000
 TAIL_BYTES = 4 * 1024 * 1024
+STATE_MAX_AGE = 30 * 24 * 3600   # state files of sessions older than this are removed
+LOG_MAX_BYTES = 1024 * 1024      # the log keeps about its last half when it passes this
 
 
 def state_dir():
@@ -55,9 +59,27 @@ def log(message):
         path = log_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
+        if os.path.exists(path) and os.path.getsize(path) > LOG_MAX_BYTES:
+            with open(path, "rb") as f:
+                f.seek(-LOG_MAX_BYTES // 2, os.SEEK_END)
+                tail = f.read().split(b"\n", 1)[-1]
+            with open(path, "wb") as f:
+                f.write(tail)
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{stamp} {message}\n")
     except Exception:
+        pass
+
+
+def prune_state(folder):
+    """Drop state files of sessions not seen for STATE_MAX_AGE, so the folder stays small."""
+    try:
+        cutoff = time.time() - STATE_MAX_AGE
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    os.remove(entry.path)
+    except OSError:
         pass
 
 
@@ -111,7 +133,10 @@ def context_tokens(path):
 def run():
     threshold = parse_int("IDEAL_UMBRELLA_HANDOFF_AT", DEFAULT_THRESHOLD)
     step = parse_int("IDEAL_UMBRELLA_HANDOFF_STEP", DEFAULT_STEP)
-    data = json.load(sys.stdin)
+    # Claude Code sends UTF-8; the locale codec (cp1252 on many Windows hosts) would choke on
+    # a non-ASCII transcript path, so read the bytes and decode them as UTF-8 ourselves.
+    stdin = getattr(sys.stdin, "buffer", None)
+    data = json.load(io.TextIOWrapper(stdin, encoding="utf-8") if stdin is not None else sys.stdin)
     if not isinstance(data, dict):
         return
     path = data.get("transcript_path") or ""
@@ -133,6 +158,7 @@ def run():
     if band <= last:
         return
     os.makedirs(state_dir(), exist_ok=True)
+    prune_state(state_dir())
     with open(state, "w", encoding="utf-8") as f:
         f.write(str(band))
     event = data.get("hook_event_name") or "UserPromptSubmit"

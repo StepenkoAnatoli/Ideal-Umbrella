@@ -64,7 +64,9 @@ def quote(value):
 
 
 def hook_command(home):
-    return f"{quote(sys.executable)} -I {quote(layout(home)['hook'])}"
+    # "|| exit 0": if this settings.json is synced to a machine without the hook file or this
+    # interpreter, the shell's failure (exit 2 or 127) must not block every prompt there.
+    return f"{quote(sys.executable)} -I {quote(layout(home)['hook'])} || exit 0"
 
 
 def _hook_entries(entry):
@@ -282,7 +284,7 @@ def _merge_record(old, new):
     return merged
 
 
-def install(home, force=False, verify_only=False):
+def install(home, force=False):
     paths = layout(home)
     changes, notices = [], []
     record = {}
@@ -302,12 +304,6 @@ def install(home, force=False, verify_only=False):
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"))
     notices.extend(setting_notices)
-    if verify_only:
-        if current_hook != hook_bytes:
-            changes.append(f"hook {'updated' if hook_exists else 'written'}")
-        if current_md != claude_md:
-            changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
-        return setting_changes + changes, notices
 
     if current_hook != hook_bytes:
         paths["hook"].parent.mkdir(parents=True, exist_ok=True)
@@ -368,7 +364,12 @@ def verify(home):
             issues.append("permissions is not an object")
             deny = []
         else:
-            deny = permissions.get("deny") or []
+            deny = permissions.get("deny")
+            if deny is None:
+                deny = []
+            elif not isinstance(deny, list):
+                issues.append(f"permissions.deny is not a list: {deny!r}")
+                deny = []
         missing_tools = [tool for tool in REQUIRED_TOOLS if tool not in deny]
         if missing_tools:
             issues.append("permissions.deny is missing: " + ", ".join(missing_tools))
@@ -386,7 +387,9 @@ def verify(home):
                 command = str(hook.get("command", ""))
                 if "context_check.py" in command:
                     found = True
-                    if str(paths["hook"]) not in command:
+                    # The installer writes the path quoted, so a path with a quote in it
+                    # (it's/.claude/...) only appears in its quoted form.
+                    if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
                         issues.append(f"Hook command does not point at {paths['hook']}: {command}")
         if not found:
             issues.append("Ideal-Umbrella hook not found in UserPromptSubmit")
@@ -420,6 +423,10 @@ def main(argv=None):
             changes, notices = install(home, force=args.force)
         except ValueError as e:
             print(f"Error: {e}; nothing written", file=sys.stderr)
+            return 1
+        except OSError as e:
+            # e.g. ~/.claude/ballast exists as a regular file, or a folder is read-only.
+            print(f"Error: {e}", file=sys.stderr)
             return 1
         if changes:
             print("Changes:")

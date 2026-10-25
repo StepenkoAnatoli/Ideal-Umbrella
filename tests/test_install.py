@@ -200,3 +200,43 @@ def test_malformed_hook_entry_does_not_crash(install_module, tmp_path):
     assert ok, issues
     entries = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
     assert {"hooks": ["echo hi"]} in entries
+
+
+def test_hook_command_does_not_block_prompts_when_the_hook_file_is_missing(install_module, tmp_path):
+    # A settings.json synced to a machine without ~/.claude/ballast/context_check.py used to
+    # make the shell exit 2 (python: can't open file), which Claude Code treats as "block the
+    # prompt": every prompt on that machine was refused.
+    command = install_module.hook_command(tmp_path)
+    assert command.endswith("|| exit 0")
+    assert not (tmp_path / ".claude" / "ballast" / "context_check.py").exists()
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_verify_rejects_a_deny_list_that_is_a_string(install_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    # "Artifact" in "Artifact,ScheduleWakeup,..." is a substring match, which used to pass.
+    settings["permissions"]["deny"] = ",".join(settings["permissions"]["deny"])
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok
+    assert any("permissions.deny is not a list" in issue for issue in issues)
+
+
+def test_os_error_is_reported_not_raised(install_module, tmp_path, capsys):
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "ballast").write_text("in the way", encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:")
+    assert "Traceback" not in err
+
+
+def test_home_with_a_quote_in_its_path_verifies(install_module, tmp_path):
+    home = tmp_path / "it's home"
+    install_module.install(home)
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
