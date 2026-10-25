@@ -11,6 +11,8 @@ Notable changes to Ideal-Umbrella. HISTORY.md holds the narrative research log; 
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `scripts/lint_validate.py` and `scripts/plugin_cost.py` no longer hardcode one machine's paths: the keyline module and tiktoken cache come from this repository, and the corpus folder and Claude app folder are arguments (with per-OS defaults and `CLAUDE_APP_DIR`). Both print usage and fail cleanly on a missing folder.
+- `scripts/tokentest.py` no longer redefines `claude` (the pyflakes warning is gone).
 - The user-level hook command `config/install.py` writes now ends in `|| exit 0`. A `settings.json` synced to a machine without `~/.claude/ballast/context_check.py` (or without that Python) used to exit 2 there, which blocks every prompt.
 - `config/add_to_repo.py` keeps a scalar value the repository already sets and reports it, instead of replacing it silently; `--force` replaces it. `merge()` now returns `(changes, notices)`.
 - `scripts/usage_breakdown.py` no longer crashes on a transcript line that is a JSON list or string.
