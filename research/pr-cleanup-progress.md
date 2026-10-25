@@ -23,4 +23,7 @@ The earlier sweep (PR #9, #10) is done; its findings are in `research/review-fin
 - Checks: pytest 57 passed (all 8 new tests fail on the old code, except the UTF-8 stdin one which only differs on a non-UTF-8 locale), keyline 35/35, pyflakes clean (64 pytest after the leftovers), JSON templates valid.
 
 ## Open items
-- None. Every review finding is fixed and merged; a new task starts the branch again from main.
+- A second full review of main 913ab0c found no high items; its findings (2 medium: the three small
+  transcript scripts crash on a non-object line and toolresult_share.py divides by zero; 8 low) are in
+  `research/review-findings-main-913ab0c.md`. Nothing is fixed yet; fixes go on `ccr-866ae3a7-ac9ajn`
+  (restarted from main 913ab0c) when the user asks.
