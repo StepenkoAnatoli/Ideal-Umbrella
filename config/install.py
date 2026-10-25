@@ -15,6 +15,9 @@ What it does:
   2. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change)
   3. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
   4. Verifies the files and prints a command to run in a new session.
+
+What it changed is recorded in <home>/.claude/ballast/install-record.json, so
+config/uninstall.py can put back the values that were there before.
 """
 import argparse
 import datetime
@@ -47,6 +50,7 @@ def layout(home):
         "settings": claude / "settings.json",
         "claude_md": claude / "CLAUDE.md",
         "hook": claude / "ballast" / "context_check.py",
+        "record": claude / "ballast" / "install-record.json",
     }
 
 
@@ -79,8 +83,16 @@ def _template_hook(entries):
     return None
 
 
-def merge_settings(existing, template, home, force=False):
-    """Merge template into existing; return (changes, notices)."""
+def merge_settings(existing, template, home, force=False, record=None):
+    """Merge template into existing; return (changes, notices).
+
+    When record is a dict, it is filled with what was added or replaced so it can be undone.
+    """
+    if record is None:
+        record = {}
+    record.setdefault("added_keys", [])
+    record.setdefault("replaced", {})
+    record.setdefault("deny_added", [])
     if not isinstance(existing, dict):
         raise ValueError("settings must be a JSON object")
     if not isinstance(template, dict):
@@ -92,11 +104,13 @@ def merge_settings(existing, template, home, force=False):
             continue
         if key not in existing:
             existing[key] = value
+            record["added_keys"].append(key)
             changes.append(f"{key}: added {value!r}")
         elif existing[key] != value:
             if force:
                 old = existing[key]
                 existing[key] = value
+                record["replaced"][key] = old
                 changes.append(f"{key}: {old!r} -> {value!r}")
             else:
                 notices.append(f"{key} is {existing[key]!r}, template has {value!r}; left unchanged (use --force)")
@@ -113,6 +127,7 @@ def merge_settings(existing, template, home, force=False):
         added = [tool for tool in wanted if tool not in deny]
         if added:
             deny.extend(added)
+            record["deny_added"].extend(added)
             changes.append("permissions.deny: added " + ", ".join(added))
 
     template_hooks = template.get("hooks", {})
@@ -188,13 +203,41 @@ def _write_json(path, data):
             os.remove(tmp)
 
 
+def _merge_record(path, new):
+    """Fold this run's record into the saved one. The first value seen for a key wins, so a
+    second install never overwrites what was there before the first."""
+    old = {}
+    if path.exists():
+        try:
+            with open(path, encoding="utf-8") as f:
+                old = json.load(f)
+        except ValueError:
+            old = {}
+    if not isinstance(old, dict):
+        old = {}
+    first_added = old.get("added_keys", [])
+    replaced = {k: v for k, v in new.get("replaced", {}).items() if k not in first_added}
+    replaced.update(old.get("replaced", {}))
+    added = [k for k in old.get("added_keys", []) if k not in replaced]
+    added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
+    deny = list(old.get("deny_added", []))
+    deny += [t for t in new.get("deny_added", []) if t not in deny]
+    merged = {"added_keys": added, "replaced": replaced, "deny_added": deny}
+    if "claude_md" in old:
+        merged["claude_md"] = old["claude_md"]
+    elif "claude_md" in new:
+        merged["claude_md"] = new["claude_md"]
+    return merged
+
+
 def install(home, force=False, verify_only=False):
     paths = layout(home)
     changes, notices = [], []
+    record = {}
 
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
-    setting_changes, setting_notices = merge_settings(existing, template, home, force)
+    setting_changes, setting_notices = merge_settings(existing, template, home, force, record)
     changes.extend(setting_changes)
     notices.extend(setting_notices)
     if setting_changes and not verify_only:
@@ -208,9 +251,11 @@ def install(home, force=False, verify_only=False):
     if not claude_md_exists or paths["claude_md"].read_text(encoding="utf-8") != claude_md:
         if not verify_only:
             paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
+            backup = None
             if claude_md_exists:
                 backup = _backup(paths["claude_md"])
                 changes.append(f"CLAUDE.md backup: {backup.name}")
+            record["claude_md"] = {"backup": backup.name if backup else None}
             paths["claude_md"].write_text(claude_md, encoding="utf-8", newline="\n")
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
 
@@ -221,6 +266,9 @@ def install(home, force=False, verify_only=False):
             paths["hook"].parent.mkdir(parents=True, exist_ok=True)
             paths["hook"].write_bytes(hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
+
+    if changes and not verify_only:
+        _write_json(paths["record"], _merge_record(paths["record"], record))
 
     return changes, notices
 

@@ -51,6 +51,8 @@ The install steps below reproduce the settings, `CLAUDE.md` and hook rows. The c
 ```bash
 python -I config/install.py              # install or update
 python -I config/install.py --verify-only  # check only
+python -I config/uninstall.py --dry-run    # preview the undo
+python -I config/uninstall.py              # undo
 ```
 
 The installer is **idempotent** and merges instead of replacing:
@@ -102,9 +104,11 @@ Expected: context categories include `cache_read`, `cache_creation`, `input`, `o
 
 ## Undo
 
-Delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md` and `~/.claude/ballast/context_check.py`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
+Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. Values you changed after installing are left alone and reported. `settings.json` is backed up first. Installs made before the record existed: the two keys and the hook are removed, `permissions.deny` is left for you.
 
-Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000). Folder-level `.claude/settings.local.json` files override user settings.
+By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md` and `~/.claude/ballast/context_check.py`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
+
+Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000); `IDEAL_UMBRELLA_TAIL_BYTES` (default 4 MB) sets how much of the transcript end the hook reads. Folder-level `.claude/settings.local.json` files override user settings.
 
 ## What did not work
 
@@ -122,12 +126,12 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 
 ## Contents
 
-- `config/` - settings snippet (`user-settings.json`, `repo-settings.json`), `CLAUDE.md` rule, cloud setup script (`cloud-setup.sh`), repo installer (`add_to_repo.py`), user installer (`install.py`), token calibration (`verify-tokens.py`)
+- `config/` - settings snippet (`user-settings.json`, `repo-settings.json`), `CLAUDE.md` rule, cloud setup script (`cloud-setup.sh`), repo installer (`add_to_repo.py`), user installer and undo (`install.py`, `uninstall.py`), token calibration (`verify-tokens.py`)
 - `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log and the 13-agent panel results
-- `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine
+- `scripts/` - measurement scripts (token counts, transcript breakdowns); paths inside point at my machine. `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used.
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 
 ## Measured numbers
@@ -160,7 +164,7 @@ python -I config/verify-tokens.py --model <current-model-id>
 - **Token measure** (`measure.py`): o200k_base/cl100k_base counts.
 - **PostToolUse hook** (`keyline_hook.py`): runs lint + check on write/edit in `notes/` or `plans/`; `--print-config` generates a ready-to-paste hook entry.
 
-Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`; venv in `keyline/.venv/`). The current suite passes 35/35; see `keyline/README.md` for details and honest limits.
+Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`; venv in `keyline/.venv/`). The suite has 35 checks on Windows and 34 elsewhere (one path check is Windows only); see `keyline/README.md` for details and honest limits.
 
 ## Tests
 
@@ -169,7 +173,7 @@ python -m pytest -q
 python -I keyline/tests/run_tests.py
 ```
 
-The pytest suite covers the cost model, both installers, the hand-off hook, and the calibration fixture path. Run both commands above before opening a pull request.
+The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook, and the calibration fixture path. GitHub Actions (`.github/workflows/ci.yml`) runs both on Ubuntu and Windows for every pull request and push to `main`. Run both commands above before opening a pull request.
 
 ## Research
 
