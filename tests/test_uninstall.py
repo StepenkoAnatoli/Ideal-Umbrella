@@ -708,3 +708,59 @@ def test_removed_replaced_key_is_reported(install_module, uninstall_module, tmp_
     changes, notices = uninstall_module.uninstall(home)
     assert any("autoCompactWindow" in n and "123" in n for n in notices), notices
     assert "autoCompactWindow" not in read_settings(home)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into read-only folders")
+@pytest.mark.skipif(os.name == "nt", reason="os.access does not see a Windows folder as read-only")
+def test_a_read_only_hook_folder_is_refused_before_settings_is_written(install_module, uninstall_module, tmp_path, capsys):
+    # Only settings.json, CLAUDE.md and the record were checked: with ballast/ read-only,
+    # settings.json was backed up and rewritten, then the hook's unlink failed and the undo
+    # "stopped part way", one more settings.json.bak-* per attempt.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    claude = home / ".claude"
+    for p in claude.glob("settings.json.bak-*"):
+        p.unlink()
+    settings_before = settings_file(home).read_bytes()
+    (claude / "ballast").chmod(0o555)
+    try:
+        for _ in range(2):
+            assert uninstall_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert "read-only" in err and "nothing written" in err and "Traceback" not in err, err
+        assert not list(claude.glob("settings.json.bak-*")), list(claude.iterdir())
+        assert settings_file(home).read_bytes() == settings_before
+        assert (claude / "ballast" / "context_check.py").exists()
+    finally:
+        (claude / "ballast").chmod(0o755)
+
+
+def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Windows refuses to delete a file with the read-only attribute (a POSIX unlink needs only
+    # the folder): a read-only hook, log or CLAUDE.md backup stopped the undo part way. The
+    # mode is cleared before each unlink; here unlink is made to refuse as Windows does, so
+    # the test fails without the fix on every platform.
+    import stat
+    from pathlib import Path
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    paths = install_module.layout(home)
+    paths["log"].write_text("log\n", encoding="utf-8")
+    backup = next((home / ".claude").glob("CLAUDE.md.bak-*"))
+    for p in (paths["hook"], paths["log"], backup):
+        p.chmod(stat.S_IREAD)
+    real_unlink = Path.unlink
+
+    def windows_like_unlink(self, missing_ok=False):
+        if not self.is_symlink() and not self.stat().st_mode & stat.S_IWRITE:
+            raise PermissionError(13, "Access is denied", str(self))
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", windows_like_unlink)
+    changes, notices = uninstall_module.uninstall(home)
+    assert "hook deleted" in changes and "log deleted" in changes, (changes, notices)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), changes
+    assert not paths["hook"].exists() and not paths["log"].exists() and not backup.exists()
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"

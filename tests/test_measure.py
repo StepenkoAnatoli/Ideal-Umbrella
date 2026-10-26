@@ -146,3 +146,40 @@ def test_a_symlinked_folder_is_reported(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "skip (symlinked folder)" in result.stderr and "linked" in result.stderr
     assert "y.txt" in result.stdout and "x.txt" not in result.stdout
+
+
+def test_a_junction_is_skipped_as_a_symlinked_folder(tmp_path, monkeypatch, capsys):
+    # Path.is_symlink() does not see a Windows junction, which os.walk does not enter either:
+    # its files were left out with no "skip" line. Here os.path.isjunction answers for one
+    # folder, so the path is exercised on every platform.
+    pytest.importorskip("tiktoken")
+    from pathlib import Path
+    from conftest import load_module
+    measure = load_module("measure", "keyline/measure.py")
+    walk = tmp_path / "walk"
+    (walk / "linked").mkdir(parents=True)
+    (walk / "linked" / "x.txt").write_text("hi\n", encoding="utf-8")
+    (walk / "y.txt").write_text("hi\n", encoding="utf-8")
+    monkeypatch.setattr(os.path, "isjunction", lambda p: Path(p) == walk / "linked", raising=False)
+    assert measure.files_in(walk) == [walk / "y.txt"]
+    err = capsys.readouterr().err
+    assert "skip (symlinked folder)" in err and "linked" in err, err
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is a Windows directory link")
+def test_a_real_junction_is_skipped(tmp_path):
+    pytest.importorskip("tiktoken")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "x.txt").write_text("hi\n", encoding="utf-8")
+    walk = tmp_path / "walk"
+    walk.mkdir()
+    (walk / "y.txt").write_text("hi\n", encoding="utf-8")
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(walk / "linked"), str(real)], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("cannot create a junction here")
+    result = subprocess.run([sys.executable, "-I", str(ROOT / "keyline" / "measure.py"), str(walk)],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    assert "skip (symlinked folder)" in result.stderr and "linked" in result.stderr
+    assert "y.txt" in result.stdout and "x.txt" not in result.stdout

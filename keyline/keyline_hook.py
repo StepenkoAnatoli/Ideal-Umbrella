@@ -9,16 +9,20 @@ inside a notes/ or plans/ folder of the project (a file outside the project is i
 a dotfile such as notes/.gitignore), or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
-project dir; the suffix rule still applies, so a watched .py file is passed over). A --watch
+project dir; the suffix rule still applies, so a watched .py file is passed over, while the
+dotfile rule does not: a pattern that matches notes/.todo.md means it). A --watch
 without a pattern, or any other flag, is an error (exit 1, one line).
 Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
     incident.he.txt or incident.he.md exists, run keyline_check.py note -> rendering;
   - a rendering (incident.he.txt, incident.he.md): run keyline_check.py against its note
-    (incident.txt / .md / .keyline / no extension); two notes beside one rendering is a finding.
+    (incident.txt / .md / .keyline / no extension); more than one note beside one rendering is
+    a finding of its own, and the check waits until one note is left.
 Exit 0 when clean or not applicable. Exit 2 with the findings on stderr when anything fails:
 for PostToolUse the file is already written, and Claude Code shows stderr to Claude so it fixes it.
-The first line says which file to fix: the note when the lint found something, else the rendering.
+The first line says which file to fix: the note when the lint found something, the rendering when
+it no longer matches, or, with more than one note beside it, the note to keep. A file name is
+printed as is; a byte in it that is no UTF-8 is shown as a backslash escape, not as a traceback.
 Exit 1 (non-blocking, one line on stderr) when the file cannot be read or tiktoken is missing.
 """
 import fnmatch
@@ -38,6 +42,8 @@ NOTE_SUFFIXES = (".txt", ".md", ".keyline", "")
 HE_SUFFIXES = (".he.txt", ".he.md")
 NOTE_HEADER = "keyline: this machine note breaks the Keyline rules; fix the file."
 RENDERING_HEADER = "keyline: this rendering no longer matches its machine note; fix the rendering."
+TWO_NOTES_HEADER = ("keyline: more than one note beside this rendering; keep the one it renders, "
+                    "then write it again.")
 
 
 def _quote(value):
@@ -151,7 +157,10 @@ def main():
         return 0
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
-            s.reconfigure(encoding="utf-8")
+            # errors= too: reconfigure(encoding=...) alone resets it to strict, and a file
+            # name that is no UTF-8 (a surrogate escape, from the event or a listing) then
+            # turned every message into a UnicodeEncodeError traceback.
+            s.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         patterns = parse_watch(sys.argv[1:])
     except ValueError as e:
@@ -175,7 +184,7 @@ def main():
         # A file in a folder that cannot be searched: the stat itself fails.
         print(f"keyline hook: cannot read {path}: {e.strerror or e}", file=sys.stderr)
         return 1                                   # non-blocking error
-    if path.name.startswith("."):
+    if not patterns and path.name.startswith("."):
         return 0                                   # notes/.gitignore, .DS_Store: not a note
     he = rendering_suffix(path)
     is_rendering = he is not None
@@ -188,16 +197,19 @@ def main():
         except (OSError, keyline_lint.TiktokenMissing) as e:
             print(f"keyline hook: {e}", file=sys.stderr)
             return 1                               # non-blocking: the note cannot be linted yet
-    lint_problems, problems = [], []
+    lint_problems, problems, too_many = [], [], False
     try:
         if is_rendering:
             notes = notes_for(path)
             if len(notes) > 1:
-                names = ", ".join(shown(n, root) for n in notes)
-                problems.append(f"{shown(path, root)}: more than one note beside this rendering "
-                                f"({names}); keep the one it renders")
-            for note in notes:
-                run_check(note, path, problems, root)
+                # Not a rendering fault: checking it against each note would show one FAIL
+                # per note it does not render. Say which notes, and check once one is left.
+                too_many = True
+                problems.append(f"{shown(path, root)}: notes beside it: "
+                                + ", ".join(shown(n, root) for n in notes))
+            else:
+                for note in notes:
+                    run_check(note, path, problems, root)
         elif is_note:
             for no, msg in keyline_lint.lint_file(path, words):
                 lint_problems.append(f"{shown(path, root)}:{no}: {msg}")
@@ -217,7 +229,8 @@ def main():
     if lint_problems or problems:
         # The first line names the file to fix: the note when the lint found something, else
         # the rendering (a note write that leaves its rendering stale is fixed in the rendering).
-        print(NOTE_HEADER if lint_problems else RENDERING_HEADER, file=sys.stderr)
+        print(NOTE_HEADER if lint_problems else TWO_NOTES_HEADER if too_many else RENDERING_HEADER,
+              file=sys.stderr)
         print("\n".join(lint_problems + problems), file=sys.stderr)
         return 2
     return 0

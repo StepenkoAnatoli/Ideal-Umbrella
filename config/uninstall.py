@@ -12,7 +12,9 @@ compares against the values the install wrote (not the current templates). After
 record is kept as a marker, so running uninstall again changes nothing. Without a record
 (installs made before it existed) it removes the two keys only if they still hold the
 template values and the Ideal-Umbrella hook is installed, keeps a backup of CLAUDE.md
-before deleting it, removes the hook, and leaves permissions.deny alone.
+before deleting it, removes the hook, and leaves permissions.deny alone. A record that holds
+no settings data (an install interrupted before its last write) is handled the same way for
+the settings, and the run says so.
 
 A value you changed after installing is left as it is and reported.
 
@@ -21,6 +23,7 @@ Usage:
 """
 import argparse
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -61,7 +64,12 @@ def undo_settings(settings, template, record, evidence=None):
     is evidence of an install (evidence; by default, our hook entry in settings).
     """
     changes, notices, left = [], [], []
-    has_record = record is not None
+    # A record with no settings data (an install interrupted before its last write, or the
+    # marker an uninstall leaves) says nothing about settings.json: the keys are then judged
+    # as without a record, from the evidence, instead of being trusted as "nothing added".
+    has_record = record is not None and any(k in record for k in ("added_keys", "replaced", "installed"))
+    unfinished = record is not None and not has_record and not record.get("uninstalled")
+    no_record = record is None
     record = record or {}
     replaced = record.get("replaced", {})
     added = record.get("added_keys", [])
@@ -81,9 +89,16 @@ def undo_settings(settings, template, record, evidence=None):
         keys = list(dict.fromkeys([*added, *replaced]))
     elif evidence:
         keys = list(template)
+        if unfinished:
+            notices.append("the install record holds no settings data (the install did not finish); "
+                           "the template values are removed as without a record")
     else:
         keys = []
-        notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
+        if unfinished:
+            notices.append("the install record holds no settings data (the install did not finish) "
+                           "and there is no Ideal-Umbrella hook; settings values left as is")
+        elif no_record:
+            notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
         if key in ("hooks", "permissions"):
             continue
@@ -125,8 +140,11 @@ def undo_settings(settings, template, record, evidence=None):
         # take out; say so and keep deny_added so a later run can still remove the tools.
         notices.append(f"permissions.deny is not a list ({permissions['deny']!r}); left as is")
         left.append("permissions.deny")
-    if not has_record:
+    if no_record:
         notices.append("no install record; permissions.deny left as is")
+    elif unfinished:
+        notices.append("the install record holds no settings data (the install did not finish); "
+                       "permissions.deny left as is")
 
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
@@ -161,6 +179,18 @@ def _leftover_record(record, left, claude_md_left):
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
     return leftover
+
+
+def _remove(path):
+    """Delete a file, clearing a read-only mode first: Windows refuses to delete a file with
+    the read-only attribute (a POSIX unlink needs only the folder, so there this changes
+    nothing). A symlink is unlinked as it is: a chmod would reach through it."""
+    if not path.is_symlink():
+        try:
+            path.chmod(path.stat().st_mode | stat.S_IWRITE)
+        except OSError:
+            pass
+    path.unlink()
 
 
 def _backup_of(claude_md, name):
@@ -238,6 +268,21 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             install._refuse_read_only(claude_md)
         if record is not None or paths["record"].exists():
             install._refuse_read_only(paths["record"])
+        # The folder of each file this run removes, for the same reason: a hook folder that
+        # cannot be written was found by the unlink, after settings.json was backed up and
+        # rewritten ("the undo stopped part way" on every run).
+        removals = [paths["hook"]] if paths["hook"].exists() else []
+        if install._is_link(paths["state"]) or paths["state"].is_dir():
+            removals.append(paths["state"])
+        if paths["log"].is_file():
+            removals.append(paths["log"])
+        if restore:
+            removals.append(backup)
+        elif (current_md is not None and ours and named is None
+              and (entry is not None if record is not None else evidence)):
+            removals.append(claude_md)             # the delete branches below
+        for path in removals:
+            install._refuse_unwritable_folder(path, through_link=False)
     if setting_changes and not dry_run:
         backup_settings = install._backup(paths["settings"])
         done(f"settings backup: {backup_settings.name}")
@@ -248,7 +293,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if dry_run:
             changes.append("hook deleted")
         else:
-            paths["hook"].unlink()
+            _remove(paths["hook"])
             done("hook deleted")
     # What the hook wrote while it ran: the per-session state files and its log. A state folder
     # that is a symlink, or a junction on Windows, is unlinked, not followed (shutil.rmtree
@@ -269,7 +314,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if dry_run:
             changes.append("log deleted")
         else:
-            paths["log"].unlink()
+            _remove(paths["log"])
             done("log deleted")
 
     claude_md_left = False
@@ -281,7 +326,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             # link; a copy that fails part way must not leave a truncated file.
             install._write_bytes(claude_md, backup.read_bytes())
             done(f"CLAUDE.md restored from {backup.name}")
-            backup.unlink()
+            _remove(backup)
     elif named is not None and (ours or current_md is None):
         # The install replaced a file of yours and the record names its backup, but the backup
         # is gone or the name is not a plain file name: deleting now would lose the only copy
@@ -304,7 +349,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             if dry_run:
                 changes.append("CLAUDE.md deleted")
             else:
-                claude_md.unlink()
+                _remove(claude_md)
                 done("CLAUDE.md deleted")
         elif record is not None and entry is None:
             # The record says this install never wrote CLAUDE.md (the file already matched the
@@ -316,7 +361,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 changes.append("CLAUDE.md deleted (a backup is kept)")
             else:
                 copy = install._backup(claude_md)
-                claude_md.unlink()
+                _remove(claude_md)
                 done(f"CLAUDE.md deleted (copy kept as {copy.name})")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
@@ -333,7 +378,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        # errors= too: reconfigure(encoding=...) alone resets it to strict, and a path from
+        # --home or a listing can hold a byte that is no UTF-8 (a surrogate escape).
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     home, config_dir = install.target(args.home)
     progress = []

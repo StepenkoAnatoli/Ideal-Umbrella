@@ -229,7 +229,7 @@ def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     extra, use_files, files = [], True, []
     it = iter(argv)
     for a in it:

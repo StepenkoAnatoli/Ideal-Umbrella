@@ -91,7 +91,7 @@ def plugin_rows(app_dir, enc):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # -I ignores PYTHONUTF8: set UTF-8 output here
     if not 1 <= len(argv) <= 2:
         print(__doc__.strip(), file=sys.stderr)
         return 2

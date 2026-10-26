@@ -2,9 +2,9 @@
 
 Usage:
   python measure.py FILE_OR_FOLDER [FILE_OR_FOLDER ...]
-A folder is walked recursively (hidden folders, cache/, __pycache__/ and symlinked folders are
-skipped, each with a line on stderr). With exactly two files, a change line is printed. Files are
-counted exactly as stored (a UTF-8 BOM is dropped; line endings and a trailing newline are
+A folder is walked recursively (hidden folders, cache/, __pycache__/ and symlinked folders, on
+Windows junctions too, are skipped, each with a line on stderr). With exactly two files, a change
+line is printed. Files are counted exactly as stored (a UTF-8 BOM is dropped; line endings and a trailing newline are
 counted). These are OpenAI tokenizers: a proxy for Claude's tokenizer, which is not public.
 Exit 2 when an argument is missing, is a file that cannot be counted, or is a folder in which
 nothing was counted; a file skipped inside a walked folder is one stderr line and not an error.
@@ -23,6 +23,13 @@ except ImportError:
 SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
 
+def _is_link(path):
+    """A symlink, or on Windows a junction: os.path.islink does not see a junction, and os.walk
+    does not enter one either."""
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+, Windows only
+    return os.path.islink(path) or bool(isjunction and isjunction(path))
+
+
 def files_in(arg):
     p = Path(arg)
     if p.is_file():
@@ -33,10 +40,10 @@ def files_in(arg):
             # os.walk does not follow a symlinked folder (a loop would never end); say so,
             # as a skipped file is said, instead of leaving its files out in silence.
             for d in sorted(dirs):
-                if Path(root, d).is_symlink():
+                if _is_link(os.path.join(root, d)):
                     print(f"skip (symlinked folder): {Path(root) / d}", file=sys.stderr)
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS
-                             and not Path(root, d).is_symlink())
+                             and not _is_link(os.path.join(root, d)))
             out += [Path(root) / n for n in sorted(names)]
         return out
     raise FileNotFoundError(arg)
@@ -48,7 +55,9 @@ def count(text, encs):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        # errors= too: reconfigure(encoding=...) alone resets it to strict, and a file name
+        # from a walked folder can hold a byte that is no UTF-8 (a surrogate escape).
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if not argv or argv[0].startswith("-"):
         print(__doc__.strip(), file=sys.stderr)
         return 2

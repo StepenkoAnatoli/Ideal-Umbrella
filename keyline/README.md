@@ -126,14 +126,16 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
    absolute pattern matches the absolute path, a relative one the path from the project dir;
-   the suffix rule still applies, so a watched `.py` file is passed over). A `--watch` with no
+   the suffix rule still applies, so a watched `.py` file is passed over, while the dotfile rule
+   does not: a pattern that matches `notes/.todo.md` means it). A `--watch` with no
    pattern, or any other flag, is an error on every write (exit 1, one line on stderr), not a
    silent fall-back to the `notes/`/`plans/` rule.
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt` (or `notes/x.he.md`). The hook
    then checks it whenever either file is written or edited. Two notes beside one rendering
-   (`x.txt` and `x.md`) are reported as a finding: the hook cannot tell which one it renders.
+   (`x.txt` and `x.md`) are a finding of their own: the first line says to keep the one it
+   renders, the notes are named, and the check waits until one note is left.
 4. Optional: add `keyline-allow.txt` at the repo root for project names that split into tokens.
 5. Paste `CLAUDE-snippet.md` into the repo's CLAUDE.md.
 6. Start a new Claude Code session in the repo so it loads the settings.
@@ -177,6 +179,8 @@ Two panel claims do not reproduce exactly:
   and percentage as a proxy. Check real numbers with Anthropic's count_tokens endpoint.
 - The checker only sees tokens it can extract. It cannot catch a wrong verb, a swapped actor, a
   reversed causal chain or an invented sentence.
+- A file name that is not UTF-8 is printed as a backslash escape of its surrogate code point
+  (`\udcff`), not as the byte.
 - Proper-noun detection is a heuristic: it skips the first word of a sentence/line and common
   furniture, so a name at the start of a sentence can be missed, and a capitalized common word
   mid-sentence can be checked. It is meant to fail closed, not to be a parser.

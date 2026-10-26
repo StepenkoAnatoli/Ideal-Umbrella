@@ -695,3 +695,132 @@ def test_legacy_record_without_sha256_reports_the_second_backup(install_module, 
     changes, _ = uninstall_module.uninstall(home)
     assert f"CLAUDE.md restored from {first}" in changes, changes
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+
+
+ROOT_USER = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def _interrupt(install_module, home, which, calls_before):
+    """Run install(home) with the `which`-th _write_json of the record (1 = the interim one,
+    2 = the final one) failing like a full disk; returns the paths written up to it."""
+    record_path = install_module.layout(home)["record"]
+    real_write = install_module._write_json
+    calls = []
+
+    def failing(path, data):
+        calls.append(path)
+        if path == record_path and calls.count(record_path) == which:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    install_module._write_json = failing
+    try:
+        with pytest.raises(OSError):
+            install_module.install(home, progress=calls_before)
+    finally:
+        install_module._write_json = real_write
+    return calls
+
+
+def test_interrupt_at_the_final_record_is_undone_by_the_uninstall(install_module, tmp_path):
+    # The interim record went through _merge_record, which filled in added_keys: [],
+    # replaced: {}, created: [] ...: an interrupt at the final record (the last of the five
+    # writes) left a record saying the install added nothing to settings.json while the file
+    # held every template key; the re-install recorded nothing (the values were "the user's
+    # own") and the uninstall trusted the record, left the keys and wrote the clean marker.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    progress = []
+    _interrupt(install_module, home, 2, progress)
+    assert "settings.json written" in progress
+    record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
+    assert list(record) == ["claude_md"], record          # no settings data invented
+    assert install_module.install(home) == ([], [])       # everything is already on disk
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    deny = install_module._read_json(install_module.USER_SETTINGS)["permissions"]["deny"]
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {
+        "model": "opus", "permissions": {"deny": deny}}, changes
+    assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert not install_module.layout(home)["hook"].exists()
+
+
+def test_interrupt_at_the_interim_record_leaves_no_orphan_backup(install_module, tmp_path):
+    # The backup of CLAUDE.md was made before the interim record that names it: an interrupt
+    # at that record left a CLAUDE.md.bak-* nothing knew about, and the next install made a
+    # second copy of the same file.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    progress = []
+    _interrupt(install_module, home, 1, progress)
+    assert not list(claude.glob("CLAUDE.md.bak-*")), list(claude.iterdir())
+    assert not any("backup" in line for line in progress), progress
+    install_module.install(home)
+    assert len(list(claude.glob("CLAUDE.md.bak-*"))) == 1
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert not list(claude.glob("CLAUDE.md.bak-*")), list(claude.iterdir())
+
+
+def test_interrupt_at_the_claude_md_write_reuses_the_recorded_backup(install_module, tmp_path, monkeypatch):
+    # With the interim record written and the CLAUDE.md write interrupted, the user's file was
+    # still there beside its backup; the next install saw a file that differed from the
+    # record's hash and backed it up again, leaving two copies of the same file.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    real_write = install_module._write_bytes
+
+    def failing_once(path, data):
+        if Path(path).name == "CLAUDE.md":
+            monkeypatch.setattr(install_module, "_write_bytes", real_write)
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    monkeypatch.setattr(install_module, "_write_bytes", failing_once)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    assert len(list(claude.glob("CLAUDE.md.bak-*"))) == 1
+    changes, notices = install_module.install(home)
+    assert len(list(claude.glob("CLAUDE.md.bak-*"))) == 1, list(claude.iterdir())
+    assert not any("edits made after" in n for n in notices), notices
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, _ = uninstall_module.uninstall(home)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), changes
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert not list(claude.glob("CLAUDE.md.bak-*"))
+
+
+@pytest.mark.skipif(ROOT_USER, reason="root writes into read-only folders")
+@pytest.mark.skipif(os.name == "nt", reason="os.access does not see a Windows folder as read-only")
+@pytest.mark.parametrize("folder", [".claude", ".claude/ballast"])
+def test_a_read_only_folder_is_refused_before_any_write(install_module, tmp_path, capsys, folder):
+    # Only the target files were checked for writability: a read-only .claude/ (or ballast/)
+    # folder was found by the temp file of the first write into it, after the files before it
+    # were written ("Done before the error"), on every attempt.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    (claude / "ballast").mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    target = home / folder
+    target.chmod(0o555)
+    try:
+        for _ in range(2):
+            assert install_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert "read-only" in err and "nothing written" in err and "Traceback" not in err, err
+            assert "Done before" not in err, err
+        assert not install_module.layout(home)["hook"].exists()
+        assert not (claude / "CLAUDE.md").exists()
+        assert sorted(p.name for p in claude.iterdir()) == ["ballast", "settings.json"]
+        assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus"}
+    finally:
+        target.chmod(0o755)

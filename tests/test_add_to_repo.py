@@ -277,3 +277,24 @@ def test_a_read_only_settings_file_is_refused_before_the_hook_is_written(tmp_pat
         assert not (repo / ".claude" / "hooks").exists()
     finally:
         settings.chmod(0o644)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into read-only folders")
+@pytest.mark.skipif(os.name == "nt", reason="os.access does not see a Windows folder as read-only")
+def test_a_read_only_claude_folder_is_refused_before_the_hook_is_written(tmp_path):
+    # Only the two target files were checked: with .claude/ read-only (and hooks/ writable)
+    # the hook was copied, then the settings.json temp file failed, "Done before the error".
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    settings = repo / ".claude" / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    (repo / ".claude").chmod(0o555)
+    try:
+        result = run(repo)
+        assert result.returncode == 1
+        assert "read-only" in result.stderr and "nothing written" in result.stderr, result.stderr
+        assert "Traceback" not in result.stderr and "Done before" not in result.stderr
+        assert not (repo / ".claude" / "hooks" / "context_check.py").exists()
+        assert settings.read_text(encoding="utf-8") == "{}"
+    finally:
+        (repo / ".claude").chmod(0o755)

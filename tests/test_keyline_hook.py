@@ -229,7 +229,57 @@ def test_two_notes_for_one_rendering_are_reported(keyline_hook, tmp_path, monkey
     assert run_main(keyline_hook, monkeypatch, event) == 2
     err = capsys.readouterr().err
     assert "Traceback" not in err
-    assert "notes/c.txt" in err and "notes/c.md" in err and "FAIL notes/c.he.txt" in err, err
+    # The first line said "fix the rendering" and the per-note checks ran, so the second note's
+    # FAIL block was shown as if the rendering were wrong: the fix is to remove a note, which
+    # gets its own first line, and the checks wait until one note is left.
+    lines = err.splitlines()
+    assert lines[0] == keyline_hook.TWO_NOTES_HEADER, err
+    assert "fix the rendering" not in lines[0] and "FAIL" not in err, err
+    assert "notes/c.txt" in err and "notes/c.md" in err, err
     (notes / "c.md").unlink()
     assert run_main(keyline_hook, monkeypatch, event) == 0
     assert capsys.readouterr().err == ""
+
+
+def test_an_explicit_watch_pattern_names_a_dotfile(keyline_hook, tmp_path, monkeypatch, capsys):
+    # The dotfile rule (notes/.gitignore is not a note) ran after the --watch match, so a
+    # pattern that named notes/.hidden.txt was accepted and the file was never linted: an
+    # explicit pattern says what the user means, as it does for the notes/ folder rule.
+    pytest.importorskip("tiktoken")
+    note = tmp_path / "notes" / ".hidden.txt"
+    note.parent.mkdir()
+    note.write_text("- Server down 2026-10-20 14:00\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(note)}}
+    assert run_main(keyline_hook, monkeypatch, event, argv=["--watch", "notes/.hidden.txt"]) == 2
+    err = capsys.readouterr().err
+    assert err.splitlines()[0] == keyline_hook.NOTE_HEADER and "furniture" in err, err
+    assert run_main(keyline_hook, monkeypatch, event) == 0          # without a pattern: not a note
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a file name outside UTF-8 needs a POSIX file system")
+def test_a_file_name_outside_utf8_is_reported_not_a_traceback(keyline_hook, tmp_path, monkeypatch, capsys):
+    # reconfigure(encoding="utf-8") also set errors="strict" on stderr (its default is
+    # backslashreplace): a surrogate-escaped name from a non-UTF-8 file name turned every
+    # message, findings and the one-line error alike, into a UnicodeEncodeError traceback.
+    pytest.importorskip("tiktoken")
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    note = notes / os.fsdecode(b"\xff.txt")
+    note.write_text("- Server down 2026-10-20 14:00\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(note)}}
+    assert run_main(keyline_hook, monkeypatch, event) == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.splitlines()[0] == keyline_hook.NOTE_HEADER, err
+    assert "\\udcff.txt" in err and "furniture" in err, err    # the escape, not the surrogate
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return                                     # root reads a mode-000 file
+    note.chmod(0)
+    try:
+        assert run_main(keyline_hook, monkeypatch, event) == 1
+        err = capsys.readouterr().err
+        assert "Traceback" not in err and err.count("\n") == 1 and "cannot read" in err, err
+    finally:
+        note.chmod(0o644)

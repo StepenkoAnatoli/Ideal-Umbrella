@@ -13,7 +13,9 @@ Usage:
 What it does, in write order (everything is read and checked first):
   1. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
   2. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change), recording
-     the change and its backup in <home>/.claude/ballast/install-record.json first
+     the change and its backup in <home>/.claude/ballast/install-record.json first (a
+     backup whose record could not be written is removed again; one an interrupted
+     install recorded is reused when it still equals the file)
   3. Merges config/user-settings.json into <home>/.claude/settings.json
   4. Writes the full install record
   5. Verifies the files and prints a command to run in a new session.
@@ -241,13 +243,33 @@ def _read_json(path):
 
 
 def _refuse_read_only(path):
-    """A target that exists but cannot be written is a ValueError, raised in the read-and-check
-    phase: refusing it when its turn came (as _write_bytes still does) left its backup and the
-    files written before it behind on every attempt. os.access sees the Windows read-only
-    attribute as well as a POSIX mode."""
+    """A target that exists but cannot be written, or a folder its write needs that cannot be,
+    is a ValueError, raised in the read-and-check phase: refusing it when its turn came (as
+    _write_bytes still does) left its backup and the files written before it behind on every
+    attempt. os.access sees a POSIX mode or the Windows read-only attribute, not a Windows ACL
+    that denies the write: that write fails at its own turn, as before."""
     path = Path(path)
     if path.exists() and not os.access(path, os.W_OK):
         raise ValueError(f"{path} is read-only; make it writable first")
+    _refuse_unwritable_folder(path)
+
+
+def _refuse_unwritable_folder(path, through_link=True):
+    """A folder that a write or a removal of path needs but that cannot be written is a
+    ValueError: the target's own folder (its temp file, the rename, a backup and an unlink
+    happen there), the nearest folder that exists when the target is new, and, for a write
+    through a symlinked target, the folder of the file it points at (not for a removal, which
+    takes the link itself). A folder on Windows is never read-only to os.access, so there this
+    checks nothing; a file in the way of a folder is left to the write to report."""
+    path = Path(os.path.abspath(path))
+    folders = [path.parent]
+    if through_link:
+        folders.append(path.resolve().parent)
+    for folder in folders:
+        while not folder.exists() and folder.parent != folder:
+            folder = folder.parent
+        if folder.is_dir() and not os.access(folder, os.W_OK):
+            raise ValueError(f"{folder} is read-only; make it writable first")
 
 
 def _backup(path):
@@ -450,6 +472,16 @@ def install(home, force=False, progress=None, config_dir=None):
     claude_md = _read_text(CLAUDE_MD)
     claude_md_exists = paths["claude_md"].exists()
     current_md = _read_text(paths["claude_md"]) if claude_md_exists else None
+    old_md = old_record.get("claude_md")
+    # The copy an interrupted install made and recorded, still equal to the file it was taken
+    # from (the install never got to replace it): the one to keep, not to make again.
+    recorded_copy = None
+    if isinstance(old_md, dict) and current_md is not None:
+        name = old_md.get("backup")
+        if isinstance(name, str) and name and Path(name).name == name:
+            candidate = paths["claude_md"].with_name(name)
+            if candidate.is_file() and _read_bytes(candidate) == _read_bytes(paths["claude_md"]):
+                recorded_copy = candidate
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
@@ -474,13 +506,14 @@ def install(home, force=False, progress=None, config_dir=None):
 
     if md_changed:
         paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
-        old_md = old_record.get("claude_md")
         # A file still holding what an earlier install wrote is the installer's own: no backup
         # of it (nothing would restore one), and the first backup stays the one to restore.
         still_ours = (isinstance(old_md, dict) and current_md is not None
                       and old_md.get("sha256") == text_hash(current_md))
         backup = None
-        if claude_md_exists and not still_ours:
+        if claude_md_exists and not still_ours and recorded_copy is not None:
+            backup = recorded_copy
+        elif claude_md_exists and not still_ours:
             backup = _backup(paths["claude_md"])
             changes.append(f"CLAUDE.md backup: {backup.name}")
             progress.append(changes[-1])
@@ -500,14 +533,29 @@ def install(home, force=False, progress=None, config_dir=None):
                                f"{outcome}")
         else:
             record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
-            if isinstance(old_md, dict) and backup is not None:
+            if isinstance(old_md, dict) and backup is not None and backup is not recorded_copy:
                 notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
         # Record the CLAUDE.md change before the file is replaced, and before settings.json: an
         # interruption between the record and the write leaves the old file, which the next
         # install backs up and installs again; the other order left a template CLAUDE.md with no
         # record of its backup, which the next install saw as already matching and the undo
-        # never restored. The settings values are recorded only once settings.json holds them.
-        _write_json(paths["record"], _merge_record(old_record, {"claude_md": record["claude_md"]}))
+        # never restored. The settings values are recorded only once settings.json holds them,
+        # so the interim record carries no settings data at all: one that said "added nothing"
+        # was believed by the uninstall after an interrupt at the final record.
+        try:
+            _write_json(paths["record"], dict(old_record, claude_md=record["claude_md"]))
+        except OSError:
+            if backup is not None and backup is not recorded_copy:
+                # Nothing records this copy, and the file it copies is still in place: remove
+                # it, or the next install makes a second copy of the same file.
+                try:
+                    backup.unlink()
+                except OSError:
+                    pass
+                else:
+                    changes.remove(f"CLAUDE.md backup: {backup.name}")
+                    progress.remove(f"CLAUDE.md backup: {backup.name}")
+            raise
         _write_bytes(paths["claude_md"], claude_md.encode("utf-8"))
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
         progress.append(changes[-1])
@@ -644,7 +692,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        # errors= too: reconfigure(encoding=...) alone resets it to strict, and a path from
+        # --home or a listing can hold a byte that is no UTF-8 (a surrogate escape).
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     home, config_dir = target(args.home)
 
     if not args.verify_only:

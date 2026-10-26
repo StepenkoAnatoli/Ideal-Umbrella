@@ -368,7 +368,7 @@ def report(src_path, out_path, source, rendering):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if len(argv) == 2 and argv[0] == "--list":
         try:
             src = read(argv[1])

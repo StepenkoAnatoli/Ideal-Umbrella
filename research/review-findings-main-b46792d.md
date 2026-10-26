@@ -757,40 +757,200 @@ Counts: 0 high, 5 medium, 11 low; all fixed class-wide in this PR.
     the uninstall trusts the record and leaves the three scalar keys, `permissions.deny` and an
     empty hooks container behind while writing `{"uninstalled": true}`. Reproduced. Medium.
     Class: halfway state (the boundary after the one finding 6's fix covered).
+   Fixed: The interim record no longer carries settings data. config/install.py:546 writes
+   `dict(old_record, claude_md=record["claude_md"])` (before: the full record with `added_keys: []`,
+   `replaced: {}`), so an install interrupted at the last write (N=5) leaves a record that holds
+   only `claude_md`. config/uninstall.py:70-72 tells the three states apart: `has_record` (a record
+   with `added_keys`/`replaced`/`installed`), `unfinished` (a record with none of them and not the
+   `uninstalled` marker), `no_record` (no file). An unfinished record is treated like no record for
+   the settings: the template values are removed when the hook entry is there (uninstall.py:93
+   notice "the install record holds no settings data (the install did not finish); the template
+   values are removed as without a record"), left alone otherwise (uninstall.py:98 "... and there is
+   no Ideal-Umbrella hook; settings values left as is"), and `permissions.deny` is left with its own
+   notice (uninstall.py:146 "... permissions.deny left as is"). The marker record (`uninstalled:
+   true`) stays silent, so a second uninstall prints what it did before. The module docstring says
+   so. Re-install after N=5 is `([], [])` as before, since the files already equal the templates;
+   the repair is the uninstall. Tests: tests/test_install.py:725
+   `test_interrupt_at_the_final_record_is_undone_by_the_uninstall` (helper `_interrupt` at :716
+   fails the N-th `_write_json` of the record; asserts the record keys are `["claude_md"]`, the re-
+   install changes nothing, the uninstall leaves `{"model": "opus", "permissions": {"deny":
+   <template deny>}}`, both "no settings data" notices, CLAUDE.md restored, hook gone). Failed first
+   with the record holding `added_keys`, and the uninstall leaving the two keys and the hook entry
+   in settings.json.
+   Other hits: the same `unfinished` test now guards the deny branch (uninstall.py:146) that used
+   the same `record is None` rule; the interim write in install.py was the only place that wrote
+   settings data before settings.json. Decision noted: the deny tools are left, not removed, because
+   without settings data in the record they cannot be told from the user's own entries, the same
+   rule the no-record path already applies; the test pins that choice (the s2 report's expectation
+   was looser).
+   Prevention: the test above; the rule "the record never names a settings value before
+   settings.json holds it" is in install.py's docstring (write order) and the interim write carries
+   only `claude_md`.
 
 44. (S2) keyline/keyline_hook.py:154: stderr is reconfigured to UTF-8 with strict errors, so a
     file name that is not valid UTF-8 (`notes/\xff.txt`, a surrogate in the event JSON) turns
     every message into a traceback: a blocking lint failure becomes exit 1 with the finding
     lost, and the read-error path breaks the one-line contract. Reproduced. Medium. Class:
     neighbour of a previous fix (finding 19 covered file content, not the name).
+   Fixed: `sys.stderr.reconfigure(encoding="utf-8")` reset `errors` to strict, so a surrogate-
+   escaped file name made every message a `UnicodeEncodeError` traceback.
+   keyline/keyline_hook.py:163 now reconfigures with `errors="backslashreplace"`; a lone surrogate
+   prints as the escape `\udcff` (the code point, not the original byte). Docstring sentence at
+   keyline_hook.py:30-32: "A file name is printed as is; a byte in it that is no UTF-8 is shown as a
+   backslash escape, not as a traceback." Test: tests/test_keyline_hook.py:262
+   `test_a_file_name_outside_utf8_is_reported_not_a_traceback` (note `b"\xff.txt"` with a lint
+   finding: exit 2, first line `NOTE_HEADER`, `\udcff.txt` and `furniture` in stderr, no Traceback;
+   as a non-root user also the unreadable case: exit 1 and exactly one line). Failed first with the
+   traceback and exit 1.
+   Other hits: the same `reconfigure(encoding="utf-8")` shape in config/install.py:697,
+   config/uninstall.py:383, config/add_to_repo.py:197 and keyline/measure.py:60 (stdout, which
+   prints paths and home folders); all now pass `errors="backslashreplace"`, as do the twelve
+   other sites of the same shape (keyline_check.py:371, keyline_lint.py:232, config/verify-tokens.py:78,
+   hooks/context_check.py:198, scripts/lint_validate.py, plugin_cost.py, tokentest.py,
+   toolresult_share.py, unused_tools.py, usage_breakdown.py, usertext_split.py, usertext_top.py).
+   Prevention: tests/test_source_rules.py rule 6, `test_utf8_reconfigure_keeps_an_errors_handler`
+   (every `reconfigure(encoding="utf-8")` call also passes `errors=`); failed first on the twelve.
+   Prevention: the test; a source rule in tests/test_source_rules.py ("a `reconfigure(encoding=...)`
+   passes `errors=` too") would catch the next one; not added because that file is outside my set,
+   proposed in Docs.
 
 45. (S2) config/install.py:243-250: `_refuse_read_only` checks files, not directories; with
     `.claude` at 555 and CLAUDE.md absent the hook is written and the CLAUDE.md temp file then
     fails (named halfway state). Low.
+   Fixed: install checked the four files but not the folders their writes need, so with `.claude`
+   mode 555 the hook was written (ballast/ is writable) and the CLAUDE.md temp file then failed.
+   config/install.py:245 `_refuse_read_only` now also calls the new
+   `_refuse_unwritable_folder(path)` (install.py:257): it takes the target's parent, and the
+   resolved parent when the target is a symlink, walks up to the nearest folder that exists, and
+   raises `ValueError("<folder> is read-only; make it writable first")` when `os.access(folder,
+   os.W_OK)` is false; it is a no-op on Windows, where os.access never reports a folder as read-only
+   (see #5), and a file in the way is left to the write's own error, as before. Test:
+   tests/test_install.py:805 `test_a_read_only_folder_is_refused_before_any_write`, parametrized
+   over `.claude` and `.claude/ballast` (mode 555), skipped as root and on Windows; expects exit 1,
+   "is read-only" on stderr, no "Done before the error", and no file written. Failed first (as uid
+   65534) with "Done before the error: hook written".
+   Other hits: config/add_to_repo.py:148 `_refuse_read_only` had the same gap (G8c: `.claude` 555
+   with `hooks/` absent wrote nothing but failed after the check phase with a bare OSError; with
+   `hooks/` present and writable the hook was copied first): it now walks `dirname(abspath)` and
+   `dirname(realpath)` up to an existing folder the same way (add_to_repo.py:157-161); test
+   tests/test_add_to_repo.py:284
+   `test_a_read_only_claude_folder_is_refused_before_the_hook_is_written`. uninstall's removals are
+   #4.
+   Prevention: the two folder tests, run as uid 65534 in the /var/tmp copy (they skip as root); g.sh
+   G2/G2b/G8c/G9 now end "nothing written".
 
 46. (S2) config/uninstall.py:232-251: the hook folder is not checked either, so settings.json is
     written and the hook unlink fails with "the undo stopped part way"; on Windows a read-only
     hook file does the same because nothing clears the attribute before `unlink()`, unlike
     add_to_repo's `_write_bytes`. Low.
+   Fixed: uninstall wrote settings.json and then failed at `unlink()` of the hook when `ballast/`
+   was 555 (or, on Windows, when the hook file had the read-only attribute).
+   config/uninstall.py:274-290: before the settings backup, the files the undo will delete (hook,
+   state link or folder, log, the CLAUDE.md backup when it is restored, CLAUDE.md itself when it
+   will be deleted) are collected and each folder is checked with
+   `install._refuse_unwritable_folder(path, through_link=False)` (a link is unlinked, not followed),
+   so a read-only folder is a one-line refusal before anything is written. New `_remove(path)`
+   (uninstall.py:184) sets `S_IWRITE` on a regular file (try/except OSError; never on a symlink) and
+   then unlinks, so a read-only hook, log, backup or CLAUDE.md is deleted on Windows too; it
+   replaces `unlink()` at uninstall.py:296 (hook), :317 (log), :329 (backup after restore), :352 and
+   :364 (CLAUDE.md); the state symlink keeps `unlink()`. Tests: tests/test_uninstall.py:715
+   `test_a_read_only_hook_folder_is_refused_before_settings_is_written` (ballast 555; skip root/nt;
+   failed first with settings.json rewritten and "the undo stopped part way"),
+   tests/test_uninstall.py:739 `test_read_only_files_the_undo_deletes_are_deleted` (hook, log and
+   backup mode 0444, `Path.unlink` monkeypatched to raise PermissionError on a file without
+   S_IWRITE, the Windows behaviour, so the chmod-before-unlink path is exercised and fails first on
+   Linux: it failed with that PermissionError).
+   Other hits: every `unlink()` of a regular file in uninstall.py (five sites) went through
+   `_remove`; the folder check covers all five removal targets, not only the hook. install.py's
+   temp-file cleanup already chmods before removing.
+   Prevention: the two tests; `_remove` is the only way uninstall deletes a regular file.
 
 47. (S2) config/install.py:243 and config/add_to_repo.py:148: on Windows `os.access` sees the
     read-only attribute only, so an ACL-denied target brings the old halfway state back; the
     README line should say "read-only attribute or mode". Low (documented limit).
+   Fixed: no code fix is possible without an ACL helper (os.access on Windows consults the read-only
+   attribute only, and never reports a folder as unwritable), so the docstrings now say what the
+   check sees: config/install.py:245-256 `_refuse_read_only` ("os.access sees a POSIX mode or the
+   Windows read-only attribute, not a Windows ACL that denies the write: that write fails at its own
+   turn, as before") and :257-262 `_refuse_unwritable_folder` (no-op on Windows),
+   config/add_to_repo.py:148-154 the same wording. The behaviour behind an ACL denial is unchanged:
+   the hook is written, then the denied write fails with the "Done before the error" listing, and
+   the backup names are printed. README wording to apply is in Docs ("read-only attribute or mode",
+   and the Honest-limits sentence).
+   Other hits: none (the two `_refuse_read_only` functions are the only pre-write permission checks;
+   uninstall reuses install's).
+   Prevention: documented limit; the Windows CI leg runs the attribute-based tests
+   (`test_read_only_files_the_undo_deletes_are_deleted` exercises the attribute path there for
+   real).
 
 48. (S2) keyline/keyline_hook.py:193-197: two notes beside one rendering is printed under "fix
     the rendering" and then checked against both notes, so the first line points at the wrong
     file. Low.
+   Fixed: two notes beside one rendering were printed under RENDERING_HEADER ("fix the rendering")
+   with a FAIL line per note, although the fix is to remove a note. keyline/keyline_hook.py:45 adds
+   `TWO_NOTES_HEADER = "keyline: more than one note beside this rendering; keep the one it renders,
+   then write it again."`; :200-210 sets `too_many` when more than one note is found and reports one
+   line `<rendering>: notes beside it: <a>, <b>`, skipping the per-note checks (`run_check` runs
+   only with at most one note); :232 picks the header `NOTE_HEADER if lint_problems else
+   TWO_NOTES_HEADER if too_many else RENDERING_HEADER`, so a lint finding still comes first. Exit
+   stays 2 (blocking, since no check ran). Docstring kept in step (keyline_hook.py:16-18 and
+   :29-30). Test: tests/test_keyline_hook.py:217 `test_two_notes_for_one_rendering_are_reported`
+   updated: first line equals `TWO_NOTES_HEADER`, "fix the rendering" not in it, no "FAIL" line,
+   both notes named. Failed first with AttributeError on the missing constant, and the old header.
+   Other hits: none; the note-side path (a note written while a second note shares its rendering)
+   goes through the same `too_many` branch since the rendering is what is looked up.
+   Prevention: the updated test; the header table in the docstring.
 
 49. (S2) keyline/keyline_hook.py:178-179: an explicit `--watch` pattern that names a dotfile is
     silently ignored; the README says only that the suffix rule still applies. Low.
+   Fixed: the dotfile skip ran before the `--watch` patterns, so `--watch notes/.todo.md` could
+   never match. keyline/keyline_hook.py:187 now `if not patterns and path.name.startswith("."):`: an
+   explicit pattern overrides the dotfile rule; the suffix rule still applies. Docstring
+   keyline_hook.py:13 says so. Test: tests/test_keyline_hook.py:244
+   `test_an_explicit_watch_pattern_names_a_dotfile` (`notes/.hidden.txt` with a lint finding: exit 0
+   without a pattern, exit 2 with `--watch notes/.hidden.txt` and the note named). Failed first with
+   exit 0 under the pattern.
+   Other hits: the out-of-project rule and the suffix rule were checked: a pattern still does not
+   override the suffix rule (documented) and the out-of-project rule already yields to an absolute
+   pattern.
+   Prevention: the test.
 
 50. (S2) config/install.py:482-510: an interrupt at the interim record or the CLAUDE.md write
     leaves an orphan `CLAUDE.md.bak-*` and the next install makes a second backup of the same
     user file (the orphan `settings.json.bak-*` of finding 5, one file earlier). Low.
+   Fixed: a cheap fix exists for both shapes. N=2 (interim record write fails right after the backup
+   was made): config/install.py:546-556 unlinks the backup it just made (not one it reused), drops
+   its "CLAUDE.md backup:" line from `changes`/`progress`, then re-raises, so nothing of the install
+   is left. N=3 (CLAUDE.md write fails after the interim record was written): the next install reads
+   `old_record["claude_md"]["backup"]` (install.py:478-486, `recorded_copy`): when the name is a
+   plain file name, the file exists and its bytes equal the current CLAUDE.md, that backup is reused
+   instead of making a second one (install.py:513-516), no "edits made after the last install"
+   notice is printed for it, and the interim record is written again with the same name. A backup
+   whose bytes differ (the user edited CLAUDE.md in between) is not reused: a fresh one is made, as
+   before. Docstring step 2 (install.py:15-18) says both. Tests: tests/test_install.py:752
+   `test_interrupt_at_the_interim_record_leaves_no_orphan_backup` (failed first with one
+   `CLAUDE.md.bak-*` left) and :772
+   `test_interrupt_at_the_claude_md_write_reuses_the_recorded_backup` (`_write_bytes` monkeypatched
+   to fail once on CLAUDE.md; failed first with two backups after the re-install).
+   Other hits: settings.json's backup is made right before its write (same call), and the full
+   record is written after it; the interrupt there (N=4) was already covered and leaves the backup
+   that the record names. No other backup is made before its record.
+   Prevention: the two tests plus interrupt.py (N=2 `baks: []`, N=3 one backup and no second
+   "CLAUDE.md backup:" line).
 
 51. (S2) keyline/measure.py:36-39: a Windows junction is neither reported nor skipped as the
     symlinked folder the docstring describes; install and add_to_repo already have `_is_link`
     with `os.path.isjunction` for this. Low (code reading).
+   Fixed: keyline/measure.py:26 `_is_link(path)` = `os.path.islink(path) or bool(isjunction and
+   isjunction(path))` (os.path.isjunction, Python 3.12+ on Windows); used for the skip line (:43)
+   and the prune (:46), both on `os.path.join(root, d)`. Docstring: "symlinked folders, on Windows
+   junctions too, are skipped". Tests: tests/test_measure.py:151
+   `test_a_junction_is_skipped_as_a_symlinked_folder` (monkeypatches `os.path.isjunction` so the
+   code path runs on Linux; failed first with the folder's file counted and no skip line) and :170
+   `test_a_real_junction_is_skipped` (`mklink /J`, nt-only).
+   Other hits: config/add_to_repo.py and uninstall.py already had `_is_link` with the junction
+   check; measure.py was the last `islink`-only site in my files.
+   Prevention: the two tests (the nt-only one runs on the Windows CI leg).
 
 ## Checked and found clean (both reviewers and both verifiers)
 
