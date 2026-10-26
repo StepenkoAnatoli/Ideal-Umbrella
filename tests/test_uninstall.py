@@ -765,12 +765,79 @@ def test_a_read_only_state_folder_is_refused_before_settings_is_written(install_
         (state / "sub").chmod(0o755)
 
 
-def test_read_only_files_inside_the_state_folder_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):
-    # Windows refuses to delete a read-only file inside the state folder as it does the hook;
-    # shutil.rmtree does not clear the attribute. Here rmtree is made to refuse as Windows
-    # does, so the test fails without the fix on every platform.
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads and writes any folder")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX folder modes")
+@pytest.mark.parametrize("where, mode", [("sub", 0o000), ("sub", 0o333), ("sub", 0o644), ("sub", 0o100),
+                                         ("state", 0o000), ("state", 0o333)])
+def test_an_unlistable_or_unsearchable_state_folder_is_refused_before_settings_is_written(
+        install_module, uninstall_module, tmp_path, capsys, where, mode):
+    # The tree check walked state/ with os.walk, which passes over a folder it cannot list (no
+    # read bit, or no search bit) without a word, and asked only for the write bit, which a
+    # 0o644 folder has while nothing inside it can be unlinked: in each of these modes
+    # settings.json was rewritten and the hook deleted before rmtree failed in the folder, on
+    # every run.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    claude = home / ".claude"
+    for p in claude.glob("settings.json.bak-*"):
+        p.unlink()
+    settings_before = settings_file(home).read_bytes()
+    state = install_module.layout(home)["state"]
+    (state / "sub").mkdir(parents=True)
+    (state / "sub" / "s1.json").write_text("{}", encoding="utf-8")
+    folder = state if where == "state" else state / "sub"
+    folder.chmod(mode)
+    try:
+        for _ in range(2):
+            assert uninstall_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert str(folder) in err and "nothing written" in err and "Traceback" not in err, err
+            expected = {0o000: "cannot be read", 0o333: "cannot be read", 0o100: "cannot be read",
+                        0o644: "cannot be entered"}[mode]
+            assert expected in err, err
+        assert not list(claude.glob("settings.json.bak-*")), list(claude.iterdir())
+        assert settings_file(home).read_bytes() == settings_before
+        assert (claude / "ballast" / "context_check.py").exists()
+    finally:
+        folder.chmod(0o755)
+    assert (state / "sub" / "s1.json").exists()     # nothing inside the state folder went either
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into read-only folders")
+@pytest.mark.skipif(os.name == "nt", reason="POSIX folder modes")
+@pytest.mark.parametrize("where", ["state", "sub"])
+def test_an_empty_read_only_state_folder_is_removed(install_module, uninstall_module, tmp_path, where):
+    # Removing an empty folder needs only its parent (rmdir writes nothing inside it), so a
+    # read-only state folder or sub-folder with nothing in it is no reason to refuse the undo:
+    # the tree check asked every folder for the write bit and refused one rmtree removes.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    state = install_module.layout(home)["state"]
+    folder = state if where == "state" else state / "sub"
+    folder.mkdir(parents=True)
+    folder.chmod(0o555)
+    try:
+        changes, notices = uninstall_module.uninstall(home)
+    finally:
+        if folder.exists():
+            folder.chmod(0o755)
+    assert "state folder deleted" in changes, (changes, notices)
+    assert not state.exists()
+    assert not install_module.layout(home)["hook"].exists()
+
+
+def test_read_only_files_and_folders_inside_the_state_folder_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Windows refuses to delete a read-only file inside the state folder as it does the hook,
+    # and a read-only sub-folder the same way (RemoveDirectory refuses the attribute as
+    # DeleteFile does); shutil.rmtree clears neither, and the folders were not cleared. Here
+    # rmtree is made to refuse as Windows does, so the test fails without the fix on every
+    # platform. The read-only folder is empty, since on POSIX the tree check refuses a
+    # read-only folder that holds entries before anything is written.
     import shutil
     import stat
+    from pathlib import Path
     home = tmp_path / "home"
     seed(home, {})
     install_module.install(home)
@@ -780,18 +847,34 @@ def test_read_only_files_inside_the_state_folder_are_deleted(install_module, uni
     for f in files:
         f.write_text("{}", encoding="utf-8")
         f.chmod(stat.S_IREAD)
+    folders = [state / "ro"]
+    (state / "ro").mkdir()
+    (state / "ro").chmod(stat.S_IREAD | stat.S_IEXEC)
     real_rmtree = shutil.rmtree
+    real_clear = uninstall_module._clear_read_only
+    cleared = []
+
+    def recording_clear(path):
+        cleared.append(Path(path))
+        real_clear(path)
 
     def windows_like_rmtree(path, *args, **kwargs):
-        for f in files:
-            if f.exists() and not f.stat().st_mode & stat.S_IWRITE:
-                raise PermissionError(13, "Access is denied", str(f))
+        for p in [*files, *folders]:
+            if p.exists() and not p.stat().st_mode & stat.S_IWRITE:
+                raise PermissionError(13, "Access is denied", str(p))
         real_rmtree(path, *args, **kwargs)
 
+    monkeypatch.setattr(uninstall_module, "_clear_read_only", recording_clear)
     monkeypatch.setattr(shutil, "rmtree", windows_like_rmtree)
-    changes, notices = uninstall_module.uninstall(home)
+    try:
+        changes, notices = uninstall_module.uninstall(home)
+    finally:
+        if (state / "ro").exists():
+            (state / "ro").chmod(0o755)
     assert "state folder deleted" in changes, (changes, notices)
     assert not state.exists()
+    # The root and every sub-folder of the walk are cleared, as the files are.
+    assert {state, state / "sub", state / "ro"} <= set(cleared), cleared
 
 
 def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):

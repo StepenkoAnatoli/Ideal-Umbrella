@@ -6,12 +6,13 @@ Usage:
 
 Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extension-less files
 inside a notes/ or plans/ folder of the project (a file outside the project is ignored, and so is
-a dotfile such as notes/.gitignore), or, when one or more --watch PATTERN arguments
-are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
-pattern is matched against the absolute path, a relative one against the path relative to the
-project dir; the suffix rule still applies, so a watched .py file is passed over, while the
-dotfile rule does not when the pattern spells the dot: notes/.todo.md or notes/.* means
-the dotfile, notes/* does not, as in a shell). A --watch
+a dotfile such as notes/.gitignore or a file under a dot folder such as notes/.trash/x.md), or,
+when one or more --watch PATTERN arguments are given, only on files matching those patterns
+instead (fnmatch, case-insensitive; an absolute pattern is matched against the absolute path, a
+relative one against the path relative to the project dir; the suffix rule still applies, so a
+watched .py file is passed over, while the dot rule does not when the pattern spells the dot at
+that component: notes/.todo.md or notes/.* means the dotfile and notes/.trash/* the file under
+the dot folder, while notes/* means neither, as in a shell). A --watch
 without a pattern, or any other flag, is an error (exit 1, one line).
 Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
@@ -74,15 +75,21 @@ def _norm(p):
     return str(p).replace("\\", "/").lower()
 
 
+def _spells_dots(pattern, target):
+    """True when the pattern names the dot of every dot component of target (both normalised,
+    "/"-separated): a shell glob's `*` or `?` never matches a leading dot, so notes/* does not
+    reach notes/.gitignore or notes/.trash/x.md, while notes/.* and notes/.trash/* do. The
+    segments are aligned by index, so a pattern with fewer segments than the target, or `**`
+    (plain fnmatch, which spells nothing) at a dot component, does not name it."""
+    pattern_parts = pattern.split("/")
+    return all(i < len(pattern_parts) and pattern_parts[i].startswith(".")
+               for i, part in enumerate(target.split("/")) if part.startswith("."))
+
+
 def watched(path, root, patterns=()):
-    if path.name.startswith("."):
-        # notes/.gitignore, .DS_Store: not a note, unless a pattern spells the dot itself
-        # (notes/.todo.md, notes/.*). fnmatch's `*` matches a leading dot; a shell glob such as
-        # notes/* does not, and that is how a --watch glob is read.
-        patterns = [p for p in patterns if _norm(p).rsplit("/", 1)[-1].startswith(".")]
-        if not patterns:
-            return False
     if patterns:
+        # A dot component anywhere in the path (notes/.gitignore, .DS_Store, notes/.trash/x.md)
+        # is not a note unless the pattern spells that dot itself; fnmatch's `*` would match it.
         absolute = _norm(path.resolve())
         try:
             rel = _norm(path.resolve().relative_to(Path(root).resolve()).as_posix())
@@ -90,10 +97,10 @@ def watched(path, root, patterns=()):
             rel = None
         for pat in patterns:
             pat_n = _norm(pat)
-            if Path(pat).is_absolute():
-                if fnmatch.fnmatchcase(absolute, pat_n):
-                    return True
-            elif rel is not None and fnmatch.fnmatchcase(rel, pat_n):
+            target = absolute if Path(pat).is_absolute() else rel
+            if target is None or not _spells_dots(pat_n, target):
+                continue
+            if fnmatch.fnmatchcase(target, pat_n):
                 return True
         return False
     # The path as written first (a notes/ folder that is a symlink to Dropbox stays inside the
@@ -107,6 +114,10 @@ def watched(path, root, patterns=()):
         except (ValueError, OSError):
             continue
     else:
+        return False
+    if any(part.startswith(".") for part in rel.parts):
+        # notes/.gitignore, .DS_Store, notes/.trash/x.md: a dotfile, or a file under a dot
+        # folder of the project, is not a note, as a shell's notes/* does not reach it.
         return False
     return bool({p.lower() for p in rel.parent.parts} & WATCHED_DIRS)
 

@@ -16,6 +16,7 @@ Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage o
 import re
 import sys
 from dataclasses import dataclass
+from itertools import islice
 
 # Latin letters with diacritics (Zürich, Léa, Øyvind, São, Łukasz): part of a name, and a
 # token does not end before one ("Caf" is not in "Café").
@@ -69,7 +70,9 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # and a ".", so a dotted digit run that ends at a letter or "_" ("1.1.1...1_") is scanned once
 # from its first digit, not once from every digit after a "."; a name that ends in a digit
 # takes a dotted tail ("Python3.12", "GPT4.5", "python3.12" are one token each, as "v2.14.0"
-# is), so the part after the dot is not lost to that rule; the CamelCase rule tries one
+# is), so the part after the dot is not lost to that rule, while a name that ends in a letter
+# takes none ("No.5", "Fig.3", "A.1" are the abbreviation and the number, which a rendering
+# that writes "No. 5" keeps); the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
@@ -84,14 +87,14 @@ INVARIANT = re.compile(
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
     | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
     | (?P<file>(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.[A-Za-z][A-Za-z0-9]*)+)
-    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?(?:\.\d+)*)
-    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*(?:\.\d+)*)
+    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?(?:(?<=\d)\.\d+)*)
+    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*(?:(?<=\d)\.\d+)*)
     | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
-                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*(?:\.\d+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*(?:\.\d+)*|__[a-z0-9]+__)
-    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}(?:\.\d+)*)
+                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*(?:(?<=\d)\.\d+)*)
+    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*(?:(?<=\d)\.\d+)*|__[a-z0-9]+__)
+    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}(?:(?<=\d)\.\d+)*)
     | (?P<number>(?<!\d\.)(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
-    | (?P<ident>[a-z]+\d[A-Za-z0-9]*(?:\.\d+)*)
+    | (?P<ident>[a-z]+\d[A-Za-z0-9]*(?:(?<=\d)\.\d+)*)
 )"""
     + R,
     re.X,
@@ -175,12 +178,63 @@ HEDGE_HE = {
 }
 
 BOUNDARY = ".?!\n"
+# Markdown markers a line may open with before its first word ("## ", "> ", "- ", "**"), and
+# the furniture a heading or label line may hold around its one word (bold, "_", a label
+# colon, a closing "#").
+LINE_MARKERS = re.compile(r"[-*+#> \t]*")
+FURNITURE_BEFORE = re.compile(r"[#>\-*+_ \t]*")
+FURNITURE_AFTER = re.compile(r"[*_:# \t]*")
 
 
-def _is_sentence_start(text, start):
+class _Line:
+    """The line around a token, with its leading markers and its all-caps words found once:
+    the next token on the same line reuses it, so a line of many tokens is scanned once, not
+    once per token (80000 bold "May" on one line took 6.9 s, 20000 "MAY" 12 s)."""
+
+    __slots__ = ("text", "start", "end", "_markers_end", "_furniture_end", "_caps")
+
+    def __init__(self, text, start, end):
+        self.text = text
+        self.start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        self.end = line_end if line_end >= 0 else len(text)
+        self._markers_end = self._furniture_end = self._caps = None
+
+    @property
+    def markers_end(self):
+        if self._markers_end is None:
+            self._markers_end = LINE_MARKERS.match(self.text, self.start, self.end).end()
+        return self._markers_end
+
+    @property
+    def furniture_end(self):
+        if self._furniture_end is None:
+            self._furniture_end = FURNITURE_BEFORE.match(self.text, self.start, self.end).end()
+        return self._furniture_end
+
+    @property
+    def caps(self):
+        """(has a lowercase letter, spans of the first two all-caps words of two or more letters)."""
+        if self._caps is None:
+            lower = LOWER_LETTER.search(self.text, self.start, self.end) is not None
+            spans = [m.span() for m in islice(CAPS_WORD.finditer(self.text, self.start, self.end), 2)]
+            self._caps = (lower, spans)
+        return self._caps
+
+
+def _line(text, start, end, cache):
+    """The _Line holding text[start:end], from cache when it is the line found last."""
+    line = cache.get("line")
+    if line is None or not (line.start <= start and end <= line.end):
+        line = cache["line"] = _Line(text, start, end)
+    return line
+
+
+def _is_sentence_start(text, start, cache):
     """True when only whitespace, a sentence end or a line-leading marker ("## ", "> ", "**")
     separates this token from a line or sentence edge. A dash or ">" mid-line is a separator
-    ("Postgres - Prisma"), not a marker: the word after it is checked."""
+    ("Postgres - Prisma"), not a marker: the word after it is checked. cache holds the line
+    found last, see _Line."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
@@ -189,8 +243,7 @@ def _is_sentence_start(text, start):
     if text[i] in BOUNDARY:
         return True
     if text[i] in "-*+#>":
-        line_start = text.rfind("\n", 0, i) + 1
-        return all(c in "-*+#> \t" for c in text[line_start:i])
+        return _line(text, start, start, cache).markers_end > i
     return False
 
 
@@ -201,7 +254,7 @@ PROSE_WORD = re.compile(rf"[a-z{LATIN_LOWER}]+|[{HEB}]+")
 
 def _is_path(tok):
     # "and/or", "initiated/completed", "él/ella", "sim/não", "כן/לא": one slash between two
-    # plain lowercase words is prose. A dot, a digit, an underscore, a dash, a capital or a
+    # plain lowercase words is prose (the caller strips the sentence period of "and/or."). A dot, a digit, an underscore, a dash, a capital or a
     # second slash ("notes/a.txt", "a1/b", "a_b/c", "Yes/No", "a/b/c") keeps it a path.
     parts = re.split(r"[/\\]", tok)
     if len(parts) == 2 and all(PROSE_WORD.fullmatch(p) for p in parts):
@@ -212,13 +265,16 @@ def _is_path(tok):
 def invariants(text, names_at_sentence_start=False):
     """Return {token: kind} for every fact-bearing token in text, in order of appearance.
     With names_at_sentence_start, a capitalised word that opens a line or sentence is kept
-    too: what a rendering is looked up in, not what a source is held to."""
+    too: what a rendering is looked up in, not what a source is held to. A capitalised word
+    with a digit in it ("Python3.12 is required", "Node18 is required") is kept either way:
+    its capital is not the sentence's."""
     text = LIST_MARKER.sub("", text)
     found = {}
+    cache = {}
     for m in INVARIANT.finditer(text):
         kind = m.lastgroup
         tok = m.group(kind)
-        if kind == "path" and not _is_path(tok):
+        if kind == "path" and not _is_path(tok.rstrip(".")):
             continue
         if kind == "upper" and LONE_LETTER.fullmatch(tok):
             continue
@@ -227,7 +283,8 @@ def invariants(text, names_at_sentence_start=False):
         if kind == "proper":
             if tok.lower() in PROPER_STOP:
                 continue
-            if not names_at_sentence_start and _is_sentence_start(text, m.start()):
+            if (not names_at_sentence_start and _is_sentence_start(text, m.start(), cache)
+                    and not any(c.isdigit() for c in tok)):
                 continue
         # Sentence punctuation after a token is not part of it: "notes/foo." and "https://x.y/z:".
         tok = tok.rstrip(".:!?") if kind == "url" else tok.rstrip(".")
@@ -237,60 +294,61 @@ def invariants(text, names_at_sentence_start=False):
     return found
 
 
-def _all_caps_line(text, start, end):
+def _all_caps_line(text, start, end, cache):
     """True when the rest of the line has no lowercase letter and holds another all-caps word
-    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line."""
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    line = text[line_start:start] + " " + text[end:line_end if line_end >= 0 else len(text)]
-    return LOWER_LETTER.search(line) is None and CAPS_WORD.search(line) is not None
+    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line.
+    cache holds the line found last, see _Line."""
+    lower, spans = _line(text, start, end, cache).caps
+    return not lower and any(span != (start, end) for span in spans)
 
 
 LOWER_LETTER = re.compile(rf"[a-z{LATIN_LOWER}]")
 CAPS_WORD = re.compile(rf"\b[A-Z{LATIN_UPPER}]{{2,}}\b")
 # Where a sentence ends: a period, a question or exclamation mark, or a blank line.
 SENTENCE_END = re.compile(r"[.?!]|\n[ \t]*\n")
+# What follows "May" the month: a day ("May 5"), a label colon ("May:"), either after a
+# closing bold ("**May** 5", "**May**:").
+MONTH_AFTER = re.compile(r"(?:\*{1,2}|_{1,2})?(?:[ \t]+\d|:)")
 
 
-def _is_month_line(text, start, end, ends):
+def _is_month_line(text, start, end, cache):
     """True when the token is the whole content of its line and so a heading or a label naming
-    the month: "## May", "**May**", "> May", "May:" or "May" alone, with only Markdown heading,
-    quote and list markers, bold or whitespace before it and bold, a colon or whitespace after
-    it (a numbered or bulleted list marker is already stripped). A bare "May" line, with no
+    the month: "## May", "## May ##", "**May**", "> May", "May:" or "May" alone, with only
+    Markdown heading, quote and list markers, bold or whitespace before it and bold, a colon,
+    a closing heading or whitespace after it (a numbered or bulleted list marker is already
+    stripped). A bare "May" line, with no
     such furniture, still opens the modal question "May\n5 items be removed?": it is the modal
     when the sentence it opens, up to the first ".", "?" or "!" or a blank line, ends in "?".
-    ends caches the sentence end last found, so a text of many such lines is scanned once."""
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    if line_end < 0:
-        line_end = len(text)
-    before, after = text[line_start:start], text[end:line_end]
-    if not (all(c in "#>-*+_ \t" for c in before) and all(c in "*_: \t" for c in after)):
+    cache holds the line and the sentence end found last, so a text of many such lines, or a
+    line of many tokens, is scanned once."""
+    line = _line(text, start, end, cache)
+    if line.furniture_end < start or FURNITURE_AFTER.match(text, end, line.end).end() < line.end:
         return False
-    if before.strip() or after.strip():
+    if text[line.start:start].strip() or text[end:line.end].strip():
         return True
-    if ends.get("at", -1) < end:
+    if cache.get("at", -1) < end:
         m = SENTENCE_END.search(text, end)
-        ends["at"], ends["mark"] = (m.start(), m.group(0)) if m else (len(text), "")
-    return ends["mark"] != "?"
+        cache["at"], cache["mark"] = (m.start(), m.group(0)) if m else (len(text), "")
+    return cache["mark"] != "?"
 
 
 def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     text = LIST_MARKER.sub("", text)      # "2) May we proceed?": the marker is not a sentence
     found = {}
-    ends = {}
+    cache = {}
     for m in HEDGE.finditer(text):
-        if m.group(0) in ("May", "MAY") and (re.match(r"[ \t]+\d|:", text[m.end():])
-                                             or _is_month_line(text, m.start(), m.end(), ends)
+        if m.group(0) in ("May", "MAY") and (MONTH_AFTER.match(text, m.end())
+                                             or _is_month_line(text, m.start(), m.end(), cache)
                                              or (m.group(0) == "May"
-                                                 and not _is_sentence_start(text, m.start()))
+                                                 and not _is_sentence_start(text, m.start(), cache))
                                              or (m.group(0) == "MAY"
-                                                 and not _all_caps_line(text, m.start(), m.end()))):
+                                                 and not _all_caps_line(text, m.start(), m.end(), cache))):
             # "May 2026", "MAY 14", "May:", "in May because", "due: MAY": the month. The modal
             # verb is capitalised only at a sentence start ("May I help?") or in an all-caps
             # line ("WE MAY FAIL"), where another all-caps word stands beside it; a label
-            # colon right after it ("May: ship") names the month, as "מאי:" does. A number on
+            # colon right after it ("May: ship", "**May**: ship") names the month, as "מאי:"
+            # does, and so does a number after the closing bold ("**May** 5 PRs"). A number on
             # the next line is not the day: the line break ends the sentence, as for "no.",
             # unless "May" is the whole content of its line ("## May"), a heading naming the
             # month, see _is_month_line().

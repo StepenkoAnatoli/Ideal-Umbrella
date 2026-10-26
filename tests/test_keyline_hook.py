@@ -279,6 +279,33 @@ def test_a_watch_glob_does_not_make_a_dotfile_a_note(keyline_hook, tmp_path, mon
         assert err.splitlines()[0] == keyline_hook.NOTE_HEADER and "furniture" in err, (pattern, err)
 
 
+def test_a_note_under_a_dot_folder_is_not_a_note(keyline_hook, tmp_path, monkeypatch, capsys):
+    # The dotfile rule looked at the file name only: notes/.trash/x.md (Obsidian's trash) was
+    # linted and could block with exit 2, with or without --watch notes/*, where a shell's
+    # notes/* does not reach into .trash/. Every component of the path from the project root
+    # counts, and a pattern names the file only by spelling the dot at that component.
+    pytest.importorskip("tiktoken")
+    note = tmp_path / "notes" / ".trash" / "x.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("# heading\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(note)}}
+    assert run_main(keyline_hook, monkeypatch, event) == 0
+    assert capsys.readouterr().err == ""
+    for pattern in ("notes/*", "*", "notes/*/x.md", "notes/**", "notes/**/x.md", str(tmp_path / "notes" / "*")):
+        assert run_main(keyline_hook, monkeypatch, event, argv=["--watch", pattern]) == 0, pattern
+        assert capsys.readouterr().err == "", pattern
+    for pattern in ("notes/.trash/*", "notes/.*/*", "*/.trash/x.md", "notes/.trash/x.md", str(note)):
+        assert run_main(keyline_hook, monkeypatch, event, argv=["--watch", pattern]) == 2, pattern
+        err = capsys.readouterr().err
+        assert err.splitlines()[0] == keyline_hook.NOTE_HEADER and "furniture" in err, (pattern, err)
+    # The rule is the path's, not the file name's: a rendering there, and a deeper folder.
+    assert not keyline_hook.watched(note.with_name("x.he.md"), tmp_path)
+    assert not keyline_hook.watched(tmp_path / "notes" / "a" / ".b" / "c.txt", tmp_path)
+    assert not keyline_hook.watched(tmp_path / "notes" / "a" / ".b" / "c.txt", tmp_path, ["notes/a/*/*"])
+    assert keyline_hook.watched(tmp_path / "notes" / "a" / ".b" / "c.txt", tmp_path, ["notes/a/.b/*"])
+
+
 def test_two_notes_are_reported_from_the_note_side_too(keyline_hook, tmp_path, monkeypatch, capsys):
     # The rendering side says "keep the one it renders" with the notes named; a write of the
     # other note still checked it against the rendering and said "fix the rendering" with a

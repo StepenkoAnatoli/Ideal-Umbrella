@@ -623,14 +623,14 @@ def test_camel_case_shapes_after_the_linear_rule(keyline_check, tok, kind):
 @pytest.mark.parametrize("tok, kind, changed", [
     ("Python3.12", "proper", "Python3.11"), ("python3.12", "ident", "python3.11"),
     ("GPT4.5", "upper", "GPT4.1"), ("getHTTP2.1", "camel", "getHTTP2.2"),
-    ("my_lib1.5", "snake", "my_lib1.6"), ("abcdef1.5", "hash", "abcdef1.6"), ("Fig.3", "proper", "Fig.4"),
+    ("my_lib1.5", "snake", "my_lib1.6"), ("abcdef1.5", "hash", "abcdef1.6"), ("Node18.17", "proper", "Node18.18"),
 ])
 def test_a_name_glued_to_a_dotted_number_is_one_token(keyline_check, tok, kind, changed):
     # A name ending in a digit may continue with ".<digits>" ("Python3.12", "python3.12",
     # "GPT4.5"): the whole is one token, as "v2.14.0" is. Before the version and number rules
     # stopped starting after "<digit>." (the linear-time fix), only the part after the dot was
     # extracted, by accident; after it, nothing was, so a swapped "Python3.12" passed.
-    source = f"use {tok} at 14:02"      # not at a sentence start, where a proper noun is furniture
+    source = f"use {tok} at 14:02"
     assert keyline_check.invariants(source).get(tok) == kind
     result = keyline_check.check(source, source.replace(tok, changed))
     assert not result.ok and result.missing == [tok]
@@ -641,3 +641,81 @@ def test_a_name_glued_to_a_dotted_number_is_one_token(keyline_check, tok, kind, 
     start = time.perf_counter()
     assert keyline_check.invariants("Python3" + ".1" * 16000 + "_") == {}
     assert time.perf_counter() - start < 2.0
+
+
+@pytest.mark.parametrize("src, ren, kept", [
+    ("Ticket No.5: see Ch.2 and Fig.3, Vol.3 p. 10, due 14:02.",
+     "כרטיס מס' 5: ראו פרק 2 ואיור 3, כרך 3 עמ' 10, עד 14:02.", {"5", "2", "3", "10"}),
+    ("ticket No.5 at 14:02", "ticket No. 5 at 14:02", {"5"}),
+    ("see A.1 at 14:02", "ראו נספח א.1 ב-14:02", {"1"}),
+    ("see Zürich.5 and my_lib.5 at 14:02", "ראו ציריך.5 ו-my_lib.5 ב-14:02", {"5"}),
+])
+def test_an_abbreviation_before_a_dotted_number_keeps_the_number(keyline_check, src, ren, kept):
+    # Only a name that ends in a digit takes a dotted tail ("Python3.12"); "No.5", "Ch.2",
+    # "Fig.3", "A.1" are the abbreviation and the number 5, 2, 3, 1, which a rendering that
+    # writes "No. 5" or "מס' 5" keeps. The tail after any name made these one token and failed
+    # the rendering.
+    found = keyline_check.invariants(src)
+    assert kept <= set(found) and not any("." in tok for tok in found)
+    assert keyline_check.check(src, ren).ok
+
+
+@pytest.mark.parametrize("src, ren, missing", [
+    ("Python3.12 is required at 14:02.", "Python3.11 is required at 14:02.", ["Python3.12"]),
+    ("Fig.3 shows the drop at 14:02.", "Fig.4 shows the drop at 14:02.", ["3"]),
+    ("Art.5 GG applies at 14:02.", "Art.6 GG applies at 14:02.", ["5"]),
+    ("Done.\nNode18 is required at 14:02.", "Done.\nNode20 is required at 14:02.", ["Node18"]),
+])
+def test_a_name_with_a_digit_at_a_sentence_start_is_not_furniture(keyline_check, src, ren, missing):
+    # A capitalised word that opens a sentence is skipped in a source (its capital proves
+    # nothing), but a word with a digit in it is a name wherever it stands: "Python3.12 is
+    # required" at a line start lost the version to the skip once the proper rule took the
+    # whole token, so a swapped version passed.
+    result = keyline_check.check(src, ren)
+    assert not result.ok and result.missing == missing
+    assert keyline_check.check(src, src.replace("at 14:02", "ב-14:02")).ok
+    # A plain capitalised word at a sentence start is still furniture.
+    assert "Server" not in keyline_check.invariants("Server down at 14:02.")
+
+
+@pytest.mark.parametrize("src, ren", [
+    ("## May ##\n5 PRs merged at 14:02", "## מאי ##\n5 PRs מוזגו ב-14:02"),
+    ("**May**: 3 fixed at 14:02", "**מאי**: 3 תוקנו ב-14:02"),
+    ("**May** 5 PRs merged at 14:02", "**מאי** 5 PRs מוזגו ב-14:02"),
+    ("*May*: 3 fixed at 14:02", "*מאי*: 3 תוקנו ב-14:02"),
+])
+def test_a_closed_heading_or_a_bold_month_before_a_colon_or_a_number(keyline_check, src, ren):
+    # "## May ##" (a closed ATX heading), "**May**: 3 fixed" and "**May** 5 PRs" are the month
+    # as "## May", "**May**" and "May:" are; the closing "#" and the bold around the label
+    # were not seen through, so each was a possibility hedge the rendering lost.
+    assert keyline_check.hedges(src) == {}
+    assert keyline_check.check(src, ren).ok
+    assert keyline_check.hedges("**May** we proceed?") == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("pair", ["and/or", "él/ella", "כן/לא"])
+def test_a_prose_pair_at_the_end_of_a_sentence_is_prose(keyline_check, pair):
+    # The prose exception saw the extracted token with its sentence period ("and/or."), whose
+    # second part is not a plain word, so the pair at a sentence end was a path the rendering
+    # lacked.
+    src = f"Decide {pair}.\nDone at 14:02."
+    assert keyline_check.invariants(src) == {"14:02": "time"}
+    assert keyline_check.check(src, "להחליט כן/לא.\nבוצע ב-14:02.").ok
+    assert keyline_check.invariants("see notes/a_b.\nDone") == {"notes/a_b": "path"}
+
+
+@pytest.mark.parametrize("unit, count, fn", [
+    ("**May**", 40000, "hedges"), ("May ", 40000, "hedges"), ("MAY ", 40000, "hedges"),
+    ("- May", 40000, "hedges"), ("**Foo**", 40000, "invariants"), ("- Foo", 40000, "invariants"),
+    ("* " * 100 + "May ", 2000, "hedges"), ("WE MAY FAIL\n", 20000, "hedges"),
+])
+def test_a_line_of_many_tokens_is_scanned_once(keyline_check, unit, count, fn):
+    # Every "May", and every capitalised word after a Markdown marker, re-found its line and
+    # rescanned the line's prefix (and the hedge test sliced the rest of the text), so a long
+    # line of such tokens took time quadratic in its length (80000 bold "May": 6.9 s against
+    # the hook's 30 s timeout). The line and its marker prefix are found once per line.
+    import time
+    text = unit * count + "x"
+    start = time.perf_counter()
+    getattr(keyline_check, fn)(text)
+    assert time.perf_counter() - start < 1.5

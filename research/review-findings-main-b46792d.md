@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; pass 3 below.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1189,8 +1189,9 @@ Two reviewers who had not seen the findings above read only the pass 2 fix commi
 config/hook commit e1ed25d, R1 the keyline_check commit 014ca69. Every medium was
 re-reproduced here with `python -I` (the folder-mode cases as uid 65534 in a copy under
 /var/tmp, since root ignores file modes) before being accepted.
-Counts: R2 findings 62-67: 0 high, 2 medium, 4 low; R1 findings below (counts filled in when
-its pass is recorded); all fixed class-wide in this PR.
+Counts: R2 findings 62-67: 0 high, 2 medium, 4 low; R1 findings 68-71: 0 high, 2 medium, 2 low;
+72 (found while verifying 70): 0 high, 0 medium, 1 low; pass 3 total 0 high, 4 medium, 7 low; all
+fixed class-wide in this PR.
 
 62. (R2) config/uninstall.py:301-305: the pre-write state-tree check walked with `os.walk`, which
     swallows the listing error of a folder it cannot read or search, and tested `os.access(W_OK)`
@@ -1199,6 +1200,24 @@ its pass is recorded); all fixed class-wide in this PR.
     on every run, the halfway shape the e1ed25d fix closed for mode 555 only. Reproduced as uid
     65534 (all six modes). Medium. Class: neighbour of the fixed input (an unreadable or
     unsearchable folder instead of a read-only one); halfway state.
+   Fixed: config/uninstall.py:220 `_refuse_unremovable_tree(root)` replaces the old `os.walk` +
+   `os.access(W_OK)` loop (called at config/uninstall.py:334, before the first write). It walks with
+   `os.walk(root, onerror=unlistable)`; a folder that cannot be listed raises `"<folder> cannot be
+   read; make it readable first"` (line 233, `error.filename or root`), a folder with entries that
+   lacks write raises `"<folder> is read-only; make it writable first"` (line 236), and a folder
+   with entries that is writable but lacks the search bit raises `"<folder> cannot be entered; make
+   it searchable first"` (line 238). main's handler is unchanged, so the user sees `...; nothing
+   written`. Deviation from the design: the search-bit case has its own message because a 0o644
+   folder is writable, and "make it writable first" would send the user to the wrong chmod.
+   Other hits: none; `_refuse_unremovable_tree` is the only pre-write check of the state tree, and
+   `_remove_tree` (line 207) is the only remover. `install.py` never walks the state tree.
+   Prevention: tests/test_uninstall.py:772
+   `test_an_unlistable_or_unsearchable_state_folder_is_refused_before_settings_is_written`,
+   parametrized over `sub` 0o000/0o333/0o644/0o100 and `state` 0o000/0o333; each asserts the mode-
+   specific message, settings.json byte-equal, no `.bak-*`, hook present, and `state/sub/s1.json`
+   still there after the chmod is restored. Skipped as root and on Windows. Failed before the fix on
+   every parameter (uninstall went on to delete, or raised from inside rmtree after settings was
+   written).
 
 63. (R2) config/install.py:548 with config/uninstall.py:70: the interim record dropped the marker's
     `uninstalled` key but carried the leftover fields a marker holds for a key the uninstall left
@@ -1207,6 +1226,23 @@ its pass is recorded); all fixed class-wide in this PR.
     only the leftover key and left `skillListingBudgetFraction` and the six deny tools in
     settings.json with no notice. Reproduced. Medium. Class: neighbour of the fixed input (a marker
     with leftovers instead of a clean marker); "absent is not empty".
+   Fixed: config/install.py:515-516 `marker = bool(old_record.get("uninstalled"))`; `interim = {} if
+   marker else {k: v for k, v in old_record.items() if k != "uninstalled"}`. Over a marker the
+   interim record is `{}` or `{"claude_md": ...}` (line 568 still writes `dict(interim,
+   claude_md=record["claude_md"])`), so the marker's leftover `added_keys`/`replaced`/`installed` no
+   longer reach the interim record. The final record is still `_merge_record(old_record, record)`,
+   so a live record keeps its earlier fields as before.
+   Other hits: config/uninstall.py:167 `_leftover_record` only carries
+   `added_keys`/`replaced`/`installed` when the record it reads holds them; before, a no-settings-
+   data record (`{}` or `{"claude_md": ...}`) got empty lists invented, and `has_record` on the next
+   uninstall took the marker for a full record (found in the adversarial re-read, scenario "second
+   run").
+   Prevention: tests/test_install.py:778
+   `test_interrupt_at_the_final_record_over_a_marker_with_a_leftover_key_is_an_unfinished_record`
+   (marker with two leftover keys, interrupt at the final record, record is `{"claude_md": ...}`,
+   the next uninstall removes both template values with the no-settings-data notice, and the marker
+   it leaves is exactly `{"uninstalled": true}`); the existing test at line 752 still passes. Failed
+   before the fix: the interim record carried `added_keys`.
 
 64. (R2) config/install.py:542-549: over a clean marker, when CLAUDE.md already equals the template
     no interim record is written at all, so an interrupt at the final record leaves the marker
@@ -1215,23 +1251,171 @@ its pass is recorded); all fixed class-wide in this PR.
     leaving the deny tools with no notice, the outcome finding 54 was meant to close. Reproduced.
     Low. Class: neighbour of the fixed input (the interim write skipped instead of carrying the
     marker); doc text not matching the code ("the run says so").
+   Fixed: config/install.py:521-522: `if marker and not md_changed and (hook_changed or
+   setting_changes): _write_json(paths["record"], interim)` writes the empty interim record before
+   the hook (the run's first write). The docstring step 3 and closing paragraph say so (install.py
+   docstring: "over the marker an uninstall leaves, when step 2 writes nothing, an empty interim
+   record is written before step 1"; "holds no settings data of this run and nothing of an
+   uninstall's marker").
+   Other hits: the hook-only run over a marker (settings up to date, CLAUDE.md up to date, hook
+   missing) had the same gap; the same branch covers it since `hook_changed` is in the condition. A
+   run with nothing to write writes no record, as before (the marker stays, nothing happened).
+   Prevention: tests/test_install.py:844 `test_interrupt_at_the_final_record_over_a_marker_without_a
+   _claude_md_write_is_an_unfinished_record` (CLAUDE.md equals the template, interrupt at record
+   write 2, record `== {}`, next uninstall removes the template values and notices "no settings
+   data"); tests/test_install.py:817 `test_interrupt_at_the_final_record_over_a_marker_with_only_the
+   _hook_to_write_is_an_unfinished_record` (`progress == ["hook written"]`, record `{}`). Both
+   failed before the fix: the record was still the marker and the next uninstall said "nothing to
+   undo".
 
 65. (R2) config/uninstall.py:301-305: an empty read-only `state/` (or sub-folder) was refused with
     "is read-only; make it writable first" although removing it needs only its parent to be
     writable; the pre-fix code removed it. Reproduced as uid 65534. Low. Class: regression inside
     a fix (over-refusal with a clear message).
+   Fixed: same function as 62, config/uninstall.py:235-238: the write and search checks are guarded
+   by `(dirs or names)`, so an empty folder, whatever its mode, is not refused (rmdir needs only its
+   parent). `_remove_tree` (line 207) then clears the read bit via `_clear_read_only` and rmtree
+   removes it.
+   Other hits: none; the old check also refused an empty read-only sub-folder, covered by the
+   parametrization.
+   Prevention: tests/test_uninstall.py:810 `test_an_empty_read_only_state_folder_is_removed`,
+   parametrized over `state` and `state/sub` at 0o555, asserts the uninstall completes and the state
+   folder is gone. Failed before the fix with "is read-only; make it writable first".
 
 66. (R2) config/uninstall.py:202-208: `_remove_tree` cleared the Windows read-only attribute on
     files only, so a read-only sub-folder inside `state/` would stop `rmtree` after settings.json
     and the hook were written, as a read-only file did before e1ed25d. Not reproducible on Linux
     (no such attribute). Low. Class: neighbour of the fixed input (a folder instead of a file,
     Windows).
+   Fixed: config/uninstall.py:207 `_remove_tree` now calls `_clear_read_only(Path(folder))` for the
+   root and every folder `os.walk` yields, not only for the files, before `shutil.rmtree`. On
+   Windows `RemoveDirectory` refuses a folder with the read-only attribute, which `os.access` never
+   reports; on POSIX the chmod changes nothing a non-empty folder was not already refused for
+   (docstring line 212).
+   Other hits: none; `_clear_read_only` (skips symlinks, swallows OSError) is the only place the
+   attribute is handled, and install.py never removes a tree.
+   Prevention: tests/test_uninstall.py:831
+   `test_read_only_files_and_folders_inside_the_state_folder_are_deleted` (renamed and extended):
+   adds an empty `state/ro` with `S_IREAD|S_IEXEC`, records every `_clear_read_only` call, and
+   replaces rmtree with a Windows-like one that refuses any file or folder without `S_IWRITE`;
+   asserts `{state, state/"sub", state/"ro"} <= set(cleared)`. Failed before the fix on the `state`
+   folder itself.
 
 67. (R2) keyline/keyline_hook.py:78-84: the dotfile rule looked at the file name only, so a note
     under a dot-folder inside the watched tree (`notes/.trash/x.md`, Obsidian's trash) was linted
     and could block with exit 2, with or without `--watch notes/*`, where a shell glob would not
     descend into `.trash/`. Pre-existing. Reproduced. Low. Class: neighbour of the fixed input (a
     dot-folder instead of a dotfile).
+   Fixed: keyline/keyline_hook.py:78 `_spells_dots(pattern, target)` returns True only when every
+   dot component of the target (split on "/") has a pattern segment at the same index that starts
+   with "."; `watched()` (line 89) picks `absolute` or `rel` per pattern, skips the pattern when
+   `target is None or not _spells_dots(pat_n, target)`, then `fnmatch.fnmatchcase`. Without
+   patterns, line 118 refuses any dot component of the relative path (`any(part.startswith(".") for
+   part in rel.parts)`) before the notes/plans check. The old `path.name.startswith(".")` block is
+   gone. `**` spells nothing: `notes/**` does not reach `notes/.trash/x.md`, as in a shell without
+   globstar's dotglob.
+   Other hits: `.DS_Store` and `notes/.gitignore` keep their old outcome (one dot component at the
+   file name). A dot folder above the project root is not a component of `rel`, so a project checked
+   out under `~/.work/proj` still gets its notes watched (the rule is on the relative path; an
+   absolute pattern is matched against the absolute path and must spell those dots itself, which is
+   what the reviewer's absolute-pattern case exercises).
+   Prevention: tests/test_keyline_hook.py:282 `test_a_note_under_a_dot_folder_is_not_a_note`:
+   `notes/.trash/x.md` with a bad header exits 0 with no pattern and with `notes/*`, `*`,
+   `notes/*/x.md`, `notes/**`, `notes/**/x.md`, absolute `notes/*`; exits 2 with NOTE_HEADER for
+   `notes/.trash/*`, `notes/.*/*`, `*/.trash/x.md`, `notes/.trash/x.md`, and the absolute note path;
+   `watched()` checks for `notes/a/.b/c.txt` (not watched alone or with `notes/a/*/*`, watched with
+   `notes/a/.b/*`). Failed before the fix on the no-pattern case and on `notes/*`, `*`,
+   `notes/*/x.md`, `notes/**`.
+
+68. (R1) keyline/keyline_check.py:87-94 (the `(?:\.\d+)*` tails added in 014ca69), keyline/README.md:57,
+    CHANGELOG.md: the docs said a name that ends in a digit takes a dotted tail, but the regex took
+    the tail after any upper, camel, proper, snake, hash or ident token, so an abbreviation glued to a
+    number became one token: `No.5`, `Ch.2`, `Fig.3`, `Vol.3`, `A.1`, `Q3.2` yielded `No.5` etc.
+    where the pre-commit checker yielded the number, which a rendering that writes `No. 5` or
+    `מס' 5` keeps. A correct rendering failed with four misses. Reproduced. Medium. Class:
+    regression inside a fix; neighbour of the fixed input (an abbreviation instead of a name ending
+    in a digit); doc narrower than the code.
+   Fixed: the six tails are `(?:(?<=\d)\.\d+)*`, so only a token that ends in a digit takes a tail;
+   `No.5` is `No` (dropped at a sentence start, a plain proper noun elsewhere, R's `\.\d` look-ahead
+   already failed it before the digit) and `5` is a number, as before 014ca69. The INVARIANT comment,
+   keyline/README.md and CHANGELOG.md say so (`No.5`, `Fig.3`, `A.1` are the abbreviation and the
+   number).
+   Other hits: `Zürich.5` and `my_lib.5` (a Latin-letter proper noun, a snake name) are the same
+   shape and are covered by the same change; the `Fig.3` case in
+   `test_a_name_glued_to_a_dotted_number_is_one_token` was asserting the regression and is now
+   `Node18.17`.
+   Prevention: tests/test_keyline_check.py `test_an_abbreviation_before_a_dotted_number_keeps_the_number`
+   (`No.5`/`Ch.2`/`Fig.3`/`Vol.3` against `מס' 5`/`פרק 2`/..., `A.1`, `Q3.2`, `Zürich.5`/`my_lib.5`;
+   each asserts the number is the kept invariant and the rendering passes). Failed first with
+   `missing: No.5, Ch.2, Fig.3, Vol.3`.
+
+69. (R1) keyline/keyline_check.py:227-231 (proper nouns at a sentence start are skipped) with the
+    `(?<!\d\.)` guards of 014ca69: the number rule no longer takes the `12` of `Python3.12`, and the
+    proper rule takes the whole token, but a proper noun that opens a line or sentence is skipped in
+    a source, so `Python3.12 is required at 14:02.` or `Fig.3 shows the drop.` at a line start lost
+    the version entirely: a rendering with `Python3.11` or `Fig.4` passed where the pre-commit
+    checker caught the `12`/`3`. The test avoided the sentence start. Reproduced. Medium. Class:
+    regression inside a fix; test avoids the neighbour.
+   Fixed: the sentence-start skip applies only to a capitalised word without a digit
+   (`not any(c.isdigit() for c in tok)`): `Python3.12`, `Node18`, `Fig3` at a line start are kept,
+   while `Server` at a line start is still furniture. keyline/README.md says a capitalised word with
+   a digit at a sentence start is held to the rendering.
+   Other hits: none; upper (`GPT4.5`) and ident (`python3.12`) were never skipped.
+   Prevention: tests/test_keyline_check.py `test_a_name_with_a_digit_at_a_sentence_start_is_not_furniture`
+   (`Python3.12 ...` vs `Python3.11 ...`, `Fig.3` with 68 applied is `3`, `Node18 is required`
+   after `Done.\n`, `Art.5 GG applies` vs `Art.6`; each asserts the swapped token is missing and that
+   `Server` at a line start is still not an invariant). Failed first with the rendering passing.
+
+70. (R1) keyline/keyline_check.py:255-275 (`_is_month_line`, furniture sets `"#>-*+_ \t"` before
+    and `"*_: \t"` after) and :284 (the `[ \t]+\d|:` test after `May`): a closed ATX heading
+    `## May ##`, a bold label with the colon outside the bold `**May**: 3 fixed` and a bold month
+    before a number `**May** 5 PRs` were still the modal (the trailing `#` is not in the after-set;
+    the colon and digit tests did not see through `**`), so a Hebrew rendering (`## מאי ##`,
+    `**מאי**:`) failed with "hedges lost". Pre-existing (the pass 2 fix covered `## May`,
+    `**May**`, `May:` only). Reproduced. Low. Class: neighbour of the fixed input (a different
+    Markdown marker around the same word).
+   Fixed: `#` joins the after-set (`FURNITURE_AFTER = [*_:# \t]*`) and the colon/number test is
+   `MONTH_AFTER = (?:\*{1,2}|_{1,2})?(?:[ \t]+\d|:)`, so a closing bold or underscore marker may
+   sit between the month and the colon or the number. keyline/README.md lists `## May ##`,
+   `**May**:` and `**May** 5`.
+   Other hits: `**May** we proceed?` is still the modal (the question mark after the sentence),
+   asserted in the same test.
+   Prevention: tests/test_keyline_check.py `test_a_closed_heading_or_a_bold_month_before_a_colon_or_a_number`
+   (`## May ##`, `**May**: 3 fixed`, `**May** 5 PRs`, `__May__: done`, each against a Hebrew
+   rendering; `**May** we proceed?` keeps the hedge). Failed first with `hedges lost: possibility`.
+
+71. (R1) keyline/keyline_check.py:202-209 (`_is_path`) with the path rule's `[\w.~/\\-]*` tail: the
+    prose exception saw the token with its sentence period, so `and/or.` or `él/ella.` at the end of
+    a sentence had `ella.` as its second part, not a plain word, and was kept as the path `él/ella`;
+    a rendering that translates the pair failed. Pre-existing (the pass 2 test placed the pair
+    mid-sentence only); the README sentence had no sentence-end caveat. Reproduced. Low. Class:
+    neighbour of the fixed input (sentence punctuation after the pair); doc promises more than the
+    code.
+   Fixed: `_is_path` is given `tok.rstrip(".")`, the same stripping the kept token gets, so the
+   pair is judged without its period. keyline/README.md says the pair is prose at the end of a
+   sentence too, and that a dot inside (`notes/a_b.`) is still a path.
+   Other hits: `and/or,` and `and/or:` were already prose (the tail stops at a comma or colon);
+   `notes/a_b.` is still a path, asserted in the same test.
+   Prevention: tests/test_keyline_check.py `test_a_prose_pair_at_the_end_of_a_sentence_is_prose`
+   (`and/or.`, `él/ella.`, `כן/לא.` at a sentence end against a translated rendering, and
+   `see notes/a_b.\nDone` still yields the path). Failed first with `missing: él/ella`.
+
+72. (self, found while verifying 70) keyline/keyline_check.py:180-200, :240-275 (`_is_sentence_start`,
+    `_all_caps_line`, `_is_month_line`) called from `invariants()` and `hedges()`: each call
+    re-found the line around the match with `rfind`/`find` and sliced it, so a long line of many
+    matching tokens was scanned once per token: 80,000 `**May**` on one line took 6.9 s, 20,000
+    `MAY ` 12 s, growing with the square of the line. Reproduced. Low. Class: quadratic time
+    (the shape the pass 2 linear-rule fix closed for the regex side, left open on the helper side).
+   Fixed: a per-call `_Line` cache (the line bounds, its leading markers, its furniture end and its
+   first two all-caps words found once per line) shared by the three helpers; a line's hedge-ending
+   lookup is cached as before. `**May**` ×80,000: 0.31 s; `MAY ` ×20,000: 0.06 s; the fuzz of
+   100,000 random texts (`fix7e/fuzz.py`) shows no difference from the pre-fix module beyond the
+   intended 68-71 changes.
+   Other hits: none; `invariants()` and `hedges()` are the only callers.
+   Prevention: tests/test_keyline_check.py `test_a_line_of_many_tokens_is_scanned_once` (eight
+   shapes: `**May**`, `May `, `MAY `, `- May`, `**Foo**`, `- Foo`, 100 bullets before `May`, and
+   `WE MAY FAIL` lines; each under 1.5 s at 2,000-40,000 units, where the pre-fix module took 3-12 s
+   on the slow ones).
 
 ## Checked and found clean (both reviewers and both verifiers)
 

@@ -16,12 +16,17 @@ What it does, in write order (everything is read and checked first):
      the change and its backup in <home>/.claude/ballast/install-record.json first (a
      backup whose record could not be written is removed again; one an interrupted
      install recorded is reused when it still equals the file)
-  3. Merges config/user-settings.json into <home>/.claude/settings.json
+  3. Merges config/user-settings.json into <home>/.claude/settings.json (over the marker
+     an uninstall leaves, when step 2 writes nothing, an empty interim record is written
+     before step 1)
   4. Writes the full install record
   5. Verifies the files and prints a command to run in a new session.
 
 What it changed is recorded in <home>/.claude/ballast/install-record.json, so
-config/uninstall.py can put back the values that were there before.
+config/uninstall.py can put back the values that were there before. The interim record
+holds no settings data of this run, and nothing of an uninstall's marker, so an install
+interrupted before step 4 leaves a record the uninstall treats like no record for the
+settings.
 """
 import argparse
 import datetime
@@ -499,6 +504,23 @@ def install(home, force=False, progress=None, config_dir=None):
         if will_write:
             _refuse_read_only(paths[name])
 
+    # What the interim record (the one written before CLAUDE.md and settings.json) starts from.
+    # Over the marker an uninstall leaves ("uninstalled", with the fields of a key it left as
+    # is) it is empty: nothing of the marker is an install's record, and carried over it made
+    # the uninstall read an interrupted re-install as finished (its leftover fields) or as
+    # neither unfinished nor absent (the marker key), and the keys and deny tools this run
+    # added stayed with no notice. Over a live record the record's own data is kept: dropping
+    # it would lose what an earlier, finished install wrote. The final record is merged from
+    # the in-memory old record either way.
+    marker = bool(old_record.get("uninstalled"))
+    interim = {} if marker else {k: v for k, v in old_record.items() if k != "uninstalled"}
+    if marker and not md_changed and (hook_changed or setting_changes):
+        # No CLAUDE.md write, so no interim record would precede the hook and settings.json:
+        # written now, as the run's first write, so an interrupt at any later point leaves an
+        # unfinished record ({}), which the uninstall treats like no record for the settings
+        # and says so, not the marker.
+        _write_json(paths["record"], interim)
+
     if hook_changed:
         _write_bytes(paths["hook"], hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
@@ -540,12 +562,8 @@ def install(home, force=False, progress=None, config_dir=None):
         # install backs up and installs again; the other order left a template CLAUDE.md with no
         # record of its backup, which the next install saw as already matching and the undo
         # never restored. The settings values are recorded only once settings.json holds them,
-        # so the interim record carries no settings data at all: one that said "added nothing"
-        # was believed by the uninstall after an interrupt at the final record.
-        # The marker an uninstall leaves ("uninstalled") is not part of an install's record
-        # either: carried over, it made the uninstall read an interrupted re-install as neither
-        # unfinished nor absent, and the deny tools stayed with no notice.
-        interim = {k: v for k, v in old_record.items() if k != "uninstalled"}
+        # so the interim record carries no settings data of this run: one that said "added
+        # nothing" was believed by the uninstall after an interrupt at the final record.
         try:
             _write_json(paths["record"], dict(interim, claude_md=record["claude_md"]))
         except OSError:

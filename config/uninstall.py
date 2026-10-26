@@ -169,9 +169,14 @@ def _leftover_record(record, left, claude_md_left):
     so a second run neither falls back to no-record mode nor forgets a pending backup."""
     leftover = {"uninstalled": True}
     if record and left:
-        leftover["added_keys"] = [k for k in record.get("added_keys", []) if k in left]
-        leftover["replaced"] = {k: v for k, v in record.get("replaced", {}).items() if k in left}
-        leftover["installed"] = {k: v for k, v in record.get("installed", {}).items() if k in left}
+        # Only the fields the record holds: a record with no settings data (an interrupted
+        # install) keeps none, since empty ones would read as a full record on the next run.
+        if "added_keys" in record:
+            leftover["added_keys"] = [k for k in record["added_keys"] if k in left]
+        if "replaced" in record:
+            leftover["replaced"] = {k: v for k, v in record["replaced"].items() if k in left}
+        if "installed" in record:
+            leftover["installed"] = {k: v for k, v in record["installed"].items() if k in left}
         if "permissions.deny" in left and record.get("deny_added"):
             leftover["deny_added"] = record["deny_added"]
         if isinstance(record.get("created"), list):
@@ -200,12 +205,37 @@ def _remove(path):
 
 
 def _remove_tree(path):
-    """Delete a folder and what it holds, clearing a read-only mode on each file first:
-    shutil.rmtree does not, and on Windows stops at the first read-only file."""
+    """Delete a folder and what it holds, clearing a read-only mode on the folder, each
+    sub-folder and each file first: shutil.rmtree does not, and on Windows stops at the first
+    read-only file or folder (RemoveDirectory refuses the attribute as DeleteFile does). On
+    POSIX a folder that holds entries and lacks the write bit was refused by
+    _refuse_unremovable_tree before the first write, so the chmod changes nothing there."""
     for folder, _, names in os.walk(path):
+        _clear_read_only(Path(folder))
         for name in names:
             _clear_read_only(Path(folder, name))
     shutil.rmtree(path)
+
+
+def _refuse_unremovable_tree(root):
+    """What shutil.rmtree needs of the folder tree under root, checked before the first write,
+    as a ValueError naming the folder: every folder must be listable (rmtree opens and lists
+    each one; a folder with no read bit or no search bit is passed over by a plain os.walk
+    without a word), and a folder that holds entries must be writable and searchable (each
+    entry is unlinked or removed inside it; the write bit alone, mode 0o644, is not enough).
+    An empty folder needs nothing of its own: rmdir needs only its parent, which the caller
+    checks for root. The message names the missing bit (read, write or search), so a folder
+    that is writable but cannot be entered (0o644) is not called read-only. On Windows
+    os.access sees no folder as read-only, so this checks nothing;
+    _remove_tree clears the read-only attribute there. A symlinked sub-folder is unlinked, not
+    walked, so what it points at is not checked."""
+    def unlistable(error):
+        raise ValueError(f"{error.filename or root} cannot be read; make it readable first") from error
+    for folder, dirs, names in os.walk(root, onerror=unlistable):
+        if (dirs or names) and not os.access(folder, os.W_OK):
+            raise ValueError(f"{folder} is read-only; make it writable first")
+        if (dirs or names) and not os.access(folder, os.X_OK):
+            raise ValueError(f"{folder} cannot be entered; make it searchable first")
 
 
 def _backup_of(claude_md, name):
@@ -298,11 +328,10 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             removals.append(claude_md)             # the delete branches below
         for path in removals:
             install._refuse_unwritable_folder(path, through_link=False)
-        # The state folder's own tree too: rmtree unlinks inside it and its sub-folders.
+        # The state folder's own tree too: rmtree lists it and its sub-folders and unlinks
+        # inside the ones that hold entries.
         if paths["state"] in removals and not install._is_link(paths["state"]):
-            for folder, _, _ in os.walk(paths["state"]):
-                if not os.access(folder, os.W_OK):
-                    raise ValueError(f"{folder} is read-only; make it writable first")
+            _refuse_unremovable_tree(paths["state"])
     if setting_changes and not dry_run:
         backup_settings = install._backup(paths["settings"])
         done(f"settings backup: {backup_settings.name}")
