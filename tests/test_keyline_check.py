@@ -411,6 +411,7 @@ def test_month_label_may_is_not_a_hedge(keyline_check):
     ("ÉCOLE", 4000, "_"), ("ס", 16000, "_"), ("ס", 16000, ".5"), ("סZ", 8000, "_"), ("Zס", 8000, "_"),
     ("ÉCOLE", 4000, "/x"), ("ס", 16000, "/x"),
     ("1.", 16000, "1_"), ("1.", 16000, "1é"), ("aA", 16000, "_"), ("aA", 16000, "é"),
+    ("11.", 16000, "11_"), ("11.", 16000, "x_"), ("a1.", 16000, "b_"), ("ab.", 16000, "1_"),
 ], ids=lambda v: str(v))
 def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, unit, count, tail):
     text = unit * count + tail
@@ -671,6 +672,11 @@ def test_an_abbreviation_before_a_dotted_number_keeps_the_number(keyline_check, 
     ("keep backup.tar.gz.1 at 14:02", "keep backup.tar.xz.1 at 14:02", "backup.tar.gz.1"),
     ("keep README.md.1 at 14:02", "keep README.md.2 at 14:02", "README.md.1"),
     ("see lib.module.v.5 at 14:02", "see lib.module.w.5 at 14:02", "lib.module.v.5"),
+    ("rotate app.log.1.gz at 14:02", "rotate app.log.1.xz at 14:02", "app.log.1.gz"),
+    ("rotate app.log.1.gz at 14:02", "rotate app.log.1 at 14:02", "app.log.1.gz"),
+    ("rotate syslog.2.gz at 14:02", "rotate auth.2.gz at 14:02", "syslog.2.gz"),
+    ("keep app.log.1.gz.bak at 14:02", "keep app.log.1.xz.bak at 14:02", "app.log.1.gz.bak"),
+    ("keep v1.log.1 at 14:02", "keep v1.txt.1 at 14:02", "v1.log.1"),
 ])
 def test_a_file_name_with_a_numeric_suffix_is_one_token(keyline_check, src, ren, name):
     # A rotated log or backup ("app.log.1", "backup.tar.gz.1") ends in a letter before a dotted
@@ -683,6 +689,31 @@ def test_a_file_name_with_a_numeric_suffix_is_one_token(keyline_check, src, ren,
     result = keyline_check.check(src, ren)
     assert not result.ok and name in result.missing, result
     assert keyline_check.invariants("rotate syslog.1 at 14:02") == {"1": "number", "14:02": "time"}
+
+
+@pytest.mark.parametrize("src, ren, expected", [
+    ("archived app.log.2026-10-25T14:30Z now", "archived app.log.2026-10-25T15:30Z now",
+     {"app.log": "file", "2026-10-25T14:30Z": "datetime"}),
+    ("rotate app.log.2026-10-25 at 14:02", "rotate app.log.2026-25-10 at 14:02",
+     {"app.log": "file", "2026-10-25": "date", "14:02": "time"}),
+    ("dump db.sql.14:30 now", "dump db.sql.14 30 now", {"db.sql": "file", "14:30": "time"}),
+    ("see notes.txt.5% done at 14:02", "see notes.txt.5 done at 14:02",
+     {"notes.txt": "file", "5%": "number", "14:02": "time"}),
+    ("load db2.2026-10-25 at 14:02", "load db2.2026-10-26 at 14:02",
+     {"db2": "ident", "2026-10-25": "date", "14:02": "time"}),
+    ("run GPT4.14:30 at 14:02", "run GPT4.14 30 at 14:02",
+     {"GPT4": "upper", "14:30": "time", "14:02": "time"}),
+])
+def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src, ren, expected):
+    # The numeric tail of a file name ("app.log.1") or of a name ending in a digit ("GPT4.5")
+    # took the year of a date, the hour of a time or the figure of a percentage that followed
+    # the dot: "app.log.2026-10-25T14:30Z" was the file "app.log.2026" and the numbers 10 and
+    # 30Z, so an hour swapped in the rendering passed. A dotted component that opens a date, a
+    # time or a percentage is not part of the name; the name ends before the dot and the date,
+    # time or percentage is a token of its own.
+    assert keyline_check.invariants(src) == expected
+    result = keyline_check.check(src, ren)
+    assert not result.ok, result
 
 
 @pytest.mark.parametrize("src, ren, missing", [

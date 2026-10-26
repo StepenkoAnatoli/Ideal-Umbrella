@@ -29,7 +29,11 @@ HEB = "א-ת"
 # "2.5" and no token starts inside a word ("COLE" in "ÉCOLE"). L and R take the same letters: a
 # start that L lets through after a diacritic would rescan a run from every capital in it.
 L = rf"(?<![A-Za-z0-9_{LATIN}])"
-R = rf"(?![A-Za-z0-9_{LATIN}]|\.\d)"
+# A dotted numeric component that opens a date, a time or a percentage is not part of a name:
+# a token may end before ".2026-10-25", ".14:30" or ".5%", and a dotted tail never takes them.
+NOT_DT = r"(?!\d{4}-\d{2}-\d{2}(?!\d)|\d{1,2}:\d{2}|\d+%)"
+R = rf"(?![A-Za-z0-9_{LATIN}]|\.{NOT_DT}\d)"
+TAIL = rf"(?:(?<=\d)\.{NOT_DT}\d+)*"
 # A path or file name may also start at a Hebrew letter ("סיכום.md", "תיקיה/קובץ.txt"), but only
 # at the first letter of its word, so a long Hebrew run has one start and not one per letter,
 # and only when no Latin letter, digit or dash follows it, so the prefix of "בnotes/a.txt" and
@@ -73,9 +77,15 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # is), so the part after the dot is not lost to that rule, while a name that ends in a letter
 # takes none and is no token before the dotted number ("No.5", "Fig.3", "A.1" yield the number
 # 5, 3, 1 alone: the abbreviation is prose a rendering translates, "No. 5", "מס' 5", "איור 3",
-# and the number is what it must keep), except a file name, which takes a numeric tail after
-# its letter extension ("app.log.1", "backup.tar.gz.1" are one token each; "syslog.1" has no
-# extension and is the number alone); the CamelCase rule tries one
+# and the number is what it must keep), except a file name, whose dotted components after the
+# stem may be numbers as well as letter extensions, in any order, with a letter extension among
+# them ("app.log.1", "backup.tar.gz.1", "app.log.1.gz", "syslog.2.gz" are one token each;
+# "syslog.1" has no extension and is the number alone), and whose stem is not one character
+# ("e.g.", "i.e." are prose; "x.tar.gz.1" yields "tar.gz.1"); a dotted component that opens a
+# date, a time or a percentage is never part of a name or a tail ("app.log.2026-10-25T14:30Z"
+# is the file "app.log" and the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%" the
+# name "GPT4" and the number "5%"): NOT_DT in the file rule, in every dotted tail and in R, so
+# a token may end before such a component; the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
@@ -86,18 +96,19 @@ INVARIANT = re.compile(
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)
-    | (?P<version>v\d+(?:\.\d+)*|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
+    | (?P<version>v\d+(?:\.\d+)*(?!\.[A-Za-z])|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
     | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
-    | (?P<file>(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.[A-Za-z][A-Za-z0-9]*)+(?:\.\d+)*)
-    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?(?:(?<=\d)\.\d+)*)
-    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*(?:(?<=\d)\.\d+)*)
+    | (?P<file>(?<!\d\.)(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.""" + NOT_DT + r"""\d+)*
+                \.[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*)
+    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?""" + TAIL + r""")
+    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*""" + TAIL + r""")
     | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
-                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*(?:(?<=\d)\.\d+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*(?:(?<=\d)\.\d+)*|__[a-z0-9]+__)
-    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}(?:(?<=\d)\.\d+)*)
+                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*""" + TAIL + r""")
+    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*""" + TAIL + r"""|__[a-z0-9]+__)
+    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}""" + TAIL + r""")
     | (?P<number>(?<!\d\.)(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
-    | (?P<ident>[a-z]+\d[A-Za-z0-9]*(?:(?<=\d)\.\d+)*)
+    | (?P<ident>[a-z]+\d[A-Za-z0-9]*""" + TAIL + r""")
 )"""
     + R,
     re.X,

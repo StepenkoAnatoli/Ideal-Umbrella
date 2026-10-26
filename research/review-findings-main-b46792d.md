@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows).
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) PENDING.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1803,6 +1803,72 @@ dead branch R1 noted in passing, outside the commit); R2 findings 85-94: 0 high,
    Other hits: none.
    Prevention: a "differs from what was installed" notice is emitted only where the record says
    something was installed.
+
+## Self-check pass 6 (fresh-context pass over the fix commits d148c49 and baff9d3)
+
+Two fresh-context reviewers, one per fix commit, no report read: R1 over d148c49 (keyline,
+findings 80-84), R2 over baff9d3 (config, findings 85-95). Same adversarial brief as the earlier
+passes (regression inside the fix, neighbour of the fixed input, time, `check(line, line)`, doc
+mismatch, fix without test, dead code). R1 findings 96-99: 2 high, 0 medium, 2 low, every one
+reproduced with the reviewer's probe (`python3 -I .../selfcheck7f/r1/p4_wrong_pass.py`) before
+the fix and failing closed after it. R2's findings follow.
+
+96. (R1) keyline/keyline_check.py:92 (before this fix), the file alternative: the numeric tail was
+    allowed only after the last letter extension, so the compressed rotated log `app.log.1.gz`
+    (logrotate's default with `compress`) was cut to `app.log.1` and `syslog.2.gz`, whose first
+    dotted component is a digit, was no file at all (the number 2 alone); a rendering with
+    `app.log.1.xz`, `app.log.1` or `auth.2.gz` passed. Reproduced (four wrong passes). High.
+    Class: neighbour of the fixed input (pass-5 finding 81 covered `app.log.1` and
+    `backup.tar.gz.1`, not the shape between them). Pre-existing on main, not a regression.
+   Fixed: keyline/keyline_check.py:102-103, the file alternative takes dotted numbers and letter
+   extensions after the stem in any order as long as one is a letter extension
+   (`stem(?:\.N)*\.ext(?:\.(?:ext|N))*`); `syslog.1` and `No.5` keep the number alone. The stem
+   carries `(?<!\d\.)`, so a dotted digit run (`11.11.11…11_`) is scanned once (tests
+   tests/test_keyline_check.py:414, four new linear-time rows). Test: tests/test_keyline_check.py:681,
+   rows `app.log.1.gz` (two renderings), `syslog.2.gz`, `app.log.1.gz.bak` (failed before the fix).
+   Other hits: `12.3.txt` is now the file name (was the number `12.3`); `1.2.3.txt` stays the
+   version `1.2.3` (a one-character stem is no file start).
+   Prevention: the reviewer's neighbour probe (p1_neighbours.py) lists every dotted shape around a
+   fixed input; the README sentence names the interleaved shape.
+
+97. (R1) keyline/keyline_check.py:92 (before this fix), the `(?:\.\d+)*` tail of the file
+    alternative added by finding 81: a date, timestamp or time written after a file name and a dot
+    (`app.log.2026-10-25`, logrotate's `dateext`; `app.log.2026-10-25T14:30Z`; `db.sql.14:30`)
+    lost its year or hour to the tail, and the rest fell apart into bare numbers (`10`, `30Z`),
+    so a rendering with the hour or the day changed passed; the code before d148c49 failed it
+    (R's `\.\d` lookahead ended `app.log` before the date, which was then extracted whole).
+    Reproduced (five wrong passes). High. Class: regression inside the fix.
+   Fixed: keyline/keyline_check.py:34-36, `NOT_DT` (a dotted component that opens a date, a time
+   or a percentage) guards every numeric component of the file alternative and every dotted tail
+   (`TAIL`, shared by the upper, camel, proper, snake, hash and ident rules), and R lets a token
+   end before such a component, so `app.log.2026-10-25T14:30Z` is the file name `app.log` and the
+   timestamp, `db.sql.14:30` the file name and the time, `db2.2026-10-25` the identifier and the
+   date, `GPT4.14:30` the name and the time. Test: tests/test_keyline_check.py:707
+   `test_a_date_time_or_percentage_after_a_dot_is_not_a_tail` (six rows; failed before the fix).
+   Other hits: the dotted tails of the name rules (same guard, same test rows `db2`, `GPT4`).
+   Prevention: a new right-hand tail is probed with every token kind that can follow a dot (date,
+   time, percentage), not only with a plain number.
+
+98. (R1) keyline/keyline_check.py:92 (before this fix): the same tail took the figure of a
+    percentage after a file name and a dot (`notes.txt.5%` became the file `notes.txt.5`, `%`
+    dropped), where the code before d148c49 gave the number `5%`. Reproduced. Low (contrived
+    shape, strict regression). Class: regression inside the fix.
+   Fixed: with 97 (`\d+%` is the third `NOT_DT` branch): `notes.txt.5%` is the file name and
+   `5%`. Test: tests/test_keyline_check.py:707, row `notes.txt.5%`.
+   Other hits: none.
+   Prevention: as 97.
+
+99. (R1) keyline/keyline_check.py:89-92 (before this fix), alternative order and the file stem:
+    `v1.log.1` was the version `v1` and the number 1 (the version rule wins at `v<digit>`), so
+    `v1.txt.1` passed against it; and `x.tar.gz.bak.1` yielded `tar.gz.bak.1` because a file stem
+    is at least two characters (so that `e.g.` and `i.e.` are prose). Reproduced. Low. Class:
+    neighbour, pre-existing on main.
+   Fixed: keyline/keyline_check.py:99, the `v`-branch of the version rule does not end before a
+   dotted letter extension (`v1.log.1`, `v2.14.0.txt` are file names; `v2.14.0` stays a version).
+   Test: tests/test_keyline_check.py:681, row `v1.log.1` (failed before the fix). The one-character
+   stem is kept, named in keyline/README.md "Honest limits" with the `e.g.` reason.
+   Other hits: none.
+   Prevention: the Honest limits section names the stem rule.
 
 ## Checked and found clean (both reviewers and both verifiers)
 
