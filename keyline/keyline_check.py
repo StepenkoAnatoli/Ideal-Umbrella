@@ -51,8 +51,10 @@ HEB_START = rf"(?<![{HEB}])[{HEB}](?![A-Za-z0-9_{LATIN}-])"
 # preceded by a date and "T", and followed by fractional seconds and "Z" the rendering adds.
 # For a time: "00:30" is not present at the end of "10:00:30".
 L_TIME = L + r"(?<!\d:)"
-# The parts of a timestamp token, for the lookup: date, clock, fractional seconds, zone.
+# The parts of a timestamp or time token, for the lookup: date, clock, fractional seconds, zone.
+# Each has the shape of its INVARIANT group, so fullmatch on a token of that kind cannot fail.
 DATETIME = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
+TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 
 
 # The path and file alternatives look ahead for a "/" or "." through the dash-joined words that
@@ -63,27 +65,33 @@ DATETIME = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z
 # same way, would never find). A URL keeps its scheme (at most 31 characters, so a dash-joined
 # run is not rescanned for "://" from every word) and runs to whitespace or a closing quote,
 # bracket or separator. A hash is 7 to 128 hex digits (git SHA-1 to sha512) with at
-# least one letter and one digit. The CamelCase, snake_case, hash and identifier rules stay
-# ASCII: the CamelCase rule rescans a letter run from every lower-upper pair, which a run of
-# diacritics would make quadratic ("ZürichAirport" is not extracted; neither is "richAirport").
+# least one letter and one digit. A version or a number does not start right after a digit
+# and a ".", so a dotted digit run that ends at a letter or "_" ("1.1.1...1_") is scanned once
+# from its first digit, not once from every digit after a "."; a name that ends in a digit
+# takes a dotted tail ("Python3.12", "GPT4.5", "python3.12" are one token each, as "v2.14.0"
+# is), so the part after the dot is not lost to that rule; the CamelCase rule tries one
+# split per letter run (leading capitals, one lowercase run, a capital), not one per
+# lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
+# identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
+# CamelCase rule, and "xZürichAirport" yields nothing ("richAirport" is not a start: L).
 INVARIANT = re.compile(
     L
     + r"""(?:
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)
-    | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
+    | (?P<version>v\d+(?:\.\d+)*|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
     | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
     | (?P<file>(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.[A-Za-z][A-Za-z0-9]*)+)
-    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?)
-    | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
+    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?(?:\.\d+)*)
+    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*(?:\.\d+)*)
     | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
-                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
-    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128})
-    | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
-    | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
+                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*(?:\.\d+)*)
+    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*(?:\.\d+)*|__[a-z0-9]+__)
+    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}(?:\.\d+)*)
+    | (?P<number>(?<!\d\.)(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
+    | (?P<ident>[a-z]+\d[A-Za-z0-9]*(?:\.\d+)*)
 )"""
     + R,
     re.X,
@@ -186,10 +194,17 @@ def _is_sentence_start(text, start):
     return False
 
 
+# A plain lowercase word in the letters a path may start with: ASCII, Latin with diacritics,
+# or Hebrew (which has no case).
+PROSE_WORD = re.compile(rf"[a-z{LATIN_LOWER}]+|[{HEB}]+")
+
+
 def _is_path(tok):
-    # "and/or", "initiated/completed": one slash between two plain lowercase words is prose.
+    # "and/or", "initiated/completed", "él/ella", "sim/não", "כן/לא": one slash between two
+    # plain lowercase words is prose. A dot, a digit, an underscore, a dash, a capital or a
+    # second slash ("notes/a.txt", "a1/b", "a_b/c", "Yes/No", "a/b/c") keeps it a path.
     parts = re.split(r"[/\\]", tok)
-    if len(parts) == 2 and all(re.fullmatch(r"[a-z]+", p) for p in parts):
+    if len(parts) == 2 and all(PROSE_WORD.fullmatch(p) for p in parts):
         return False
     return True
 
@@ -233,14 +248,41 @@ def _all_caps_line(text, start, end):
 
 LOWER_LETTER = re.compile(rf"[a-z{LATIN_LOWER}]")
 CAPS_WORD = re.compile(rf"\b[A-Z{LATIN_UPPER}]{{2,}}\b")
+# Where a sentence ends: a period, a question or exclamation mark, or a blank line.
+SENTENCE_END = re.compile(r"[.?!]|\n[ \t]*\n")
+
+
+def _is_month_line(text, start, end, ends):
+    """True when the token is the whole content of its line and so a heading or a label naming
+    the month: "## May", "**May**", "> May", "May:" or "May" alone, with only Markdown heading,
+    quote and list markers, bold or whitespace before it and bold, a colon or whitespace after
+    it (a numbered or bulleted list marker is already stripped). A bare "May" line, with no
+    such furniture, still opens the modal question "May\n5 items be removed?": it is the modal
+    when the sentence it opens, up to the first ".", "?" or "!" or a blank line, ends in "?".
+    ends caches the sentence end last found, so a text of many such lines is scanned once."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    before, after = text[line_start:start], text[end:line_end]
+    if not (all(c in "#>-*+_ \t" for c in before) and all(c in "*_: \t" for c in after)):
+        return False
+    if before.strip() or after.strip():
+        return True
+    if ends.get("at", -1) < end:
+        m = SENTENCE_END.search(text, end)
+        ends["at"], ends["mark"] = (m.start(), m.group(0)) if m else (len(text), "")
+    return ends["mark"] != "?"
 
 
 def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     text = LIST_MARKER.sub("", text)      # "2) May we proceed?": the marker is not a sentence
     found = {}
+    ends = {}
     for m in HEDGE.finditer(text):
         if m.group(0) in ("May", "MAY") and (re.match(r"[ \t]+\d|:", text[m.end():])
+                                             or _is_month_line(text, m.start(), m.end(), ends)
                                              or (m.group(0) == "May"
                                                  and not _is_sentence_start(text, m.start()))
                                              or (m.group(0) == "MAY"
@@ -249,7 +291,9 @@ def hedges(text):
             # verb is capitalised only at a sentence start ("May I help?") or in an all-caps
             # line ("WE MAY FAIL"), where another all-caps word stands beside it; a label
             # colon right after it ("May: ship") names the month, as "מאי:" does. A number on
-            # the next line is not the day: the line break ends the sentence, as for "no.".
+            # the next line is not the day: the line break ends the sentence, as for "no.",
+            # unless "May" is the whole content of its line ("## May"), a heading naming the
+            # month, see _is_month_line().
             continue
         word = m.group(0).lower()
         for group, words in HEDGE_GROUPS.items():
@@ -282,21 +326,34 @@ def present(tok, kind, text, tokens=None):
         return False
     # "2026-10-25T10:00Z", "2026-10-25 10:00Z" and the date "2026-10-25" with the time "10:00Z"
     # are the same instant, written as one token or two; so are "10:00:30" and "10:00:30.000Z"
-    # (JavaScript's toISOString). A zone suffix the rendering drops is a lost fact.
-    tail, left, right = "", L, R
+    # (JavaScript's toISOString) and "10:00Z" and "10:00:00.000Z": a rendering may add the
+    # seconds, the fraction or both before the zone the source has, or a zone to a token
+    # without one (R lets "Z", "+02:00" and ":00" follow). A zone suffix or a fraction the
+    # rendering drops is a lost fact.
+    left, right = L, R
     body = re.escape(tok)
     if kind == "datetime":
         date, clock, frac, zone = DATETIME.fullmatch(tok).groups()
-        body = re.escape(date) + r"[T ]" + re.escape(clock) + re.escape(frac or "")
-        if frac is None and len(clock) > 5:
-            body += r"(?:\.\d+)?"
-        body += re.escape(zone) if zone else r"Z?"
+        body = re.escape(date) + r"[T ]" + _clock_lookup(clock, frac) + (re.escape(zone) if zone else r"Z?")
     elif kind == "date":
         right = r"(?:(?=T\d)|" + R + ")"
     else:
-        tail = r"(?:\.\d+)?Z?" if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", tok) else r"Z?"
+        clock, frac, zone = TIME.fullmatch(tok).groups()
+        body = _clock_lookup(clock, frac) + (re.escape(zone) if zone else r"Z?")
         left = r"(?:(?<=\d{4}-\d{2}-\d{2}T)|" + L_TIME + ")"
-    return re.search(left + body + tail + right, text) is not None
+    return re.search(left + body + right, text) is not None
+
+
+def _clock_lookup(clock, frac):
+    """The lookup for the clock part of a time or timestamp: the fraction the source wrote
+    must be there; after whole seconds the rendering may add one ("14:30:00" is in
+    "14:30:00.000Z"), and after "HH:MM" it may add the seconds and then a fraction
+    ("14:30" is in "14:30:00.000Z")."""
+    if frac:
+        return re.escape(clock) + re.escape(frac)
+    if len(clock) > 5:
+        return re.escape(clock) + r"(?:\.\d+)?"
+    return re.escape(clock) + r"(?::\d{2}(?:\.\d+)?)?"
 
 
 def negations(text):

@@ -1035,12 +1035,53 @@ Counts: 0 high, 6 medium, 4 low (R2 findings 52-55: 2 medium, 2 low; R1 findings
     finding 42, the time kind did not). The README line says a rendering may add seconds, a
     fraction or a `Z` without the "no zone" qualification. Reproduced. Medium. Class: halfway fix
     (one of two kinds), doc does not match code.
+   Fixed: `present()` builds the clock part of a datetime or time lookup with the new
+   `_clock_lookup()` (keyline/keyline_check.py:345-354): a fraction the source wrote is required;
+   after whole seconds a fraction may be added; after `HH:MM` seconds and then a fraction may be
+   added; the zone the source has is required after that, and a token without a zone may gain one.
+   The time kind now parses its token with `TIME` (keyline/keyline_check.py:57) the way the datetime
+   kind parses with `DATETIME`, so both kinds take the same shape (present() at
+   keyline/keyline_check.py:307-342; the `tail` variable is gone). Test
+   `test_a_rendering_may_add_seconds_or_a_fraction_before_a_zone_the_source_has`
+   (tests/test_keyline_check.py:516-535, 9 cases) failed first on 8 of 9 cases (`14:30Z` in
+   `14:30:00Z`, `14:30:00Z` in `14:30:00.000Z`, `2026-10-25T14:30Z` in `2026-10-25T14:30:00Z` and
+   `...00.000Z`, `+02:00` kept, the two-token form, the Hebrew line of the reviewer's input; the no-
+   zone case passed before, as the report said) and passes now. The CLI reproduction `in/ts_src.txt`
+   vs `in/ts_ren.txt` now prints PASS (2 invariants present).
+   Other hits: the datetime kind with a short clock (`2026-10-25T14:30Z` in `2026-10-25T14:30:00Z`)
+   was the same shape and is fixed by the same helper; the time kind with a short clock and a zone
+   (`14:30Z` in `14:30:00.000Z`) too. The date kind is unchanged (it has no clock).
+   Prevention: the guard test `test_a_dropped_or_changed_zone_or_fraction_is_still_a_miss`
+   (tests/test_keyline_check.py:538-550, 9 cases: dropped `Z`, dropped fraction, `Z` -> `+02:00`,
+   `+02:00` -> `Z`, for both kinds) pins the misses; keyline/README.md:58 now says exactly what the
+   code does ("may add seconds, fractional seconds or both, before a zone the source has ... or
+   without one ..., and a zone to a time or timestamp that has none; a zone or a fraction the source
+   has and the rendering drops is a miss"); the comment above `_clock_lookup()` and in `present()`
+   (keyline/keyline_check.py:325-330) says the same.
 
 57. (R1) keyline/keyline_check.py:189-194 (`_is_path`) against the widened path start (:77): the
     prose exception "one slash between two plain lowercase words" still matches `[a-z]+` only, so
     `yes/no` and `oui/non` are prose while `él/ella`, `sim/não` and `כן/לא` are paths a translated
     rendering misses; `él/ella` passed before 07671ca (nothing was extracted). Reproduced. Medium.
     Class: halfway state (the start class widened, the prose exception not); regression inside a fix.
+   Fixed: `_is_path()` (keyline/keyline_check.py:195-206) tests each side of the slash with
+   `PROSE_WORD = [a-z LATIN_LOWER]+ | [א-ת]+` instead of `[a-z]+`, the same letters the path start
+   takes (ASCII, the module's LATIN constants, Hebrew). Test
+   `test_a_slash_between_two_plain_words_in_any_script_is_prose`
+   (tests/test_keyline_check.py:553-562: `yes/no`, `and/or`, `él/ella`, `sim/não`, `כן/לא`,
+   `oui/non`, `sí/no`) failed first on `él/ella`, `sim/não`, `כן/לא`, `sí/no` (and on `yes/no`,
+   which was my own rendering lacking the negation that `no` counts; corrected to the reviewer's
+   `כן/לא` rendering) and passes now. The CLI reproduction `in/path_src.txt` vs `in/path_ren.txt`
+   now prints PASS.
+   Other hits: `sim/não` (diacritic not first) and `כן/לא` (Hebrew) were the same asymmetry and are
+   covered by the same class; no other place in the module has a `[a-z]+` prose test. A plain two-
+   word Hebrew pair with no dot (`תיקיה/קובץ`) is now prose like `src/lib`, consistently.
+   Prevention: guard test `test_a_real_path_is_still_a_path` (tests/test_keyline_check.py:565-581)
+   pins `notes/a.txt`, `תיקיה/קובץ.txt`, `école/notes.txt`, `כן/לא.txt`, `a1/b`, `a_b/c`, `a-b/c`,
+   `a/b/c`, `src/lib.rs`, `él/ella1`, `sim/não_x`, `כן/לא/x`, `Yes/No` as paths that a swap reports,
+   and `src/lib` as the documented two-word prose it was before (it was never a path:
+   keyline/README.md:201 says so; "exactly as before" is kept). keyline/README.md:201-204 now states
+   the rule with its letters; the code comment in `_is_path()` lists both sides.
 
 58. (R1) keyline/keyline_check.py:243 (`hedges()`, the `[ \t]+\d|:` test after `May`): a `May`
     heading (`## May`, or `May` alone on its line) followed by a line that starts with a digit is
@@ -1048,6 +1089,30 @@ Counts: 0 high, 6 medium, 4 low (R2 findings 52-55: 2 medium, 2 low; R1 findings
     digit; a monthly note with `## May` / `5 PRs merged` fails its `## מאי` rendering with "hedges
     lost: possibility (may)" where it passed before. The test for the narrowing covers only the
     modal reading. Reproduced. Medium. Class: regression inside a fix.
+   Fixed: `hedges()` (keyline/keyline_check.py:276-294) calls the new `_is_month_line()`
+   (keyline/keyline_check.py:253-273) as one more reason a `May`/`MAY` is the month. The rule, as
+   documented in its docstring: the token is the whole content of its line, allowing only Markdown
+   heading, quote and list markers, bold or whitespace before it (`#>-*+_`, space, tab) and bold, a
+   colon or whitespace after it (`*_:`, space, tab); a numbered or bulleted list marker is already
+   stripped by LIST_MARKER. With any such furniture (`## May`, `**May**`, `> May`, `May:`) it is the
+   month. A bare `May` line with no furniture is the month unless the sentence it opens, up to the
+   first `.`, `?` or `!` or a blank line, ends in `?` (`May\n5 items be removed?` stays the modal,
+   as the existing test asserts). Sentence ends are found once per text through a small cache, so
+   8000 bare `May` lines take 0.04 s. Test
+   `test_a_may_that_is_the_whole_content_of_its_line_is_the_month`
+   (tests/test_keyline_check.py:584-596, 9 cases including the reviewer's `## May\n5 PRs merged at
+   14:02` vs `## מאי\n5 PRs מוזגו ב-14:02`, plain `May\n5 PRs`, `**May**`, `- May`, `> May`, `##
+   May\nnothing shipped`, a heading before a question, a heading after a blank line) failed first on
+   8 of 9 (`# MAY` passed before: the all-caps rule already made it the month) and passes now;
+   `test_a_bare_may_line_that_opens_a_question_is_the_modal` (tests/test_keyline_check.py:599-607)
+   failed first and passes now. The CLI reproduction `in/may_src.txt` vs `in/may_ren.txt` now prints
+   PASS. The existing `test_a_month_at_a_line_end_before_a_number_on_the_next_line` still passes
+   (the rule only adds month readings, never a modal one, so `MAY\nWE PROCEED?` and every MAY case
+   are unchanged).
+   Other hits: `## May\nnothing shipped` (no digit on the next line) was the same regression one
+   step further and is covered; `May` alone after a blank line too.
+   Prevention: the docstring of `_is_month_line()` is the rule; keyline/README.md:215 states it in
+   Honest limits; the two tests above pin both sides.
 
 59. (R1) keyline/keyline_check.py:75, :80, :85 (version, CamelCase and number rules): two inputs
     the linear-time test does not cover are quadratic in `invariants()`: a dotted digit run that
@@ -1056,17 +1121,67 @@ Counts: 0 high, 6 medium, 4 low (R2 findings 52-55: 2 medium, 2 low; R1 findings
     30 s timeout) and a lower-upper letter run (`aAaA…A_`: the CamelCase rule rescans the tail from
     every split; 9.7 s). Pre-existing, 4x per doubling, the same on the pre-fix module.
     Reproduced. Medium. Class: catastrophic backtracking not covered by the linear-time test.
+   Fixed: the version alternative's digit form and the whole number alternative carry `(?<!\d\.)`
+   (keyline/keyline_check.py:81 and :91), so neither starts right after `<digit>.` and a dotted
+   digit run that fails R at its end is scanned once from its first digit, not from every digit
+   after a `.`. The CamelCase alternative is `[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*`
+   (keyline/keyline_check.py:86) instead of `[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*`: one split per letter
+   run (leading capitals, the first lowercase run, a capital) instead of one per lower-upper pair;
+   it matches the same tokens (a letter prefix has a lower-upper adjacency iff its first lowercase
+   run is followed by a capital). Both are plain regex, no 3.11+ syntax. The four inputs were added
+   to the parametrized linear-time test
+   `test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time`
+   (tests/test_keyline_check.py:413: `("1.", 16000, "1_")`, `("1.", 16000, "1é")`, `("aA", 16000,
+   "_")`, `("aA", 16000, "é")`, units of 2 characters, 32 KB texts, ids `1.-16000-1_` etc.); all
+   four failed first (the run of the targeted tests took 129 s) and pass now at 0.17 s, 0.12 s,
+   0.006 s, 0.006 s.
+   Other hits: the `é`-terminated twins (R fails on a Latin letter as on `_`) are the same shape and
+   are in the test. The `(?<!\d\.)` guard also stopped the accidental number after a name glued to a
+   dotted number (`Python3.12`, `python3.12`, `GPT4.5` gave `12`, `12`, `5` before; nothing after),
+   so a swapped `Python3.12` passed; the upper, CamelCase, proper, snake, hash and identifier rules
+   now take a dotted tail `(?:\.\d+)*`, so each is one token (as `v2.14.0` is), found by extraction;
+   `test_a_name_glued_to_a_dotted_number_is_one_token` (7 tokens, failing first on all 7 against the
+   guarded rules without the tails) pins it, with a sentence-end `Python3. 5` guard and a 16000-dot
+   tail under 2 s (0.12 s). README (extraction paragraph and Honest limits: `Python3.12rc1` is
+   nothing) and CHANGELOG say so. `v1.1.1...1_` starts at the `v` only. The comma form, the hash,
+   snake, upper, proper and ident rules were checked (one start per run, or bounded by 200) and were
+   already linear; the path/file alternatives still try from each inner digit but are bounded by
+   their 200-character look-ahead, which is the 0.17 s left.
+   Prevention: the parametrized test with a 2.0 s bound; the comment above INVARIANT
+   (keyline/keyline_check.py:68-73) names both constructions; the guard test
+   `test_camel_case_shapes_after_the_linear_rule` (tests/test_keyline_check.py:610-621: `fooBar`,
+   `FooBar`, `ABcD`, `getHTTP2`, `aB`, `aAaAaA` camel; `ABc` nothing; `Abc` proper; `ABC` upper;
+   `ab1` ident; `aAaA_` nothing) pins the equivalence (it passes on the old pattern too, as a guard;
+   my first version expected `ABc` to be proper, which it never was, and was corrected).
 
 60. (R1) keyline/README.md:55-56 (Honest limits, hex runs longer than 128 digits): "a digit-first
     one is nothing" is not what the code does when the letters all follow the digits: the number
     rule's `(?:%|[A-Za-z]+)?` suffix takes them and the run is a `number` token (`1` + 128 `a`);
     only a digit-first run with digits after a letter (`1a1a…`) is nothing. Low. Class: doc
     mismatch.
+   Fixed: keyline/README.md:205 (Honest limits, hashes longer than 128 digits) now reads "a letter-
+   first one is a lowercase identifier instead; a digit-first one is a number when all its letters
+   follow the digits, `1aaa…`, and nothing when a digit follows a letter, `1a1a…`: none is a hash",
+   which is what `invariants()` does (`'1'+'a'*128` -> number, `'1a'*65` -> nothing, `'a1'*65` ->
+   ident, checked on the live module). No code change, so no failing-first test.
+   Other hits: none; the CHANGELOG Docs bullet (CHANGELOG.md:21) stated nothing wrong and now names
+   the digit-first case.
+   Prevention: the sentence is the one place that states it; the reviewer's logic probe shape is
+   reproducible from the report.
 
 61. (R1) keyline/keyline_check.py:66-68 (comment above `INVARIANT`): "`ZürichAirport` is not
     extracted; neither is `richAirport`" contradicts the commit's own test and the README: it is
     extracted, as a proper noun; the comment means "not by the CamelCase rule". Low. Class: doc
     mismatch.
+   Fixed: the comment above INVARIANT (keyline/keyline_check.py:68-73) now says "The CamelCase,
+   snake_case, hash and identifier rules stay ASCII: `ZürichAirport` is taken by the proper rule,
+   not by the CamelCase rule, and `xZürichAirport` yields nothing (`richAirport` is not a start:
+   L)", matching tests/test_keyline_check.py:312 and keyline/README.md:210. The sentence about the
+   rescan from every lower-upper pair was dropped, since finding 59 removed that rescan; the comment
+   now describes the one-split form instead. No code change, so no failing-first test.
+   Other hits: none; the README and the test already said the right thing.
+   Prevention: the existing test `test_a_token_does_not_start_after_a_diacritic` asserts the
+   behaviour the comment now describes.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

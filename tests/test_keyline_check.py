@@ -410,6 +410,7 @@ def test_month_label_may_is_not_a_hedge(keyline_check):
     ("Zé", 16000, "_"), ("Zé", 16000, ".5"), ("Éé", 16000, ".5"), ("ÉÉ", 8000, ".5"),
     ("ÉCOLE", 4000, "_"), ("ס", 16000, "_"), ("ס", 16000, ".5"), ("סZ", 8000, "_"), ("Zס", 8000, "_"),
     ("ÉCOLE", 4000, "/x"), ("ס", 16000, "/x"),
+    ("1.", 16000, "1_"), ("1.", 16000, "1é"), ("aA", 16000, "_"), ("aA", 16000, "é"),
 ], ids=lambda v: str(v))
 def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, unit, count, tail):
     text = unit * count + tail
@@ -417,6 +418,9 @@ def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_chec
     # capital after a diacritic was a start and each start rescanned to the end of the run:
     # 16000 "Zé" pairs before "_" took 24 s against the hook's 30 s budget. A Hebrew letter
     # opens a file name or path only when no Hebrew letter precedes it, for the same reason.
+    # A dotted digit run before "_" or "é" ("1.1.1...1_") was rescanned by the version and
+    # number rules from every digit after a ".", and a lower-upper letter run ("aAaA...aA_") by
+    # the CamelCase rule from every pair: 16000 pairs took 54 s and 9.7 s.
     import time
     start = time.perf_counter()
     keyline_check.invariants(text)
@@ -509,3 +513,131 @@ def test_an_all_caps_line_may_hold_a_diacritic_word(keyline_check):
     assert keyline_check.hedges("WE MAY PARIS") == {"possibility": ["may"]}
     assert keyline_check.hedges("MAY ÉCOLE") == {"possibility": ["may"]}
     assert keyline_check.hedges("MAY école") == {}
+
+
+@pytest.mark.parametrize("src, ren", [
+    ("at 2026-10-25T14:30Z", "at 2026-10-25T14:30:00Z"),
+    ("at 2026-10-25T14:30Z", "at 2026-10-25T14:30:00.000Z"),
+    ("at 2026-10-25T14:30+02:00", "at 2026-10-25T14:30:00+02:00"),
+    ("at 2026-10-25T14:30:00Z", "at 2026-10-25 14:30:00.000Z"),
+    ("at 14:30:00Z", "at 14:30:00.000Z"),
+    ("at 14:30Z", "at 14:30:00Z"),
+    ("at 14:30Z", "at 14:30:00.000Z"),
+    ("at 14:30Z", "at 2026-10-25T14:30:00.000Z"),
+    ("window 14:30:00Z", "חלון 14:30:00.000Z"),
+])
+def test_a_rendering_may_add_seconds_or_a_fraction_before_a_zone_the_source_has(keyline_check, src, ren):
+    # The lookup appended the source's zone straight after its clock, so "14:30Z" was not found
+    # in "14:30:00Z", and the time kind took a fraction only when the token had no zone, so
+    # "14:30:00Z" was not found in "14:30:00.000Z" (the datetime kind already did).
+    result = keyline_check.check(src, ren)
+    assert result.ok, result.missing
+
+
+@pytest.mark.parametrize("src, ren", [
+    ("at 14:30Z", "at 14:30:00"),
+    ("at 14:30Z", "at 14:30:00.000+02:00"),
+    ("at 14:30:00Z", "at 14:30:00.000"),
+    ("at 14:30:00.250Z", "at 14:30:00Z"),
+    ("at 14:30:00.250", "at 14:30:00"),
+    ("at 2026-10-25T14:30Z", "at 2026-10-25T14:30:00"),
+    ("at 2026-10-25T14:30Z", "at 2026-10-25T14:30:00.000+02:00"),
+    ("at 2026-10-25T14:30:00.250Z", "at 2026-10-25T14:30:00Z"),
+    ("at 2026-10-25T14:30+02:00", "at 2026-10-25T14:30:00Z"),
+])
+def test_a_dropped_or_changed_zone_or_fraction_is_still_a_miss(keyline_check, src, ren):
+    tok = src.split()[1]
+    assert keyline_check.check(src, ren).missing == [tok]
+
+
+@pytest.mark.parametrize("pair", ["yes/no", "and/or", "él/ella", "sim/não", "כן/לא", "oui/non", "sí/no"])
+def test_a_slash_between_two_plain_words_in_any_script_is_prose(keyline_check, pair):
+    # The prose exception of the path rule ("and/or" is not a path) matched ASCII lowercase
+    # only while the path start took Latin letters with diacritics and Hebrew, so "él/ella",
+    # "sim/não" and "כן/לא" were paths that a translated rendering could not hold.
+    src = f"answer: {pair} at 14:02"
+    assert keyline_check.invariants(src) == {"14:02": "time"}
+    assert keyline_check.check(src, "תשובה: כן/לא ב-14:02").ok      # "לא" keeps the negation count
+    assert keyline_check.check(src, "answer: yes/no at 14:02").ok
+
+
+@pytest.mark.parametrize("path", [
+    "notes/a.txt", "תיקיה/קובץ.txt", "école/notes.txt", "כן/לא.txt", "a1/b", "a_b/c", "a-b/c",
+    "a/b/c", "src/lib.rs", "él/ella1", "sim/não_x", "כן/לא/x", "Yes/No",
+])
+def test_a_real_path_is_still_a_path(keyline_check, path):
+    # The exception is one slash between two plain words: a dot, a digit, an underscore, a dash,
+    # a capital or a second slash keeps the token a path.
+    src = f"see {path} at 14:02"
+    assert keyline_check.invariants(src)[path] == "path"
+    assert keyline_check.check(src, src.replace(path, "x/y.z")).missing == [path]
+    assert keyline_check.check(src, src).ok
+    # A two-word lowercase path with no dot ("src/lib") is prose to the extractor, as documented.
+    assert keyline_check.invariants("see src/lib at 14:02") == {"14:02": "time"}
+
+
+@pytest.mark.parametrize("src, ren", [
+    ("## May\n5 PRs merged at 14:02", "## מאי\n5 PRs מוזגו ב-14:02"),
+    ("May\n5 PRs merged at 14:02", "מאי\n5 PRs מוזגו ב-14:02"),
+    ("**May**\n5 PRs merged at 14:02", "**מאי**\n5 PRs מוזגו ב-14:02"),
+    ("- May\n5 PRs merged at 14:02", "- מאי\n5 PRs מוזגו ב-14:02"),
+    ("> May\n5 PRs merged at 14:02", "> מאי\n5 PRs מוזגו ב-14:02"),
+    ("## May\nnothing shipped at 14:02", "## מאי\nכלום לא נשלח ב-14:02"),
+    ("# MAY\n5 PRs merged at 14:02", "# מאי\n5 PRs מוזגו ב-14:02"),
+    ("## May\n5 PRs merged?\nYes, at 14:02.", "## מאי\n5 PRs מוזגו?\nכן, ב-14:02."),
+    ("Q3\n\nMay\n5 PRs merged at 14:02", "Q3\n\nמאי\n5 PRs מוזגו ב-14:02"),
+])
+def test_a_may_that_is_the_whole_content_of_its_line_is_the_month(keyline_check, src, ren):
+    # A heading "## May" (or "May" alone on a line) before a line that starts with a digit was
+    # a possibility hedge once a digit on the next line no longer named the day, so a monthly
+    # notes file failed against its Hebrew rendering with "hedges lost".
+    assert keyline_check.hedges(src) == {}, src
+    result = keyline_check.check(src, ren)
+    assert result.ok, (result.missing, result.missing_hedges)
+
+
+def test_a_bare_may_line_that_opens_a_question_is_the_modal(keyline_check):
+    # Without heading or label furniture a "May" line is the modal when the sentence it opens
+    # ends in a question mark ("May\n5 items be removed?"); with furniture it is the month.
+    assert keyline_check.hedges("May\n5 items be removed?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May\nwe proceed?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May\n5 PRs merged? Yes.") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May\n5 PRs merged. Yes?") == {}
+    assert keyline_check.hedges("May\n\nWhy?") == {}
+    assert keyline_check.hedges("## May\n5 PRs merged?") == {}
+    assert keyline_check.hedges("May:\n5 PRs merged?") == {}
+
+
+@pytest.mark.parametrize("tok, kind", [
+    ("fooBar", "camel"), ("FooBar", "camel"), ("ABcD", "camel"), ("getHTTP2", "camel"), ("aB", "camel"),
+    ("aAaAaA", "camel"), ("ABc", None), ("Abc", "proper"), ("ABC", "upper"), ("ab1", "ident"),
+])
+def test_camel_case_shapes_after_the_linear_rule(keyline_check, tok, kind):
+    # The CamelCase rule now tries one split per letter run (leading capitals, one lowercase
+    # run, a capital) instead of one per lower-upper pair; it takes the same tokens ("ABc",
+    # with no lower-upper pair, is nothing, as before).
+    assert keyline_check.invariants(f"use {tok} at 14:02").get(tok) == kind
+    assert keyline_check.invariants("use aAaA_ at 14:02") == {"14:02": "time"}
+
+
+@pytest.mark.parametrize("tok, kind, changed", [
+    ("Python3.12", "proper", "Python3.11"), ("python3.12", "ident", "python3.11"),
+    ("GPT4.5", "upper", "GPT4.1"), ("getHTTP2.1", "camel", "getHTTP2.2"),
+    ("my_lib1.5", "snake", "my_lib1.6"), ("abcdef1.5", "hash", "abcdef1.6"), ("Fig.3", "proper", "Fig.4"),
+])
+def test_a_name_glued_to_a_dotted_number_is_one_token(keyline_check, tok, kind, changed):
+    # A name ending in a digit may continue with ".<digits>" ("Python3.12", "python3.12",
+    # "GPT4.5"): the whole is one token, as "v2.14.0" is. Before the version and number rules
+    # stopped starting after "<digit>." (the linear-time fix), only the part after the dot was
+    # extracted, by accident; after it, nothing was, so a swapped "Python3.12" passed.
+    source = f"use {tok} at 14:02"      # not at a sentence start, where a proper noun is furniture
+    assert keyline_check.invariants(source).get(tok) == kind
+    result = keyline_check.check(source, source.replace(tok, changed))
+    assert not result.ok and result.missing == [tok]
+    # A name before sentence punctuation or a spaced number is unchanged.
+    assert keyline_check.invariants("use Python3. 5 users") == {"Python3": "proper", "5": "number"}
+    # The dotted tail is scanned once per name, not once per dot.
+    import time
+    start = time.perf_counter()
+    assert keyline_check.invariants("Python3" + ".1" * 16000 + "_") == {}
+    assert time.perf_counter() - start < 2.0
