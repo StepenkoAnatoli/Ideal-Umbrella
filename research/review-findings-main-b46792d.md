@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording).
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording); pass 7: keyline (R1) 1 high, 3 medium, 7 low (1 pre-existing neighbour of finding 97, 4 regressions of 00d8960, the rest doc claims, missing test rows and idle guard rows).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1981,6 +1981,201 @@ the fix and failing closed after it. R2's findings follow.
    the fix).
    Other hits: none.
    Prevention: none.
+
+## Self-check pass 7 (fresh-context pass over the fix commits 00d8960 and 46eaec7)
+
+Two fresh-context reviewers, one per fix commit, no report read: R1 over 00d8960 (keyline,
+findings 96-99), R2 over 46eaec7 (config, findings 100-108). Same adversarial brief as the earlier
+passes. R1 findings 109-119: 1 high, 3 medium, 7 low, every one reproduced with the reviewer's
+probes (`python3 -I .../selfcheck7g/r1/p1_neighbours.py`, `p5_claims.py`, `p7_version_tail.py`,
+`p8_v_stem_hour.py`) before the fix and failing closed after it; the fixed module re-run through
+every r1 probe (`p2_perf.py` worst 0.67 s, `p4_perf_single_start.py` worst 0.44 s, `p3_fuzz.py`
+0 self-fails over 40000 lines, `p6_lookbehind_guard.py` all rows under 0.2 s). The final test
+module against the pre-fix module: 28 failed, 244 passed.
+
+One shape found during the fix and bounded before it was committed: with the date or time an
+unbounded interior component of a file name, `12` + `.14:30` x 1600 + `.x_` took 1.0 s and
+7.0 s at twice the length (the number rule takes `12.14`, the next start is `30` after the
+`:`, which no digit-dot lookbehind blocks, and the file rule then scans the whole run before
+failing); the same for `.2026-10-25`. The file rule takes at most two such components before
+its first extension and two after it (`fix_r1/unbounded_dt_check.py` is the unbounded
+variant: 6.3 s and 5.2 s on the two new linear-time rows, 0.02 s and 0.06 s fixed). The
+percentage lookahead of the number rule had the same trap with the number rule's own
+unbounded shape (`fix_r1/unbounded_pct_check.py`: 24 s on `("11.", 16000, "11_")`), so the
+percentage is bounded to three figures.
+
+109. (R1) keyline/keyline_check.py:102-103 (before this fix), the file alternative: a date or a
+    time component (`NOT_DT`) stopped the rule before the letter extension that followed, so
+    a dated name with the extension after the date (`backup.2026-10-25.sql`,
+    `report.2026-10-25.pdf`, `site.2026-10-25.tar.gz`) had no name token at all, only the date,
+    and a rendering with `restore.2026-10-25.bak`, `summary.2026-10-25.docx` or the bare date
+    passed. Reproduced (`r1/p1_neighbours.py` rows "dated backup, dot before date", "dated
+    backup: stem lost?", "dated report ext swap", "dated report stem swap", WRONGPASS old and
+    new). High. Class: neighbour of the fixed input (finding 97 covered the name-then-date
+    shape, not the more common name-date-extension one). Pre-existing on main.
+   Fixed: keyline/keyline_check.py:41-44 `FILE_DT` (a date, a timestamp or a time followed by a
+   dotted component) and :119-122, the file alternative takes it as an interior component before
+   the first extension and after it, at most two per side, so `backup.2026-10-25.sql`,
+   `app.log.2026-10-25.gz`, `site.2026-10-25.tar.gz`, `db.sql.14:30.gz`, `db.sql.14:30:00.gz`,
+   `סיכום.2026-10-25.md` are one token each, while a trailing date or time is a token of its own
+   (`app.log.2026-10-25` stays the file name and the date; a source naming the date alone still
+   finds it in the rendering's dated file name through the boundary lookup). Test:
+   tests/test_keyline_check.py:744-774
+   `test_a_date_or_time_before_an_extension_is_inside_the_file_name` (12 rows; failed before the
+   fix); linear-time rows tests/test_keyline_check.py:414 `("30.14:", 5400, "30_")` and
+   `("25.2026-10-", 3000, "25_")` (6.3 s and 5.2 s with the interior run unbounded).
+   Other hits: findings 112 and 116 (same change).
+   Prevention: a new "not part of a name" component is probed with the extension after it as
+   well as at the end; the comment block (:93-96) and keyline/README.md:57 name the shape.
+
+110. (R1) keyline/keyline_check.py:110 (before this fix), the number rule's `(?<!\d\.)` guard
+    (pass-5 linear-time fix) with `NOT_DT` moving a percentage out of a name that ends in a
+    digit: `GPT4.5%` gave the name `GPT4` and no `5%` at all (the comment block claimed the
+    number), likewise `python3.12.5%`, `my_lib2.5%`, `fooBar1.5%`, `app.log.1.5%`, `v2.5%`, so a
+    rendering `GPT4.6%` passed where the code before 00d8960 held `GPT4.5` and failed it.
+    Reproduced (`r1/p1_neighbours.py` rows "GPT4.5%", "ident decimal percentage", "camel + pct";
+    `r1/p5_claims.py` seven DIFF rows). Medium. Class: regression inside the fix.
+   Fixed: keyline/keyline_check.py:37 `PCT` and :129, the number rule starts after a digit and a
+   dot when a percentage follows (`(?:(?<!\d\.)|(?=PCT))`): `GPT4.5%` is `GPT4` and `5%`,
+   `python3.12.5%` is `python3` and `12.5%`, `app.log.1.5%` the file and `1.5%`, `v2.5%` the
+   version `v2` and `5%`. The percentage is bounded to three figures (`\d+(?:[.,]\d+){0,2}%`)
+   so the lookahead does not rescan a dotted digit run: the number rule's own shape as the
+   lookahead took 24 s on `("11.", 16000, "11_")`, which stays at 0.2 s. Test:
+   tests/test_keyline_check.py:713-718, rows `GPT4.5%`, `python3.12.5%`, `app.log.1.5%` (failed
+   before the fix); the linear-time row :414 `("11.", 16000, "11_")` guards the bound.
+   Other hits: finding 111 (`notes.txt.12.5%`, the same start), finding 113 (`v2.5%`).
+   Prevention: a token moved out of a name is checked to land in another rule, not only to leave
+   the name; the comment block (:100-102) says where the number rule may start.
+
+111. (R1) keyline/keyline_check.py:34 (before this fix), `NOT_DT`'s percentage branch was `\d+%`,
+    a whole number only, so `.12` of `notes.txt.12.5%` passed the guard as a numeric component
+    and `5%` was then blocked by the number rule's digit-dot guard: `notes.txt.12` and nothing,
+    where the code before 00d8960 held `notes.txt.12.5` and failed a changed figure; a rendering
+    `notes.txt.12.6%` passed. Reproduced (`r1/p1_neighbours.py` rows "decimal percentage after
+    dot", "decimal percentage 12.5"). Medium. Class: regression inside the fix.
+   Fixed: keyline/keyline_check.py:37-38, the `NOT_DT` percentage branch is `PCT`, the number
+   rule's shape bounded to three figures (`12.5%`, `0.25%`, `1,5%`), so `notes.txt.12.5%` is
+   the file name and the number `12.5%`, `GPT4.12.5%` the name and `12.5%`. Test:
+   tests/test_keyline_check.py:719-720, row `notes.txt.12.5%` (failed before the fix).
+   Other hits: `python3.12.5%` (finding 110's row).
+   Prevention: a guard that names a token kind takes that kind's full shape (or a stated bound),
+   not a narrower one; keyline/README.md:57 names `12.5%`.
+
+112. (R1) keyline/keyline_check.py:102-103 (before this fix): the extension after a dated or
+    timed component was dropped, so `app.log.2026-10-25.gz` (logrotate `dateext` with
+    `compress`) gave `app.log` and the date and no `gz`, `site.2026-10-25.tar.gz` the date alone
+    (the code before 00d8960 kept `tar.gz`), `db.sql.14:30.gz` the file and the time; renderings
+    with `.xz`, `.tar.xz`, `app.log.2026-10-25 .gz` passed. Reproduced (`r1/p1_neighbours.py`
+    rows "dateext+compress", "dated tarball", "time then ext"; `r1/p8_v_stem_hour.py` row
+    "dateext+compress ext swap"; `r1/p7_version_tail.py`). Medium. Class: regression inside the
+    fix (strict, for the tarball).
+   Fixed: with 109 (`FILE_DT` interior component): `app.log.2026-10-25.gz`,
+   `site.2026-10-25.tar.gz`, `db.sql.14:30.gz` are one token each. Test:
+   tests/test_keyline_check.py:748-753, rows `app.log.2026-10-25.gz` (two renderings, one with
+   the space before `.gz`), `site.2026-10-25.tar.gz`, `db.sql.14:30.gz`, `db.sql.14:30:00.gz`
+   (failed before the fix).
+   Other hits: none beyond 109.
+   Prevention: as 109.
+
+113. (R1) keyline/keyline_check.py:99 (before this fix), the version rule's dotted tail had no
+    `NOT_DT` though the comment said "in every dotted tail": `v2.2026-10-25T14:30Z` gave
+    `v2.2026`, `10`, `30Z`, the hour no token, so a rendering with the hour changed passed;
+    `v2.14:30` gave `v2.14` and `30`, `v2.5%` gave `v2.5` and nothing. Reproduced
+    (`r1/p8_v_stem_hour.py` row "v stem, hour swap", WRONGPASS old and new;
+    `r1/p7_version_tail.py`). Low. Class: incomplete fix, doc mismatch. Pre-existing on main.
+   Fixed: keyline/keyline_check.py:116, the `v` branch's tail is `(?:\.NOT_DT\d+)*`, so `v2` and
+   the timestamp, `v2` and `14:30`, `v2` and `5%` (with 110). The numeric branch keeps its tail
+   on purpose, so `10.0.0.1:8080` and `10.0.0.1:80` stay one address; the comment block
+   (:100-103) says so. Test: tests/test_keyline_check.py:721-725, rows `v2.2026-10-25T14:30Z`,
+   `v2.14:30`, `v2.5%` (failed before the fix).
+   Other hits: none.
+   Prevention: a claim of "every" in a comment is checked against each alternative that has the
+   construct; the comment now names which tails carry the guard and which does not.
+
+114. (R1) keyline/keyline_check.py:99 (before this fix), the version lookahead `(?!\.[A-Za-z])`
+    of finding 99 made a version followed by a dotted capitalised word one file token:
+    `v1.0.0.RELEASE` (Java qualifier) and `v2.14.0.Then more` (a sentence period glued to the
+    next word), so renderings `v1.0.0 RELEASE` and `v2.14.0. Then more` failed where the code
+    before 00d8960 passed them. Reproduced (`r1/p7_version_tail.py` rows 5-6, fail new, pass
+    old). Low (wrong fail, contrived). Class: regression inside the fix.
+   Fixed: keyline/keyline_check.py:116, the lookahead is `(?!\.[a-z])`: a `v` version ends before
+   a dotted lowercase extension (`v2.14.0.txt`, `v2.pdf`, `v1.log.1` are file names) and not
+   before a capitalised one (`v1.0.0` and the word `RELEASE`; `v2.14.0` before the sentence
+   start `Then`, which the proper rule skips). Test: tests/test_keyline_check.py:777-793
+   `test_a_version_ends_before_a_dotted_capitalised_word_but_not_before_an_extension` (six rows
+   and the two renderings; failed before the fix).
+   Other hits: none.
+   Prevention: a lookahead that ends a token is tried with both letter cases; the comment block
+   (:103-105) names both.
+
+115. (R1) keyline/keyline_check.py:102 (before this fix), the file stem `[\w-]{1,199}` after its
+    first character: a stem was at least two characters (so that `e.g.`, `i.e.` are prose), and
+    `a.out` was no token (`b.out` passed), `x.tar.gz.1` was cut to `tar.gz.1`. Reproduced
+    (`r1/p1_neighbours.py` row "a.out"; `r1/p7_version_tail.py` last row). Low. Class:
+    neighbour, pre-existing on main.
+   Fixed: keyline/keyline_check.py:119, a one-character stem is allowed when the first extension
+   has two or more letters (`(?:[\w-]{1,199}|(?=\.[A-Za-z]{2}))`): `a.out`, `x.tar.gz.1` are one
+   token each; `e.g.`, `i.e.`, `x.y` stay prose. keyline/README.md:210 and the comment block
+   (:91-93) say so. Test: tests/test_keyline_check.py:796-812
+   `test_a_one_character_stem_before_a_longer_extension_is_a_file_name`, rows `a.out`,
+   `x.tar.gz.1` (two renderings; failed before the fix), `12.3.txt` and the `e.g. x.y, i.e.`
+   assertion (regression guards, passed before too).
+   Other hits: none.
+   Prevention: a minimum length named for one reason (`e.g.`) is bounded by that reason (a
+   one-letter extension), not by a count.
+
+116. (R1) keyline/keyline_check.py:35 and :102 (before this fix): a date after a file name and
+    then `.N` fell apart (`app.log.2026-10-25.1` gave `app.log`, `2026`, `10`, `25.1`;
+    `app.log.2026-10-25.1.gz` gave `app.log` and the file `2026-10-25.1.gz`), failing closed by
+    accident. Reproduced (`r1/p8_v_stem_hour.py` rows 6-7). Low. Class: incomplete fix.
+   Fixed: with 109: `FILE_DT` needs a dotted component after the date, and the file rule takes
+   numeric components after it (`app.log.2026-10-25.1`, `app.log.2026-10-25.1.gz` are one token
+   each). Test: tests/test_keyline_check.py:754-755, rows `app.log.2026-10-25.1.gz`,
+   `app.log.2026-10-25.1` (failed before the fix).
+   Other hits: none.
+   Prevention: as 109.
+
+117. (R1) keyline/keyline_check.py:86-87 (before this fix) and keyline/README.md:57: three claims
+    the code did not meet ("`GPT4.5%` the name `GPT4` and the number `5%`", finding 110;
+    "`NOT_DT` ... in every dotted tail", finding 113; "a dotted component that opens a date, a
+    time or a percentage is never part of a name ... each held to the rendering on its own",
+    findings 111 and 109). Low. Class: doc mismatch.
+   Fixed: keyline/keyline_check.py:91-105, the comment block names the one-character stem rule,
+   the interior date or time (`FILE_DT`, two per side), where `NOT_DT` applies (every name
+   tail, the `v` version's tail, the file rule, `R`) and where it does not (the numeric
+   version, `10.0.0.1:8080`), the number rule's percentage start and the version lookahead;
+   keyline/README.md:57 names the interior date (`backup.2026-10-25.sql`, `app.log.2026-10-25.gz`,
+   `db.sql.14:30.gz`), the decimal percentage (`notes.txt.12.5%`) and `GPT4.5%`;
+   keyline/README.md:210 the one-character stem (finding 115). Test: every example in the
+   three passages has a row (tests/test_keyline_check.py:713-812).
+   Other hits: none (CHANGELOG's sentence on `notes.txt.5%` holds; the new sentence is in
+   `fix_r1/changelog.md`).
+   Prevention: each example a comment or README names is a test row.
+
+118. (R1) tests/test_keyline_check.py (before this fix): documented shapes with no row (`e.g.`,
+    `i.e.` as prose; `x.tar.gz.1`; `12.3.txt` named by finding 96; `v2.14.0.txt`, `v2.pdf` and
+    the version lookahead of finding 99, covered only through `v1.log.1`). Low. Class: fix
+    without test.
+   Fixed: tests/test_keyline_check.py:777-783 (`v2.14.0.txt`, `v2.pdf`, `v1.0.0.RELEASE`,
+   `v2.14.0.Then`, `v2.14.0`), :796-812 (`x.tar.gz.1`, `a.out`, `12.3.txt`, the `e.g. x.y, i.e.`
+   invariants and an `e.g. notes.txt` rendering in Hebrew). Test: the rows themselves; the
+   ones that pass against the pre-fix module (`12.3.txt`, `e.g.`) are regression guards.
+   Other hits: none.
+   Prevention: as 117.
+
+119. (R1) tests/test_keyline_check.py:414 (before this fix): three of the four linear-time rows
+    added with finding 96 (`("11.", 16000, "x_")`, `("a1.", 16000, "b_")`, `("ab.", 16000,
+    "1_")`) ran in 0.003-0.006 s with or without the stem lookbehind they were said to guard.
+    Low. Class: test that guards nothing.
+   Fixed: tests/test_keyline_check.py:414, the three rows dropped; `("11.", 16000, "11_")` kept
+   (41 s without the lookbehind, 24 s with an unbounded percentage lookahead); two rows added
+   for the bounded interior run of finding 109 (`("30.14:", 5400, "30_")`,
+   `("25.2026-10-", 3000, "25_")`: 6.3 s and 5.2 s unbounded, 0.02 s and 0.06 s now), the
+   comment (:417-431) says what each row guards and the timings. A `("1.", 16000, "5%")` row was
+   tried and dropped: the number rule takes the whole run as one token, so it guards nothing.
+   Other hits: none.
+   Prevention: a linear-time row is kept only when a variant without the guard is shown to be
+   slow on it (`r1/p6_lookbehind_guard.py`, `fix_r1/unbounded_*_check.py`).
 
 ## Checked and found clean (both reviewers and both verifiers)
 

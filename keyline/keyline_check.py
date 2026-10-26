@@ -30,10 +30,18 @@ HEB = "א-ת"
 # start that L lets through after a diacritic would rescan a run from every capital in it.
 L = rf"(?<![A-Za-z0-9_{LATIN}])"
 # A dotted numeric component that opens a date, a time or a percentage is not part of a name:
-# a token may end before ".2026-10-25", ".14:30" or ".5%", and a dotted tail never takes them.
-NOT_DT = r"(?!\d{4}-\d{2}-\d{2}(?!\d)|\d{1,2}:\d{2}|\d+%)"
+# a token may end before ".2026-10-25", ".14:30", ".5%" or ".12.5%", and a dotted tail never
+# takes them. The percentage is the number rule's shape, whole or decimal ("5%", "12.5%",
+# "1,5%"), bounded to three dotted groups so a long dotted digit run is not rescanned from every
+# component; the number rule starts after a digit and a dot only for such a percentage (PCT).
+PCT = r"\d+(?:[.,]\d+){0,2}%"
+NOT_DT = rf"(?!\d{{4}}-\d{{2}}-\d{{2}}(?!\d)|\d{{1,2}}:\d{{2}}|{PCT})"
 R = rf"(?![A-Za-z0-9_{LATIN}]|\.{NOT_DT}\d)"
 TAIL = rf"(?:(?<=\d)\.{NOT_DT}\d+)*"
+# A date, a timestamp or a time is an interior component of a file name when another dotted
+# component follows it ("backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz",
+# "app.log.2026-10-25.1"); a trailing one is a token of its own ("app.log.2026-10-25").
+FILE_DT = r"(?:\d{4}-\d{2}-\d{2}(?:T\d{1,2}:\d{2}(?::\d{2})?Z?)?|\d{1,2}:\d{2}(?::\d{2})?)(?=\.[A-Za-z0-9])"
 # A path or file name may also start at a Hebrew letter ("סיכום.md", "תיקיה/קובץ.txt"), but only
 # at the first letter of its word, so a long Hebrew run has one start and not one per letter,
 # and only when no Latin letter, digit or dash follows it, so the prefix of "בnotes/a.txt" and
@@ -80,12 +88,21 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # and the number is what it must keep), except a file name, whose dotted components after the
 # stem may be numbers as well as letter extensions, in any order, with a letter extension among
 # them ("app.log.1", "backup.tar.gz.1", "app.log.1.gz", "syslog.2.gz" are one token each;
-# "syslog.1" has no extension and is the number alone), and whose stem is not one character
-# ("e.g.", "i.e." are prose; "x.tar.gz.1" yields "tar.gz.1"); a dotted component that opens a
-# date, a time or a percentage is never part of a name or a tail ("app.log.2026-10-25T14:30Z"
-# is the file "app.log" and the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%" the
-# name "GPT4" and the number "5%"): NOT_DT in the file rule, in every dotted tail and in R, so
-# a token may end before such a component; the CamelCase rule tries one
+# "syslog.1" has no extension and is the number alone), and whose stem is one character only
+# before a letter extension of two or more ("a.out", "x.tar.gz.1" are one token each; "e.g.",
+# "i.e.", "x.y" are prose); a date or a time between a file name's components is inside it
+# (FILE_DT: "backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz" are one token
+# each, at most two such components before the first extension and two after it, so a long
+# run of them is not rescanned from every start), while a dotted component that opens a date,
+# a time or a percentage at the end of a name is not part of it ("app.log.2026-10-25T14:30Z"
+# is the file "app.log" and the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%"
+# the name "GPT4" and the number "5%", "notes.txt.12.5%" the file and the number "12.5%"):
+# NOT_DT in the file rule, in every name's dotted tail, in the "v" version's tail and in R, so
+# a token may end before such a component, and the number rule starts after a digit and a
+# dot only before such a percentage (PCT); the numeric version keeps its tail, so that
+# "10.0.0.1:8080" stays one address; a "v" version ends before a dotted lowercase component
+# ("v2.14.0.txt", "v2.pdf" are file names) but not before a capitalised one ("v1.0.0.RELEASE"
+# is the version and the word "RELEASE"); the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
@@ -96,18 +113,20 @@ INVARIANT = re.compile(
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)
-    | (?P<version>v\d+(?:\.\d+)*(?!\.[A-Za-z])|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
+    | (?P<version>v\d+(?:\.""" + NOT_DT + r"""\d+)*(?!\.[a-z])|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
     | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
-    | (?P<file>(?<!\d\.)(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.""" + NOT_DT + r"""\d+)*
-                \.[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*)
+    | (?P<file>(?<!\d\.)(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")(?:[\w-]{1,199}|(?=\.[A-Za-z]{2}))
+                (?:\.""" + NOT_DT + r"""\d+)*(?:\.""" + FILE_DT + r"""(?:\.""" + NOT_DT + r"""\d+)*){0,2}
+                \.[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*
+                (?:\.""" + FILE_DT + r"""(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*){0,2})
     | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?""" + TAIL + r""")
     | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*""" + TAIL + r""")
     | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
                  (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*""" + TAIL + r""")
     | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*""" + TAIL + r"""|__[a-z0-9]+__)
     | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}""" + TAIL + r""")
-    | (?P<number>(?<!\d\.)(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
+    | (?P<number>(?:(?<!\d\.)|(?=""" + PCT + r"""))(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
     | (?P<ident>[a-z]+\d[A-Za-z0-9]*""" + TAIL + r""")
 )"""
     + R,

@@ -411,7 +411,7 @@ def test_month_label_may_is_not_a_hedge(keyline_check):
     ("ÉCOLE", 4000, "_"), ("ס", 16000, "_"), ("ס", 16000, ".5"), ("סZ", 8000, "_"), ("Zס", 8000, "_"),
     ("ÉCOLE", 4000, "/x"), ("ס", 16000, "/x"),
     ("1.", 16000, "1_"), ("1.", 16000, "1é"), ("aA", 16000, "_"), ("aA", 16000, "é"),
-    ("11.", 16000, "11_"), ("11.", 16000, "x_"), ("a1.", 16000, "b_"), ("ab.", 16000, "1_"),
+    ("11.", 16000, "11_"), ("30.14:", 5400, "30_"), ("25.2026-10-", 3000, "25_"),
 ], ids=lambda v: str(v))
 def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, unit, count, tail):
     text = unit * count + tail
@@ -421,7 +421,14 @@ def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_chec
     # opens a file name or path only when no Hebrew letter precedes it, for the same reason.
     # A dotted digit run before "_" or "é" ("1.1.1...1_") was rescanned by the version and
     # number rules from every digit after a ".", and a lower-upper letter run ("aAaA...aA_") by
-    # the CamelCase rule from every pair: 16000 pairs took 54 s and 9.7 s.
+    # the CamelCase rule from every pair: 16000 pairs took 54 s and 9.7 s. The file rule's
+    # stem does not start after "<digit>." either, and the number rule starts there only
+    # before a percentage of at most three figures: "11.11.11...11_" took 41 s without the
+    # stem lookbehind and 24 s with the number rule's own unbounded shape as that lookahead. A
+    # file name holds at most two dotted dates or times before its first extension and two
+    # after it, so a run of them is not rescanned from every start the number rule leaves
+    # after a ":" or a "-" ("30.14:30.14:30...30_", "25.2026-10-25.2026-10-25...25_": 6.3 s
+    # and 5.2 s, quadratic, when the run was unbounded).
     import time
     start = time.perf_counter()
     keyline_check.invariants(text)
@@ -703,6 +710,19 @@ def test_a_file_name_with_a_numeric_suffix_is_one_token(keyline_check, src, ren,
      {"db2": "ident", "2026-10-25": "date", "14:02": "time"}),
     ("run GPT4.14:30 at 14:02", "run GPT4.14 30 at 14:02",
      {"GPT4": "upper", "14:30": "time", "14:02": "time"}),
+    ("grew to GPT4.5% at 14:02", "grew to GPT4.6% at 14:02",
+     {"GPT4": "upper", "5%": "number", "14:02": "time"}),
+    ("use python3.12.5% at 14:02", "use python3.12.6% at 14:02",
+     {"python3": "ident", "12.5%": "number", "14:02": "time"}),
+    ("keep app.log.1.5% at 14:02", "keep app.log.1.6% at 14:02",
+     {"app.log": "file", "1.5%": "number", "14:02": "time"}),
+    ("see notes.txt.12.5% done at 14:02", "see notes.txt.12.6% done at 14:02",
+     {"notes.txt": "file", "12.5%": "number", "14:02": "time"}),
+    ("tag v2.2026-10-25T14:30Z at 14:02", "tag v2.2026-10-25T15:30Z at 14:02",
+     {"v2": "version", "2026-10-25T14:30Z": "datetime", "14:02": "time"}),
+    ("tag v2.14:30 at 14:02", "tag v2.15:30 at 14:02",
+     {"v2": "version", "14:30": "time", "14:02": "time"}),
+    ("tag v2.5% at 14:02", "tag v2.6% at 14:02", {"v2": "version", "5%": "number", "14:02": "time"}),
 ])
 def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src, ren, expected):
     # The numeric tail of a file name ("app.log.1") or of a name ending in a digit ("GPT4.5")
@@ -710,10 +730,86 @@ def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src,
     # the dot: "app.log.2026-10-25T14:30Z" was the file "app.log.2026" and the numbers 10 and
     # 30Z, so an hour swapped in the rendering passed. A dotted component that opens a date, a
     # time or a percentage is not part of the name; the name ends before the dot and the date,
-    # time or percentage is a token of its own.
+    # time or percentage is a token of its own. The percentage after a name that ends in a
+    # digit ("GPT4.5%") was then no token at all: the number rule does not start after a digit
+    # and a dot (the linear-time guard), so "GPT4.6%" passed; it starts there when a percentage
+    # follows. A decimal percentage ("notes.txt.12.5%") was cut at its own dot and its figure
+    # lost the same way: the guard knows the decimal shape. The "v" version's tail took the
+    # year, the hour or the figure like every other tail ("v2.2026", "v2.14", "v2.5").
     assert keyline_check.invariants(src) == expected
     result = keyline_check.check(src, ren)
     assert not result.ok, result
+
+
+@pytest.mark.parametrize("src, ren, name", [
+    ("dump backup.2026-10-25.sql at 14:02", "dump restore.2026-10-25.bak at 14:02", "backup.2026-10-25.sql"),
+    ("dump backup.2026-10-25.sql at 14:02", "dump 2026-10-25 at 14:02", "backup.2026-10-25.sql"),
+    ("see report.2026-10-25.pdf at 14:02", "see summary.2026-10-25.pdf at 14:02", "report.2026-10-25.pdf"),
+    ("see report.2026-10-25.pdf at 14:02", "see report.2026-10-25.docx at 14:02", "report.2026-10-25.pdf"),
+    ("rotate app.log.2026-10-25.gz at 14:02", "rotate app.log.2026-10-25.xz at 14:02", "app.log.2026-10-25.gz"),
+    ("rotate app.log.2026-10-25.gz at 14:02", "rotate app.log.2026-10-25 .gz at 14:02", "app.log.2026-10-25.gz"),
+    ("site.2026-10-25.tar.gz saved at 14:02", "site.2026-10-25.tar.xz saved at 14:02", "site.2026-10-25.tar.gz"),
+    ("dump db.sql.14:30.gz at 14:02", "dump db.sql.14:30.xz at 14:02", "db.sql.14:30.gz"),
+    ("dump db.sql.14:30:00.gz at 14:02", "dump db.sql.14:31:00.gz at 14:02", "db.sql.14:30:00.gz"),
+    ("rotate app.log.2026-10-25.1.gz at 14:02", "rotate app.log.2026-10-26.1.gz at 14:02", "app.log.2026-10-25.1.gz"),
+    ("rotate app.log.2026-10-25.1 at 14:02", "rotate app.log.2026-11-25.1 at 14:02", "app.log.2026-10-25.1"),
+    ("keep סיכום.2026-10-25.md at 14:02", "keep סיכום.2026-10-25.txt at 14:02", "סיכום.2026-10-25.md"),
+])
+def test_a_date_or_time_before_an_extension_is_inside_the_file_name(keyline_check, src, ren, name):
+    # A dated backup, report or rotated log ("backup.2026-10-25.sql", "report.2026-10-25.pdf",
+    # "app.log.2026-10-25.gz": logrotate's dateext with compress) has a date between its stem
+    # and its extension. The file rule stopped at the date, so the name was lost whole
+    # ("backup", a lowercase stem, is prose; "sql" is nothing) or cut to "app.log" with the
+    # extension dropped, and a rendering with another stem, another extension, or the date
+    # alone passed. A date, a timestamp or a time followed by another dotted component is an
+    # interior component of the file name, which is one token; a trailing one is its own token
+    # ("app.log.2026-10-25" stays the file name and the date), and a source that names the
+    # date alone still finds it inside the file name.
+    found = keyline_check.invariants(src)
+    assert found[name] == "file" and set(found) == {name, "14:02"}, found
+    result = keyline_check.check(src, ren)
+    assert not result.ok and name in result.missing, result
+    assert keyline_check.invariants("rotate app.log.2026-10-25 at 14:02") == {
+        "app.log": "file", "2026-10-25": "date", "14:02": "time"}
+    assert keyline_check.check("dump of 2026-10-25 at 14:30", "dump db.sql.14:30.gz of 2026-10-25").ok
+
+
+@pytest.mark.parametrize("src, expected", [
+    ("use v1.0.0.RELEASE at 14:02", {"v1.0.0": "version", "RELEASE": "upper", "14:02": "time"}),
+    ("see v2.14.0.Then more at 14:02", {"v2.14.0": "version", "14:02": "time"}),
+    ("use v2.14.0 at 14:02", {"v2.14.0": "version", "14:02": "time"}),
+    ("use v2.14.0.txt at 14:02", {"v2.14.0.txt": "file", "14:02": "time"}),
+    ("use v2.pdf at 14:02", {"v2.pdf": "file", "14:02": "time"}),
+    ("keep v1.log.1 at 14:02", {"v1.log.1": "file", "14:02": "time"}),
+])
+def test_a_version_ends_before_a_dotted_capitalised_word_but_not_before_an_extension(keyline_check, src, expected):
+    # A "v" version does not end before a lowercase extension ("v2.14.0.txt", "v2.pdf",
+    # "v1.log.1" are file names), but it does before a capitalised word: "v1.0.0.RELEASE" is
+    # the version and the qualifier, "v2.14.0.Then" the version before a sentence start (which
+    # the proper rule skips). The lookahead took any letter, so both were one file token and a
+    # rendering with "v1.0.0 RELEASE" or "v2.14.0. Then" failed.
+    assert keyline_check.invariants(src) == expected
+    assert keyline_check.check("use v1.0.0.RELEASE at 14:02", "use v1.0.0 RELEASE at 14:02").ok
+    assert keyline_check.check("see v2.14.0.Then more at 14:02", "see v2.14.0. Then more at 14:02").ok
+
+
+@pytest.mark.parametrize("src, ren, name", [
+    ("run a.out at 14:02", "run b.out at 14:02", "a.out"),
+    ("keep x.tar.gz.1 at 14:02", "keep y.tar.gz.1 at 14:02", "x.tar.gz.1"),
+    ("keep x.tar.gz.1 at 14:02", "keep x.tar.gz.2 at 14:02", "x.tar.gz.1"),
+    ("see 12.3.txt at 14:02", "see 12.4.txt at 14:02", "12.3.txt"),
+])
+def test_a_one_character_stem_before_a_longer_extension_is_a_file_name(keyline_check, src, ren, name):
+    # A file name's stem was at least two characters, so that "e.g." and "i.e." are prose; the
+    # rule also dropped "a.out" (no token: "b.out" passed) and cut "x.tar.gz.1" to "tar.gz.1".
+    # A one-character stem is a file name when its first extension has two or more letters;
+    # "e.g.", "i.e." and "x.y" stay prose. "12.3.txt" is a file name, not the number 12.3.
+    found = keyline_check.invariants(src)
+    assert found[name] == "file" and set(found) == {name, "14:02"}, found
+    result = keyline_check.check(src, ren)
+    assert not result.ok and name in result.missing, result
+    assert keyline_check.invariants("e.g. x.y, i.e. at 14:02") == {"14:02": "time"}
+    assert keyline_check.check("e.g. notes.txt at 14:02", "למשל notes.txt ב-14:02").ok
 
 
 @pytest.mark.parametrize("src, ren, missing", [
