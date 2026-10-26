@@ -958,7 +958,8 @@ Two reviewers who had not seen the findings above read only the pass 1 fix commi
 keyline_check commits 07671ca and c50d1e5, R2 the config/hook/measure commit c829812. Every
 medium was re-reproduced here with `python -I` (the read-only case as uid 65534 in a copy
 under /var/tmp, since root ignores file modes) before being accepted.
-Counts (R2): 0 high, 2 medium, 2 low; all fixed class-wide in this PR.
+Counts: 0 high, 6 medium, 4 low (R2 findings 52-55: 2 medium, 2 low; R1 findings 56-61: 4 medium,
+2 low); all fixed class-wide in this PR.
 
 52. (R2) keyline/keyline_hook.py:187: the fix for finding 50 turned the dotfile rule off for
     every `--watch` pattern, not only one that names the file: fnmatch's `*` matches a leading
@@ -1025,6 +1026,47 @@ Counts (R2): 0 high, 2 medium, 2 low; all fixed class-wide in this PR.
    Other hits: none (two branches, both covered now).
    Prevention: docstring, keyline/README.md step 3 and CHANGELOG say "whichever of the files is
    written".
+
+56. (R1) keyline/keyline_check.py:286-299 (`present()`), keyline/README.md:47: a source timestamp
+    or time that carries a zone is a miss in a rendering that keeps the zone and adds seconds or a
+    fraction: the escaped zone is appended straight after the clock, so `2026-10-25T14:30Z` is not
+    found in `2026-10-25T14:30:00Z`, and the time kind adds the `(?:\.\d+)?` tail only without a
+    `Z`, so `14:30:00Z` is not found in `14:30:00.000Z` (the datetime kind got the fraction fix of
+    finding 42, the time kind did not). The README line says a rendering may add seconds, a
+    fraction or a `Z` without the "no zone" qualification. Reproduced. Medium. Class: halfway fix
+    (one of two kinds), doc does not match code.
+
+57. (R1) keyline/keyline_check.py:189-194 (`_is_path`) against the widened path start (:77): the
+    prose exception "one slash between two plain lowercase words" still matches `[a-z]+` only, so
+    `yes/no` and `oui/non` are prose while `él/ella`, `sim/não` and `כן/לא` are paths a translated
+    rendering misses; `él/ella` passed before 07671ca (nothing was extracted). Reproduced. Medium.
+    Class: halfway state (the start class widened, the prose exception not); regression inside a fix.
+
+58. (R1) keyline/keyline_check.py:243 (`hedges()`, the `[ \t]+\d|:` test after `May`): a `May`
+    heading (`## May`, or `May` alone on its line) followed by a line that starts with a digit is
+    now a possibility hedge, since the line break no longer counts as the whitespace before the
+    digit; a monthly note with `## May` / `5 PRs merged` fails its `## מאי` rendering with "hedges
+    lost: possibility (may)" where it passed before. The test for the narrowing covers only the
+    modal reading. Reproduced. Medium. Class: regression inside a fix.
+
+59. (R1) keyline/keyline_check.py:75, :80, :85 (version, CamelCase and number rules): two inputs
+    the linear-time test does not cover are quadratic in `invariants()`: a dotted digit run that
+    does not end at a boundary (`1.1.1…1_`: the version and number rules consume the run from
+    every digit after a `.`, fail `R` at the end and backtrack; 16000 pairs 54 s, past the hook's
+    30 s timeout) and a lower-upper letter run (`aAaA…A_`: the CamelCase rule rescans the tail from
+    every split; 9.7 s). Pre-existing, 4x per doubling, the same on the pre-fix module.
+    Reproduced. Medium. Class: catastrophic backtracking not covered by the linear-time test.
+
+60. (R1) keyline/README.md:55-56 (Honest limits, hex runs longer than 128 digits): "a digit-first
+    one is nothing" is not what the code does when the letters all follow the digits: the number
+    rule's `(?:%|[A-Za-z]+)?` suffix takes them and the run is a `number` token (`1` + 128 `a`);
+    only a digit-first run with digits after a letter (`1a1a…`) is nothing. Low. Class: doc
+    mismatch.
+
+61. (R1) keyline/keyline_check.py:66-68 (comment above `INVARIANT`): "`ZürichAirport` is not
+    extracted; neither is `richAirport`" contradicts the commit's own test and the README: it is
+    extracted, as a proper noun; the comment means "not by the CamelCase rule". Low. Class: doc
+    mismatch.
 
 ## Checked and found clean (both reviewers and both verifiers)
 
