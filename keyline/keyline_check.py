@@ -73,7 +73,9 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # is), so the part after the dot is not lost to that rule, while a name that ends in a letter
 # takes none and is no token before the dotted number ("No.5", "Fig.3", "A.1" yield the number
 # 5, 3, 1 alone: the abbreviation is prose a rendering translates, "No. 5", "מס' 5", "איור 3",
-# and the number is what it must keep); the CamelCase rule tries one
+# and the number is what it must keep), except a file name, which takes a numeric tail after
+# its letter extension ("app.log.1", "backup.tar.gz.1" are one token each; "syslog.1" has no
+# extension and is the number alone); the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
@@ -87,7 +89,7 @@ INVARIANT = re.compile(
     | (?P<version>v\d+(?:\.\d+)*|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
     | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
-    | (?P<file>(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.[A-Za-z][A-Za-z0-9]*)+)
+    | (?P<file>(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}(?:\.[A-Za-z][A-Za-z0-9]*)+(?:\.\d+)*)
     | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?(?:(?<=\d)\.\d+)*)
     | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*(?:(?<=\d)\.\d+)*)
     | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
@@ -279,8 +281,6 @@ def invariants(text, names_at_sentence_start=False):
             continue
         if kind == "upper" and LONE_LETTER.fullmatch(tok):
             continue
-        if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
-            continue
         if kind == "proper":
             if tok.lower() in PROPER_STOP:
                 continue
@@ -307,10 +307,10 @@ LOWER_LETTER = re.compile(rf"[a-z{LATIN_LOWER}]")
 CAPS_WORD = re.compile(rf"\b[A-Z{LATIN_UPPER}]{{2,}}\b")
 # Where a sentence ends: a period, a question or exclamation mark, or a blank line.
 SENTENCE_END = re.compile(r"[.?!]|\n[ \t]*\n")
-# What follows "May" the month: a day ("May 5"), a label colon ("May:"), either after a
-# closing bold ("**May** 5", "**May**:"). No underscore: "_" is a word character, so "May_" is
-# never a hedge match in the first place.
-MONTH_AFTER = re.compile(r"\*{0,2}(?:[ \t]+\d|:)")
+# What follows "May" the month: a day ("May 5"), a label colon ("May:"), a comma and a year
+# ("May, 2026"), each after up to three closing stars ("**May** 5", "***May***:"). No
+# underscore: "_" is a word character, so "May_" is never a hedge match in the first place.
+MONTH_AFTER = re.compile(r"\*{0,3}(?:[ \t]+\d|:|,[ \t]*\d{4}\b)")
 
 
 def _is_month_line(text, start, end, cache):
@@ -350,7 +350,8 @@ def hedges(text):
             # verb is capitalised only at a sentence start ("May I help?") or in an all-caps
             # line ("WE MAY FAIL"), where another all-caps word stands beside it; a label
             # colon right after it ("May: ship", "**May**: ship") names the month, as "מאי:"
-            # does, and so does a number after the closing bold ("**May** 5 PRs"). A number on
+            # does, and so does a number after the closing bold ("**May** 5 PRs", "***May*** 5")
+            # or a comma and a year ("May, 2026"; "May, we proceed" is the modal). A number on
             # the next line is not the day: the line break ends the sentence, as for "no.",
             # unless "May" is the whole content of its line ("## May"), a heading naming the
             # month, see _is_month_line().

@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; pass 5: 0 high, 1 medium, 4 low in its keyline part (config part follows).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1553,6 +1553,85 @@ and pinning the behaviour, see its block).
    May _`), as the reviewer checked.
    Prevention: an alternative added to a regex that runs after another regex is checked against what
    that regex can end with.
+
+## Self-check pass 5 (fresh-context pass over the fix commit ab4b786)
+
+Two reviewers who had not seen the findings above read only the pass 4 fix commit ab4b786: R1
+its keyline_check part, R2 its config/hook part. Every medium was re-reproduced here with
+`python3 -I` before being accepted. Counts: R1 findings 80-84: 0 high, 1 medium, 4 low (84 is a
+dead branch R1 noted in passing, outside the commit); R2 findings from 85: see below.
+
+80. (R1) keyline/keyline_check.py:73-76, keyline/README.md:57, CHANGELOG.md:19 (before this fix):
+    the pass-4 wording "a name that ends in a letter is no token before the dotted number: the
+    abbreviation is prose a rendering translates" was stated for every such name, but the rule also
+    ate file names with a numeric suffix: `rotate app.log.1 at 14:02` yielded the number `1` alone
+    and `rotate auth.log.1` passed against it; `keep backup.tar.gz.1` yielded the halfway `backup.tar`
+    and `1` (the file rule backtracked one extension until the right boundary held), and
+    `backup.tar.xz.1` passed; `README.md.1` yielded `README` and `1`. Pre-existing behaviour (the
+    same on 5701513 and before), documented as intended by pass 4. Reproduced with `python3 -I`
+    (fix7/p5_keyline.py). Medium. Class: doc mismatch (the rationale generalised past the inputs it
+    held for) and halfway token.
+   Fixed: keyline/keyline_check.py:92 the file rule takes a numeric tail after its letter extension
+   (`(?:\.\d+)*`), so `app.log.1`, `backup.tar.gz.1`, `README.md.1`, `lib.module.v.5` are one file
+   token each and a swapped one is a miss; `syslog.1` (no letter extension) stays the number alone,
+   named as the limit in keyline/README.md:57 and :209 and the comment at :76. Test:
+   tests/test_keyline_check.py:675 (four names: the token is a `file`, nothing else but the time
+   is extracted, the swapped rendering misses it; `syslog.1` pinned). A 16000-group dotted run
+   after `a.b` stays linear (0.25 s before `_`, 0.015 s before `x`).
+   Other hits: `notes/app.log.1` was already one path token (the path rule takes dots and digits);
+   `v1.2.3.md` and `1.2.3.txt` are still the version (the version rule runs first), unchanged.
+   Prevention: a doc sentence that gives a rationale ("is prose") is checked against every input
+   class the rule's regex admits, not only the examples the fix was written for.
+
+81. (R1) tests/test_keyline_check.py:757 `test_a_line_of_many_tokens_is_scanned_once`: the pass-4
+    comment and commit message said the `_Line` count "fails on the quadratic code for every unit";
+    on that code (5701513^, no `_Line` class) every unit fails with an AttributeError at the
+    monkeypatch, before the count runs, so the count has never been seen to tell linear from
+    quadratic there. The count is live on the current code (one `_Line` per line that holds a
+    `May`/marker-led word, 20000 for the 20001-line unit) and guards a per-token `_Line`; a rescan
+    that bypasses `_line()` is left to the time bound. Low. Class: test claim overstated.
+   Fixed: tests/test_keyline_check.py:762-765 the comment says what the count guards and that code
+   without `_Line` errors before counting. No code change.
+   Other hits: none.
+   Prevention: a claim "the test fails on the old code because X" is made after reading the old
+   code's failure output, not from the assertion's intent.
+
+82. (R1) keyline/keyline_check.py:313 (before this fix) `MONTH_AFTER = \*{0,2}(?:[ \t]+\d|:)`:
+    `***May*** 5 PRs` and `***May***: 3 fixed` (bold italic, three closing stars) and `May, 2026`
+    or `**May**, 2026` (a comma before a year) were possibility hedges, although `**May** 5` and
+    `**May**:` were the month since pass 3. Pre-existing. Reproduced with `python3 -I`
+    (fix7/p5_keyline.py). Low. Class: neighbour of the fixed input.
+   Fixed: keyline/keyline_check.py:313 `MONTH_AFTER = \*{0,3}(?:[ \t]+\d|:|,[ \t]*\d{4}\b)`,
+   comment at :310-312 and :353-354; `May, we proceed` stays the modal. Tests:
+   tests/test_keyline_check.py:716 (four new parameters, and the modal with a comma) ; docs
+   keyline/README.md:218, CHANGELOG.md:19.
+   Other hits: `_is_sentence_start` sees `***` as a line marker, so `***May*** 5` reached the modal
+   branch through the marker path too; the `MONTH_AFTER` match now decides first.
+   Prevention: a rule for Markdown emphasis is tested with one, two and three marks.
+
+83. (R1) keyline/keyline_check.py:175 `HEDGE = \b(?:...)\b`: a hedge set in underscore italics is
+    invisible (`_could_ fail` -> no hedge, `_may_` likewise, while `*could* fail` is seen), in a
+    source and a rendering alike; the pass-4 test `test_an_underscore_after_may_is_no_hedge_and_
+    no_month_rule` pinned `_May_: 3 fixed` as no hedge "because the behaviour is the hedge regex's"
+    without the README naming the limit. Pre-existing. Low. Class: a limit pinned by a test but not
+    documented.
+   Fixed (doc route): keyline/README.md:193 names the limit in Honest limits; the test's comment at
+   tests/test_keyline_check.py:729-732 says so and asserts `_could_` against `*could*` (:737-738).
+   The code route (letter boundaries on `HEDGE`) would make `may` inside `may_fail` or
+   `could_not` a hedge, so the word-character boundary is kept on purpose.
+   Other hits: none: `HEDGE_HE` uses Hebrew-letter boundaries, where `_` is no issue.
+   Prevention: when a test pins a behaviour as "the regex's", the README names it as a limit in the
+   same change.
+
+84. (R1, noted in passing) keyline/keyline_check.py:282 (before this fix) `if kind == "snake" and
+    "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok): continue`: never true,
+    since the first `snake` alternative always holds an inner `_` and the only other alternative is
+    exactly `__[a-z0-9]+__`. Outside ab4b786. Low. Class: unreachable branch.
+   Fixed: the filter is removed (no behaviour change: the test suite and `__init__`, `a_b`, `_x`,
+   `x_`, `__a__b__` extract the same before and after; no failing-first test is possible for a
+   removal that changes nothing).
+   Other hits: none found by reading the other `kind` filters.
+   Prevention: a post-filter on a regex group is checked against what the group can match.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

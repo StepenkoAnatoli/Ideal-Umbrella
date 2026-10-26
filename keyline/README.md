@@ -54,7 +54,7 @@ is, a bare number does not count inside a time or a grouped number (`10` is not 
 is not in `2,500`), a path or name does not count inside a longer one (`notes/a.txt` is not in
 `notes/a.txt.bak`, `Jean-Luc` is not in `Jean-Luc-Picard`), but a Hebrew prefix glued to an
 identifier or a path (`בv2.14.0`, `ב-__tests__/`) still counts, and so does a name the rendering
-moves to the start of a sentence. A name that ends in a digit takes a dotted tail (`Python3.12`, `GPT4.5`, `python3.12` are one token each, as `v2.14.0` is); a name that ends in a letter takes none and is no token before the dotted number (`No.5`, `Fig.3`, `A.1` yield the number 5, 3, 1 alone: the abbreviation is prose a rendering translates, `No. 5`, `מס' 5`, `איור 3`, and the number is what it must keep). A capitalised word that opens a sentence is not held to the rendering (its capital proves nothing), unless it has a digit in it (`Python3.12 is required`, `Node18 is required`): a word with a digit is a name wherever it stands. A date and a time are the same instant written as one token or
+moves to the start of a sentence. A name that ends in a digit takes a dotted tail (`Python3.12`, `GPT4.5`, `python3.12` are one token each, as `v2.14.0` is); a name that ends in a letter takes none and is no token before the dotted number (`No.5`, `Fig.3`, `A.1` yield the number 5, 3, 1 alone: the abbreviation is prose a rendering translates, `No. 5`, `מס' 5`, `איור 3`, and the number is what it must keep), except a file name, which takes a numeric tail after its letter extension (`app.log.1`, `backup.tar.gz.1` are one token each; `syslog.1`, with no extension, is the number alone). A capitalised word that opens a sentence is not held to the rendering (its capital proves nothing), unless it has a digit in it (`Python3.12 is required`, `Node18 is required`): a word with a digit is a name wherever it stands. A date and a time are the same instant written as one token or
 two: `2026-10-25 14:30` passes against `2026-10-25T14:30Z` and `2026-10-25T14:30` against `2026-10-25 14:30`; a rendering may add seconds, fractional seconds or both, before a zone the source has (`14:30Z` is present in `14:30:00.000Z`) or without one (`14:30:00` in `2026-10-25T14:30:00.000Z`), and a zone (`Z`, `+02:00`) to a time or timestamp that has none, but a zone or a fraction the source has and the rendering drops is a miss. Markdown
 list numbers (`1. ` to `999. `) are not facts and are skipped; `2024. ` starts with a year.
 Proper nouns are extracted
@@ -190,7 +190,8 @@ Two panel claims do not reproduce exactly:
   mid-sentence can be checked. It is meant to fail closed, not to be a parser.
 - Hedges are checked by class (possibility, probability, obligation, ability), not word-for-word:
   `could` -> `may` passes; `could` -> `will` fails. A hedge that changes class but keeps the
-  same meaning is reported. Hebrew hedges come from a word list (עלול, ייתכן, כנראה, צריך, אמור,
+  same meaning is reported. A hedge set in underscore italics (`_could_`, `_may_`) is not seen,
+  in a source or a rendering; `*could*` is. Hebrew hedges come from a word list (עלול, ייתכן, כנראה, צריך, אמור,
   יכול, ניתן and their inflections); a Hebrew hedge spelt another way is not seen, and a Hebrew
   source gains a hedge class only from those words. Some of them have plain senses too (ניתן
   "was given", סביר "reasonable"), so a Hebrew source with one of those fails against an
@@ -206,7 +207,7 @@ Two panel claims do not reproduce exactly:
   extracted as invariants. Nor are hex hashes without a digit (`deadbeef`) or longer than
   128 digits (a letter-first one is a lowercase identifier instead; a digit-first one is a number when all its letters follow the digits, `1aaa…`, and nothing when a digit follows a letter, `1a1a…`: none is a hash), lowercase words without a digit (`utf`, `prisma`) or a one-letter acronym plural
   (`Qs`); `PRs`, `sha256`, `b07b3b6`, a sha256 or sha512 digest, `__init__`, `v2`, `S3`, `1e10`,
-  `0x1f`, `Python3.12` and `https://x.y/z` (scheme included) are; `Python3.12rc1`, a name whose dotted tail ends in letters, is nothing, and a name that ends in a letter before a dotted number (`Zürich.5`, `my_lib.5`) yields the number only. A sign is not part of a number (`-5` is the
+  `0x1f`, `Python3.12` and `https://x.y/z` (scheme included) are; `Python3.12rc1`, a name whose dotted tail ends in letters, is nothing, and a name that ends in a letter before a dotted number (`Zürich.5`, `my_lib.5`, `syslog.1`) yields the number only, unless it has a letter extension (`app.log.1` is one file name). A sign is not part of a number (`-5` is the
   number `5`), so a rendering that drops it passes.
 - A name is a capitalised word of ASCII letters or Latin letters with diacritics (`Zürich`, `Léa`,
   `Øyvind`, `São`, `Łukasz`), and an all-caps one (`ÉCOLE`, `NGUYỄN`) is an identifier; a name in another script (Greek, Cyrillic, Hebrew) is not extracted. A CamelCase name is ASCII-only (`ZürichAirport` is a proper noun because it starts capital-lowercase; `xZürichAirport` is nothing). A file name or path may start with a Latin letter with a diacritic (`Übersicht.md`, `école/notes.txt`) or a Hebrew letter (`סיכום.md`, `תיקיה/קובץ.txt`). A Hebrew prefix letter glued to a Latin token (`בnotes/a.txt`, `ב-__tests__/`) stays out of it, but one glued to a Hebrew name (`בסיכום.md`) is part of the token, so the source's `סיכום.md` is not found there and the check fails closed; write it with a dash (`ב-סיכום.md`).
@@ -214,7 +215,7 @@ Two panel claims do not reproduce exactly:
   closed even when the fact survived: `Postgres` is not found in `Postgres/Prisma` (a path to the
   extractor), `10` not in `10/` and `API` not in `API.md`. A numbered item of up to three digits
   is a list marker, so a line that starts with `503. ` loses the number; `2024. ` keeps it.
-  `No. 5` is a number sign, not a negation; `no 5xx errors` (no dot) still counts as one, and so does `no.` at the end of a line, whatever number the next line starts with (likewise `May` before a number on the next line is the modal, not the month, unless `May` is the whole content of its line: a heading or label such as `## May`, `## May ##`, `**May**`, `**May**:` or `May:` is the month, as is `**May** 5` on one line, and so is a bare `May` line unless the sentence it opens ends in a question mark, `May\n5 items be removed?`).
+  `No. 5` is a number sign, not a negation; `no 5xx errors` (no dot) still counts as one, and so does `no.` at the end of a line, whatever number the next line starts with (likewise `May` before a number on the next line is the modal, not the month, unless `May` is the whole content of its line: a heading or label such as `## May`, `## May ##`, `**May**`, `**May**:` or `May:` is the month, as are `**May** 5`, `***May*** 5` and `May, 2026` on one line, and so is a bare `May` line unless the sentence it opens ends in a question mark, `May\n5 items be removed?`).
 - An allow-file line with several words allows each of them; the rule stays one word per line
   because a comment after `#` applies to the whole line.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k

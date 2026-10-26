@@ -666,6 +666,25 @@ def test_an_abbreviation_before_a_dotted_number_keeps_the_number(keyline_check, 
     assert keyline_check.check(src, ren).ok
 
 
+@pytest.mark.parametrize("src, ren, name", [
+    ("rotate app.log.1 at 14:02", "rotate auth.log.1 at 14:02", "app.log.1"),
+    ("keep backup.tar.gz.1 at 14:02", "keep backup.tar.xz.1 at 14:02", "backup.tar.gz.1"),
+    ("keep README.md.1 at 14:02", "keep README.md.2 at 14:02", "README.md.1"),
+    ("see lib.module.v.5 at 14:02", "see lib.module.w.5 at 14:02", "lib.module.v.5"),
+])
+def test_a_file_name_with_a_numeric_suffix_is_one_token(keyline_check, src, ren, name):
+    # A rotated log or backup ("app.log.1", "backup.tar.gz.1") ends in a letter before a dotted
+    # number like "No.5" does, but it is a file name, not prose a rendering translates: the
+    # name rule stopped at its last letter extension, so "app.log.1" was the number 1 alone and
+    # "backup.tar.gz.1" the halfway "backup.tar" and 1, and a swapped name passed. A file name
+    # takes a numeric tail. "syslog.1" has no letter extension and stays the number alone.
+    found = keyline_check.invariants(src)
+    assert found[name] == "file" and set(found) == {name, "14:02"}, found
+    result = keyline_check.check(src, ren)
+    assert not result.ok and name in result.missing, result
+    assert keyline_check.invariants("rotate syslog.1 at 14:02") == {"1": "number", "14:02": "time"}
+
+
 @pytest.mark.parametrize("src, ren, missing", [
     ("Python3.12 is required at 14:02.", "Python3.11 is required at 14:02.", ["Python3.12"]),
     ("Fig.3 shows the drop at 14:02.", "Fig.4 shows the drop at 14:02.", ["3"]),
@@ -689,24 +708,34 @@ def test_a_name_with_a_digit_at_a_sentence_start_is_not_furniture(keyline_check,
     ("**May**: 3 fixed at 14:02", "**מאי**: 3 תוקנו ב-14:02"),
     ("**May** 5 PRs merged at 14:02", "**מאי** 5 PRs מוזגו ב-14:02"),
     ("*May*: 3 fixed at 14:02", "*מאי*: 3 תוקנו ב-14:02"),
+    ("***May*** 5 PRs merged at 14:02", "***מאי*** 5 PRs מוזגו ב-14:02"),
+    ("***May***: 3 fixed at 14:02", "***מאי***: 3 תוקנו ב-14:02"),
+    ("**May**, 2026: 3 fixed at 14:02", "**מאי**, 2026: 3 תוקנו ב-14:02"),
+    ("May, 2026 rollout at 14:02", "מאי, 2026 השקה ב-14:02"),
 ])
 def test_a_closed_heading_or_a_bold_month_before_a_colon_or_a_number(keyline_check, src, ren):
     # "## May ##" (a closed ATX heading), "**May**: 3 fixed" and "**May** 5 PRs" are the month
     # as "## May", "**May**" and "May:" are; the closing "#" and the bold around the label
-    # were not seen through, so each was a possibility hedge the rendering lost.
+    # were not seen through, so each was a possibility hedge the rendering lost. The closing
+    # marks may be three ("***May*** 5", bold italic; the rule stopped at two) and a comma
+    # before a year ("May, 2026") is the month too; "May, we proceed" stays the modal.
     assert keyline_check.hedges(src) == {}
     assert keyline_check.check(src, ren).ok
     assert keyline_check.hedges("**May** we proceed?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May, we proceed") == {"possibility": ["may"]}
 
 
 def test_an_underscore_after_may_is_no_hedge_and_no_month_rule(keyline_check):
     # "_" is a word character, so "May_" and "_May_" are never hedge matches (no boundary after
     # the "y"): the month rule's "after a closing underscore" alternative could never run, and
-    # is gone; the behaviour is the hedge regex's.
+    # is gone. The same boundary hides every hedge set in underscore italics ("_could_"), a
+    # limit the README names; "*could*" is seen.
     assert keyline_check.hedges("May_ 5 items") == {}
     assert keyline_check.hedges("_May_: 3 fixed") == {}
     assert keyline_check.MONTH_AFTER.match("_ 5") is None and keyline_check.MONTH_AFTER.match("__:") is None
     assert keyline_check.MONTH_AFTER.match("** 5") and keyline_check.MONTH_AFTER.match("*:")
+    assert keyline_check.hedges("_could_ fail") == {}
+    assert keyline_check.hedges("*could* fail") == {"possibility": ["could"]}
 
 
 @pytest.mark.parametrize("pair", ["and/or", "él/ella", "כן/לא"])
@@ -731,7 +760,9 @@ def test_a_line_of_many_tokens_is_scanned_once(keyline_check, unit, count, fn, m
     # line of such tokens took time quadratic in its length (80000 bold "May": 6.9 s against
     # the hook's 30 s timeout). The line and its marker prefix are found once per line.
     # The time bound alone let six of the eight units pass on the quadratic code (under 1.5 s at
-    # these counts), so the line lookups are counted too: one per line, whatever the tokens.
+    # these counts), so the line lookups through _line() are counted too: one _Line per line,
+    # whatever the tokens. The count guards a per-token _Line; a rescan that bypasses _line()
+    # is left to the time bound. (Code without _Line errors here before counting.)
     import time
     text = unit * count + "x"
     lines = text.count("\n") + 1
