@@ -9,7 +9,7 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, URL, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash (7 to 128 digits), path, CamelCase name, proper noun (Latin letters with diacritics included), file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, URL, number, percentage, UPPER_CASE identifier (plurals such as `PRs` and Latin letters with diacritics such as `ÉCOLE` included), hex hash (7 to 128 digits), path, CamelCase name, proper noun (Latin letters with diacritics included), file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
 | `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` or `.he.md` rendering exists. `--print-config` prints a ready-to-paste hook entry for this install. |
@@ -55,7 +55,7 @@ is not in `2,500`), a path or name does not count inside a longer one (`notes/a.
 `notes/a.txt.bak`, `Jean-Luc` is not in `Jean-Luc-Picard`), but a Hebrew prefix glued to an
 identifier or a path (`בv2.14.0`, `ב-__tests__/`) still counts, and so does a name the rendering
 moves to the start of a sentence. A date and a time are the same instant written as one token or
-two (`2026-10-25 14:30` passes against `2026-10-25T14:30Z` and the other way round). Markdown
+two: `2026-10-25 14:30` passes against `2026-10-25T14:30Z` and `2026-10-25T14:30` against `2026-10-25 14:30`; a rendering may add seconds, fractional seconds or a `Z` (`14:30:00` is present in `2026-10-25T14:30:00.000Z`), but a zone suffix (`Z`, `+02:00`) or a fraction the source has and the rendering drops is a miss. Markdown
 list numbers (`1. ` to `999. `) are not facts and are skipped; `2024. ` starts with a year.
 Proper nouns are extracted
 when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
@@ -194,17 +194,17 @@ Two panel claims do not reproduce exactly:
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`) or longer than
-  128 digits, lowercase words without a digit (`utf`, `prisma`) or a one-letter acronym plural
+  128 digits (a letter-first one is a lowercase identifier instead, a digit-first one is nothing: neither is a hash), lowercase words without a digit (`utf`, `prisma`) or a one-letter acronym plural
   (`Qs`); `PRs`, `sha256`, `b07b3b6`, a sha256 or sha512 digest, `__init__`, `v2`, `S3`, `1e10`,
   `0x1f` and `https://x.y/z` (scheme included) are. A sign is not part of a number (`-5` is the
   number `5`), so a rendering that drops it passes.
 - A name is a capitalised word of ASCII letters or Latin letters with diacritics (`Zürich`, `Léa`,
-  `Øyvind`, `São`, `Łukasz`); a name in another script (Greek, Cyrillic, Hebrew) is not extracted.
+  `Øyvind`, `São`, `Łukasz`), and an all-caps one (`ÉCOLE`, `NGUYỄN`) is an identifier; a name in another script (Greek, Cyrillic, Hebrew) is not extracted. A CamelCase name is ASCII-only (`ZürichAirport` is a proper noun because it starts capital-lowercase; `xZürichAirport` is nothing). A file name or path may start with a Latin letter with a diacritic (`Übersicht.md`, `école/notes.txt`) or a Hebrew letter (`סיכום.md`, `תיקיה/קובץ.txt`). A Hebrew prefix letter glued to a Latin token (`בnotes/a.txt`, `ב-__tests__/`) stays out of it, but one glued to a Hebrew name (`בסיכום.md`) is part of the token, so the source's `סיכום.md` is not found there and the check fails closed; write it with a dash (`ב-סיכום.md`).
 - Presence is decided by extraction, so a rendering that joins a token to something else fails
   closed even when the fact survived: `Postgres` is not found in `Postgres/Prisma` (a path to the
   extractor), `10` not in `10/` and `API` not in `API.md`. A numbered item of up to three digits
   is a list marker, so a line that starts with `503. ` loses the number; `2024. ` keeps it.
-  `No. 5` is a number sign, not a negation; `no 5xx errors` (no dot) still counts as one.
+  `No. 5` is a number sign, not a negation; `no 5xx errors` (no dot) still counts as one, and so does `no.` at the end of a line, whatever number the next line starts with (likewise `May` before a number on the next line is the modal, not the month).
 - An allow-file line with several words allows each of them; the rule stays one word per line
   because a comment after `#` applies to the whole line.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k

@@ -643,29 +643,113 @@ Counts: 0 high, 5 medium, 11 low; all fixed class-wide in this PR.
     same shape finding 22's draft had), `ÉCOLE` yields the token `COLE` and `école/notes.txt`
     yields `cole/notes.txt`, so a rendering that writes `COLE` passes. Reproduced (5.8 s at
     8000). Medium. Class: neighbour of a previous fix (same class as findings 2-4).
+   Fixed: `L` takes the same letters as `R`: keyline/keyline_check.py:30 `L =
+   rf"(?<![A-Za-z0-9_{LATIN}])"`. `Zé`*16000+`_` 24.7 s -> 0.003 s; `the ÉCOLE` no longer yields
+   `COLE`, `école/notes.txt` no longer `cole/notes.txt`, `xZürichAirport` no longer `richAirport`.
+   Tests: `test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time`
+   (tests/test_keyline_check.py:404-420, 11 inputs incl. `"Zé"*16000+"_"`, `"Zé"*16000+".5"`,
+   `"Éé"*16000+".5"`, each < 2.0 s), `test_a_token_does_not_start_after_a_diacritic` (:423).
+   Other hits: the `'s` lookahead inside `proper` (:82) was `(?!s(?![A-Za-z0-9]))`, now
+   `(?![A-Za-z0-9{LATIN}])`; `_all_caps_line` used `[a-z]` and `\b[A-Z]{2,}\b`, now
+   `LOWER_LETTER`/`CAPS_WORD` with the Latin letters (:234-235). Classes left ASCII on purpose, with
+   a comment at :57-59: `camel` (its `[A-Za-z]*[a-z][A-Z]` rescans a letter run from every lower-
+   upper pair; adding the diacritics would make `éÉéÉ…` quadratic like the pre-existing `aB`*N case
+   the s1 report measured at 2.4-3.0 s), `snake`, `hash`, `ident`, the URL scheme and the drive
+   letter. `ZürichAirport` is a `proper` token (it was already), `xZürichAirport` is nothing.
+   Prevention: the timing test above (hook budget is 30 s, bound 2.0 s) and the comment at :27-29
+   that L and R must take the same letters.
 
 37. (S1) keyline/keyline_check.py:63-64: the `path` and `file` first-character classes moved to
     ASCII (finding 22's fix) and so dropped `סיכום.md`, `תיקיה/קובץ.txt` and `Übersicht.md`,
     which the tree before the fix extracted; the swaps `סיכום.md` to `טיוטה.md` and
     `Übersicht.md` to `Übersicht.txt` now pass. Reproduced. Medium. Class: regression inside a fix.
+   Fixed: (a) `path` and `file` first-character classes take LATIN (:77-78). (b) Hebrew start branch
+   `HEB_START = rf"(?<![{HEB}])[{HEB}](?![A-Za-z0-9_{LATIN}-])"` (:37) as an alternative first
+   character of `path` and `file`: a Hebrew letter opens a name only when no Hebrew letter precedes
+   it (one start per word, never one per letter) and no Latin letter, digit or dash follows it.
+   `HEB` moved up to :25. Results: `סיכום.md` file, `תיקיה/קובץ.txt` path, `Übersicht.md` file,
+   `école/notes.txt`, `Łódź/plan.md` paths; the three s1 swaps fail closed again. `בnotes/a.txt` ->
+   `notes/a.txt`, `בÜbersicht.md` -> `Übersicht.md`, `בZürich` -> `Zürich`, `ב-__tests__/` ->
+   `__tests__/`, `ו-billing.spec.ts` -> `billing.spec.ts` (the dash refusal was needed: without it
+   `ב-__tests__/` became one token and two existing cases of
+   `test_a_hebrew_prefix_or_a_sentence_start_still_counts_for_a_path_or_name` failed). `בסיכום.md`
+   (Hebrew prefix glued to a Hebrew name): one token `בסיכום.md`; a source `סיכום.md` is not found
+   in it, so the check FAILS CLOSED with `missing: סיכום.md`. The dash form `ב-סיכום.md` yields
+   `סיכום.md` and passes. Tests: `test_a_file_name_or_path_may_start_with_a_hebrew_or_latin_letter`
+   (:432-447, 5 pairs), `test_a_hebrew_prefix_glued_to_a_latin_name_or_path_still_yields_it`
+   (:450-462, incl. the `בסיכום.md` limit and `תיקיה-ישנה/קובץ.txt`).
+   Other hits: none (no other rule starts a token at a Hebrew letter; `proper`/`upper` stay Latin by
+   design, README already says names in another script are not extracted).
+   Prevention: the Hebrew inputs in the linear-time test (`"ס"*16000+"_"`, `"ס"*16000+".5"`,
+   `"סZ"*8000+"_"`, `"Zס"*8000+"_"`, `"ס"*16000+"/x"`); the comment at :32-36. Honest note: with the
+   lookbehind removed the same inputs are still linear (0.17 s at N=8000, 0.34 s at 16000) because
+   the path/file tails are bounded at 199, so the test cannot tell the two apart; the lookbehind
+   keeps a Hebrew letter inside a word from costing ~400 steps each (0.014 s vs 0.34 s at 16000).
 
 38. (S1) keyline/keyline_check.py:119: `NEG_EN` `no(?!\.\s*\d)` (finding 27) crosses a line
     break, so `Data lost: no.` followed by `1. Restart` on the next line is read as "No. 1" and
     the negation is dropped; a rendering that flips it to "yes" passes. Reproduced. Medium.
     Class: neighbour of a previous fix.
+   Fixed: keyline/keyline_check.py:136 `no(?!\.[ \t]*\d)`: `no.` at a line end before `1. Restart`,
+   `2026-10-25 …` or `10:00 …` counts as a negation; `No. 5`, `no.5`, `No.  7` still do not. Test:
+   `test_number_sign_no_is_not_a_negation` extended (:385-397) with the three line-break cases and
+   the fail-open check pair (now `ok=False`).
+   Other hits: `hedges()` :243 `re.match(r"\s+\d|:", …)` for the month `May` also crossed a line
+   break (`May\n5 items` was the month, hedge dropped); now `[ \t]+\d`. Test:
+   `test_a_month_at_a_line_end_before_a_number_on_the_next_line` (:465). No other `\s` in a
+   negation/hedge pattern: NEG_HE, HEDGE, HEDGE_HE have none; LIST_MARKER already uses `[ \t]+`;
+   keyline_lint's FURNITURE `\s` is a line-level style rule, not a negation/hedge.
+   Prevention: the two tests; comments at :134-135 and :250-251.
 
 39. (S1) keyline/keyline_check.py:201: a `url` token keeps a trailing `:`, `?` or `!`, so a
     sentence-final URL before one of them always fails (closed). Low.
+   Fixed: :218 `tok = tok.rstrip(".:!?") if kind == "url" else tok.rstrip(".")`.
+   `https://x.y/z:`/`?`/`!` -> `https://x.y/z`; the three Hebrew renderings pass. Test:
+   `test_a_url_keeps_its_scheme` extended (:374-382).
+   Other hits: none. The only other kinds whose token can end in `.` are `path` (already stripped);
+   `number`, `version`, `file`, `proper`, `hash`, `ident`, `time` cannot end in `.:!?` by their
+   patterns. `;` `,` `)` `]` `}` quotes and `|` are already excluded from the url class.
+   Prevention: the extended test; p5 shows every trailing punctuation shape.
 
 40. (S1) keyline/README.md:58-59: "and the other way round" is false when the source has a
     trailing `Z` or JS-style milliseconds (`2026-10-25T14:30:00.000Z`). Low.
+   Fixed: (a) the `time` alternative takes fractional seconds after whole seconds, :74
+   `(?::\d{2}(?:\.\d+)?)?` (`14:30:00.250Z` is one time token; `1:30.5` lap-style stays `1` + `30.5`
+   as before); (b) the time lookup in `present()` allows an added fraction before an added `Z` when
+   the source time has seconds, :297 `tail = r"(?:\.\d+)?Z?" if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}",
+   tok) else r"Z?"` — `2026-10-25 14:30:00` now passes against `2026-10-25T14:30:00.000Z`; (c) the
+   datetime lookup is built from the token's parts (`DATETIME` :55, :289-293): an added fraction
+   after whole seconds and an added `Z` on a zone-less token are accepted (`2026-10-25T14:30:00Z` vs
+   `…T14:30:00.000Z`, `2026-10-25T14:30` vs `…T14:30Z` now pass, as the two-token form already did),
+   while a dropped zone (`T14:30Z` -> ` 14:30`, `+02:00` -> `Z`) or a dropped fraction (`.250Z` ->
+   `Z`) stays a miss. Test: `test_added_fractional_seconds_and_a_kept_zone_in_the_iso_form`
+   (:473-487).
+   Other hits: none.
+   Prevention: that test pins both directions, incl. the zone-kept miss the README sentence must
+   describe.
 
 41. (S1) keyline/README.md:196-197: "a hex hash longer than 128 digits is not extracted" holds
     only when it starts with a digit; letter-first it is an `ident`. Low (doc).
+   Fixed: doc only (see Docs). Behaviour unchanged and confirmed by p5: 129 hex digit-first ->
+   nothing, letter-first -> `ident`, 128 -> `hash`.
+   Other hits: none.
+   Prevention: README wording says "not extracted as a hash".
 
 42. (S1) keyline/keyline_check.py: `upper` is ASCII-only and `proper` needs a lowercase tail, so
     an all-caps name with a diacritic (`ÉCOLE`, `NGUYỄN`) is not extracted at all once 36 is
     fixed. Low.
+   Fixed: `upper` takes LATIN_UPPER in its first character, its tail and the `_` parts, :79:
+   `ÉCOLE`, `NGUYỄN`, `ZÜRICH`, `SÃO_PAULO` are `upper` tokens and a swap to `PARIS` fails closed.
+   The lone-letter filter is `LONE_LETTER = [A-Z{LATIN_UPPER}]s?` (:92), so `É`, `Ó`, `Ås` alone are
+   not identifiers. Linear: `"ÉÉ"*8000+".5"` 0.002 s, `"ÉCOLE"*4000+"_"` 0.002 s (one start per run,
+   L blocks the rest); fuzzers clean. Tests:
+   `test_an_all_caps_name_with_a_diacritic_is_an_identifier` (:484-497),
+   `test_a_lone_capital_letter_with_a_diacritic_is_not_an_identifier` (:499-501),
+   `test_an_all_caps_line_may_hold_a_diacritic_word` (:504, `MAY ÉCOLE` is the modal like `MAY
+   PARIS`, `MAY école` the month).
+   Other hits: `_all_caps_line` (see 1). The calendar fallback in `present()` is unaffected
+   (`len(tok) > 3` + CALENDAR lookup).
+   Prevention: the tests above and the `ÉÉ`/`ÉCOLE` runs in the timing test.
 
 43. (S2) config/install.py:510 and config/uninstall.py:64: an interrupt at the fifth and last
     write (the full record, after settings.json) leaves the interim record, which says

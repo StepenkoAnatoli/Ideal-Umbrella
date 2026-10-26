@@ -373,6 +373,13 @@ def test_a_url_keeps_its_scheme(keyline_check):
     assert keyline_check.check(source, "ראה https://example.com/a/b?x=1 ב-14:02").ok
     assert keyline_check.check(source, "ראה (https://example.com/a/b?x=1), ב-14:02").ok
     assert keyline_check.check(source, source).ok
+    # Sentence punctuation after a URL is not part of it: a rendering that drops the colon, the
+    # question mark or the exclamation mark after "https://x.y/z" used to fail with the URL missing.
+    for src, ren in (("see https://x.y/z: the docs", "ראה https://x.y/z - המסמכים"),
+                     ("did you read https://x.y/z?", "האם קראת את https://x.y/z"),
+                     ("read https://x.y/z!", "קרא https://x.y/z")):
+        assert keyline_check.invariants(src) == {"https://x.y/z": "url"}, src
+        assert keyline_check.check(src, ren).ok, src
 
 
 def test_number_sign_no_is_not_a_negation(keyline_check):
@@ -381,6 +388,12 @@ def test_number_sign_no_is_not_a_negation(keyline_check):
     assert keyline_check.negations("ticket no.5 and No.  7") == 0
     assert keyline_check.negations("no 5xx errors, no data lost. No.") == 3
     assert keyline_check.check("ticket No. 5 at 14:02", "כרטיס מס' 5 ב-14:02").ok
+    # "no." ends the sentence; a numbered item, a date or a time on the next line is not "No. 5".
+    assert keyline_check.negations("Data lost: no.\n1. Restart") == 1
+    assert keyline_check.negations("Rollback needed: no.\n2026-10-25 follow-up") == 1
+    assert keyline_check.negations("Answer: no.\n10:00 standup") == 1
+    assert not keyline_check.check("Data lost: no.\n1. Restart the pod at 14:02",
+                                   "נתונים אבדו: כן.\n1. הפעל מחדש את הפוד ב-14:02").ok
 
 
 def test_month_label_may_is_not_a_hedge(keyline_check):
@@ -389,3 +402,107 @@ def test_month_label_may_is_not_a_hedge(keyline_check):
     assert keyline_check.hedges("MAY: SHIP V2") == {}
     assert keyline_check.check("May: ship v2", "מאי: לשלוח v2").ok
     assert keyline_check.hedges("May we proceed?") == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("text", [
+    "Zé" * 16000 + "_", "Zé" * 16000 + ".5", "Éé" * 16000 + ".5", "ÉÉ" * 8000 + ".5",
+    "ÉCOLE" * 4000 + "_", "ס" * 16000 + "_", "ס" * 16000 + ".5", "סZ" * 8000 + "_", "Zס" * 8000 + "_",
+    "ÉCOLE" * 4000 + "/x", "ס" * 16000 + "/x",
+])
+def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, text):
+    # The left boundary L stayed ASCII when the name rule and R took Latin diacritics, so every
+    # capital after a diacritic was a start and each start rescanned to the end of the run:
+    # 16000 "Zé" pairs before "_" took 24 s against the hook's 30 s budget. A Hebrew letter
+    # opens a file name or path only when no Hebrew letter precedes it, for the same reason.
+    import time
+    start = time.perf_counter()
+    keyline_check.invariants(text)
+    assert time.perf_counter() - start < 2.0
+
+
+def test_a_token_does_not_start_after_a_diacritic(keyline_check):
+    # "the ÉCOLE" gave the identifier "COLE" and "école/notes.txt" the path "cole/notes.txt", so
+    # a rendering holding the cut token passed.
+    assert "COLE" not in keyline_check.invariants("the ÉCOLE at 14:02")
+    assert keyline_check.check("the ÉCOLE at 14:02", "the COLE at 14:02").missing == ["ÉCOLE"]
+    assert keyline_check.invariants("file école/notes.txt at 14:02") == {"école/notes.txt": "path", "14:02": "time"}
+    assert keyline_check.check("file école/notes.txt at 14:02", "file cole/notes.txt at 14:02").missing == ["école/notes.txt"]
+    assert keyline_check.invariants("at ZürichAirport by 14:02") == {"ZürichAirport": "proper", "14:02": "time"}
+    assert keyline_check.invariants("at xZürichAirport by 14:02") == {"14:02": "time"}   # not "richAirport"
+
+
+@pytest.mark.parametrize("src, ren, kind", [
+    ("see סיכום.md at 14:02", "see טיוטה.md at 14:02", "file"),
+    ("see תיקיה/קובץ.txt at 14:02", "see אחר/קובץ.txt at 14:02", "path"),
+    ("see Übersicht.md at 14:02", "see Übersicht.txt at 14:02", "file"),
+    ("see école/notes.txt at 14:02", "see lycée/notes.txt at 14:02", "path"),
+    ("see Łódź/plan.md at 14:02", "see Łódź/plan.txt at 14:02", "path"),
+])
+def test_a_file_name_or_path_may_start_with_a_hebrew_or_latin_letter(keyline_check, src, ren, kind):
+    # The first-character class of a path or file name went ASCII with the linear-time fix, so
+    # "סיכום.md" was not extracted and "תיקיה/קובץ.txt" became "/קובץ.txt": a swapped name passed.
+    tok = src.split()[1]
+    assert keyline_check.invariants(src)[tok] == kind
+    assert keyline_check.check(src, ren).missing == [tok]
+    assert keyline_check.check(src, src).ok
+
+
+def test_a_hebrew_prefix_glued_to_a_latin_name_or_path_still_yields_it(keyline_check):
+    # A Hebrew letter opens a name only when it is not glued to a Latin letter or digit: the
+    # prefix ב in "בnotes/a.txt" and "בZürich" is not part of the token.
+    assert keyline_check.invariants("ראה בnotes/a.txt ב-14:02")["notes/a.txt"] == "path"
+    assert keyline_check.invariants("ראה בÜbersicht.md ב-14:02")["Übersicht.md"] == "file"
+    assert keyline_check.invariants("נפגשנו בZürich ב-14:02", names_at_sentence_start=True)["Zürich"] == "proper"
+    assert keyline_check.check("see notes/a.txt at 14:02", "ראה בnotes/a.txt ב-14:02").ok
+    assert keyline_check.invariants("טסטים ב-__tests__/ ו-billing.spec.ts") == {"__tests__/": "path", "billing.spec.ts": "file"}
+    assert keyline_check.invariants("ראה תיקיה-ישנה/קובץ.txt")["תיקיה-ישנה/קובץ.txt"] == "path"
+    # A Hebrew prefix glued to a Hebrew name is one token to the extractor (documented limit):
+    # the source's "סיכום.md" is not in "בסיכום.md", so the check fails closed.
+    assert keyline_check.invariants("ראה בסיכום.md ב-14:02")["בסיכום.md"] == "file"
+    assert keyline_check.check("see סיכום.md at 14:02", "ראה בסיכום.md ב-14:02").missing == ["סיכום.md"]
+
+
+def test_a_month_at_a_line_end_before_a_number_on_the_next_line(keyline_check):
+    # "May" followed by a digit is the month only on the same line; a line break ends the
+    # sentence, as it does for "no." (the \s+ crossed it).
+    assert keyline_check.hedges("May 5 is the date.") == {}
+    assert keyline_check.hedges("Costs may\n5 items") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May\n5 items be removed?") == {"possibility": ["may"]}
+
+
+def test_added_fractional_seconds_and_a_kept_zone_in_the_iso_form(keyline_check):
+    # A time written as two tokens is present in an ISO timestamp that adds milliseconds
+    # (JavaScript's toISOString), as it already was in one that adds "Z"; a dropped zone suffix
+    # is a lost fact and stays a miss.
+    assert keyline_check.check("Deploy at 2026-10-25 14:30:00.", "Deploy at 2026-10-25T14:30:00.000Z.").ok
+    assert keyline_check.check("Deploy at 2026-10-25 14:30.", "Deploy at 2026-10-25T14:30:00.000Z.").ok
+    assert keyline_check.check("Deploy at 2026-10-25T14:30Z.", "Deploy at 2026-10-25 14:30.").missing == ["2026-10-25T14:30Z"]
+    assert keyline_check.check("Deploy at 2026-10-25T14:30.", "Deploy at 2026-10-25 14:30.").ok
+    assert keyline_check.check("at 2026-10-25T14:30:00Z.", "at 2026-10-25T14:30:00.000Z.").ok
+    assert keyline_check.check("at 2026-10-25T14:30.", "at 2026-10-25T14:30Z.").ok
+    assert keyline_check.check("at 2026-10-25T14:30:00.250Z", "at 2026-10-25T14:30:00Z").missing == ["2026-10-25T14:30:00.250Z"]
+    assert keyline_check.check("at 2026-10-25T14:30+02:00", "at 2026-10-25 14:30Z").missing == ["2026-10-25T14:30+02:00"]
+    assert keyline_check.invariants("at 14:30:00.250Z") == {"14:30:00.250Z": "time"}
+    assert keyline_check.check("at 14:30:00.250Z", "at 14:30:00Z").missing == ["14:30:00.250Z"]
+
+
+@pytest.mark.parametrize("name", ["ÉCOLE", "NGUYỄN", "ZÜRICH", "SÃO_PAULO"])
+def test_an_all_caps_name_with_a_diacritic_is_an_identifier(keyline_check, name):
+    # The upper rule was ASCII-only and the name rule wants a lowercase tail, so "ÉCOLE" and
+    # "NGUYỄN" were nothing (or the cut "COLE"); a rendering that swapped them passed.
+    source = f"Meeting at 10:00 at {name} with Bob"
+    assert keyline_check.invariants(source)[name] == "upper"
+    assert keyline_check.check(source, source.replace(name, "PARIS")).missing == [name]
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("tok", ["É", "Ó", "Ås"])
+def test_a_lone_capital_letter_with_a_diacritic_is_not_an_identifier(keyline_check, tok):
+    assert keyline_check.invariants(f"Then {tok} went home.") == {}
+
+
+def test_an_all_caps_line_may_hold_a_diacritic_word(keyline_check):
+    # "MAY PARIS" is a modal in an all-caps line; so is "MAY ÉCOLE" (and "May école" is the month).
+    assert keyline_check.hedges("WE MAY PARIS") == {"possibility": ["may"]}
+    assert keyline_check.hedges("MAY ÉCOLE") == {"possibility": ["may"]}
+    assert keyline_check.hedges("MAY école") == {}
