@@ -10,14 +10,16 @@ a dotfile such as notes/.gitignore), or, when one or more --watch PATTERN argume
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
 project dir; the suffix rule still applies, so a watched .py file is passed over, while the
-dotfile rule does not: a pattern that matches notes/.todo.md means it). A --watch
+dotfile rule does not when the pattern spells the dot: notes/.todo.md or notes/.* means
+the dotfile, notes/* does not, as in a shell). A --watch
 without a pattern, or any other flag, is an error (exit 1, one line).
 Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
     incident.he.txt or incident.he.md exists, run keyline_check.py note -> rendering;
   - a rendering (incident.he.txt, incident.he.md): run keyline_check.py against its note
     (incident.txt / .md / .keyline / no extension); more than one note beside one rendering is
-    a finding of its own, and the check waits until one note is left.
+    a finding of its own, from whichever of the files is written, and the check waits until one
+    note is left.
 Exit 0 when clean or not applicable. Exit 2 with the findings on stderr when anything fails:
 for PostToolUse the file is already written, and Claude Code shows stderr to Claude so it fixes it.
 The first line says which file to fix: the note when the lint found something, the rendering when
@@ -73,6 +75,13 @@ def _norm(p):
 
 
 def watched(path, root, patterns=()):
+    if path.name.startswith("."):
+        # notes/.gitignore, .DS_Store: not a note, unless a pattern spells the dot itself
+        # (notes/.todo.md, notes/.*). fnmatch's `*` matches a leading dot; a shell glob such as
+        # notes/* does not, and that is how a --watch glob is read.
+        patterns = [p for p in patterns if _norm(p).rsplit("/", 1)[-1].startswith(".")]
+        if not patterns:
+            return False
     if patterns:
         absolute = _norm(path.resolve())
         try:
@@ -184,8 +193,6 @@ def main():
         # A file in a folder that cannot be searched: the stat itself fails.
         print(f"keyline hook: cannot read {path}: {e.strerror or e}", file=sys.stderr)
         return 1                                   # non-blocking error
-    if not patterns and path.name.startswith("."):
-        return 0                                   # notes/.gitignore, .DS_Store: not a note
     he = rendering_suffix(path)
     is_rendering = he is not None
     is_note = not is_rendering and path.suffix.lower() in NOTE_SUFFIXES
@@ -214,7 +221,15 @@ def main():
             for no, msg in keyline_lint.lint_file(path, words):
                 lint_problems.append(f"{shown(path, root)}:{no}: {msg}")
             for rendering in renderings_for(path):
-                run_check(path, rendering, problems, root)
+                notes = notes_for(rendering)
+                if len(notes) > 1:
+                    # The same finding as from the rendering side: not a check against this
+                    # note, which may be the one the rendering does not render.
+                    too_many = True
+                    problems.append(f"{shown(rendering, root)}: notes beside it: "
+                                    + ", ".join(shown(n, root) for n in notes))
+                else:
+                    run_check(path, rendering, problems, root)
     except OSError as e:
         # The note, its rendering or a keyline-allow.txt beside it. A system error names its
         # file in e.filename; the not-UTF-8 error of keyline_check.read / keyline_lint.read has

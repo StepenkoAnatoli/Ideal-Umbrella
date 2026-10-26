@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in the self-review.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; pass 2 below.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -951,6 +951,80 @@ Counts: 0 high, 5 medium, 11 low; all fixed class-wide in this PR.
    Other hits: config/add_to_repo.py and uninstall.py already had `_is_link` with the junction
    check; measure.py was the last `islink`-only site in my files.
    Prevention: the two tests (the nt-only one runs on the Windows CI leg).
+
+## Self-check pass 2 (fresh-context pass over the fix commits 07671ca..c829812)
+
+Two reviewers who had not seen the findings above read only the pass 1 fix commits: R1 the
+keyline_check commits 07671ca and c50d1e5, R2 the config/hook/measure commit c829812. Every
+medium was re-reproduced here with `python -I` (the read-only case as uid 65534 in a copy
+under /var/tmp, since root ignores file modes) before being accepted.
+Counts (R2): 0 high, 2 medium, 2 low; all fixed class-wide in this PR.
+
+52. (R2) keyline/keyline_hook.py:187: the fix for finding 50 turned the dotfile rule off for
+    every `--watch` pattern, not only one that names the file: fnmatch's `*` matches a leading
+    dot, so `--watch notes/*` linted `notes/.gitignore` (`# build output` is a furniture header,
+    exit 2) where the same write was exit 0 before c829812. Reproduced. Medium. Class:
+    regression inside a fix; neighbour of the tested input (a glob instead of the file name).
+   Fixed: `watched()` keeps, for a dotfile, only the patterns whose last component starts with a
+   dot (`notes/.todo.md`, `notes/.*`, `*/.git*`), the way a shell glob reads `*`; with none left
+   the file is not watched, so the check in main() went. Test:
+   tests/test_keyline_hook.py `test_a_watch_glob_does_not_make_a_dotfile_a_note` (`notes/*`, `*`,
+   an absolute glob and `notes/*ignore` give exit 0 and no output; `notes/.*`, the file name, its
+   absolute path and `*/.git*` give exit 2 with NOTE_HEADER). Failed first with exit 2 on `notes/*`.
+   Other hits: none (the notes/-folder rule has no pattern side).
+   Prevention: docstring, keyline/README.md step 2, README.md hook line and CHANGELOG say which
+   patterns mean a dotfile.
+
+53. (R2) config/uninstall.py:271-285 with :307: the pre-write folder check covered the folder
+    holding each removed path (ballast/ for the state folder), but `shutil.rmtree` also unlinks
+    inside the state folder and its sub-folders: with a read-only `state/` the undo rewrote
+    settings.json (with a backup) and deleted the hook, then stopped at `state/` on every run,
+    the shape finding 45 set out to remove. README.md promised the check. Reproduced as uid
+    65534. Medium. Class: halfway state (a sibling of the fixed hook-folder case).
+   Fixed: the removals check also walks the state folder (not a link) and refuses any folder in
+   it that is not writable, before the first write. Test: tests/test_uninstall.py
+   `test_a_read_only_state_folder_is_refused_before_settings_is_written` (a 555 sub-folder with a
+   file: two runs exit 1 with "read-only ... nothing written", no settings backup, settings.json
+   and the hook untouched; skipped as root and on Windows). Failed first as uid 65534 with the
+   halfway undo.
+   Other hits: the Windows twin, a read-only file inside `state/` (`_remove` cleared the mode on
+   the hook, log, backup and CLAUDE.md; rmtree does not): `_remove_tree` clears the mode on
+   every file under the folder first, through the shared `_clear_read_only`. Test:
+   `test_read_only_files_inside_the_state_folder_are_deleted` (rmtree made to refuse a read-only
+   file as Windows does; fails without the fix on every platform).
+   Prevention: README.md names the state folder's own tree among the checked folders and the
+   files inside it among those whose attribute is cleared.
+
+54. (R2) config/uninstall.py:71 with config/install.py:553: the interim record was the old
+    record plus `claude_md`, so over the marker an uninstall leaves (`{"uninstalled": true}`) it
+    kept that key; an install on the marker interrupted at its final write left
+    `{"uninstalled": true, "claude_md": ...}` while settings.json held the keys, and the next
+    uninstall read it as neither unfinished nor absent: the keys went by the hook evidence, the
+    deny tools stayed, and no notice said so (the docstring and README promise one). Low. Class:
+    "absent is not empty" (a marker key is not install data); notice missing.
+   Fixed: the interim record drops `uninstalled` (`_merge_record` already dropped it from the
+   final record). Test: tests/test_install.py
+   `test_interrupt_at_the_final_record_over_a_marker_is_an_unfinished_record` (install, uninstall,
+   re-install interrupted at the final record: the record is `{"claude_md": ...}`, the next
+   uninstall gives the "no settings data ... permissions.deny" notice and the settings end as
+   with no record). Failed first with the key kept and no notice.
+   Other hits: none; the final record goes through `_merge_record`.
+   Prevention: CHANGELOG names the marker among what the interim record does not carry.
+
+55. (R2) keyline/keyline_hook.py:213-217: "more than one note beside one rendering is a finding
+    of its own" held only when the rendering was written; a write of the note the rendering does
+    not render still checked it against the rendering and said "fix the rendering" with a FAIL
+    block, so two writes of the same three files gave contradictory instructions. Low. Class:
+    halfway state (one side of the shape fixed in finding 49).
+   Fixed: the note branch asks `notes_for(rendering)` first and reports the same "notes beside
+   it" line under TWO_NOTES_HEADER when there is more than one, checking only once one note is
+   left. Test: tests/test_keyline_hook.py `test_two_notes_are_reported_from_the_note_side_too`
+   (write of the other note: TWO_NOTES_HEADER, no FAIL, all three files named; after deleting a
+   note the check runs and FAILs under RENDERING_HEADER). Failed first with RENDERING_HEADER and
+   a FAIL block.
+   Other hits: none (two branches, both covered now).
+   Prevention: docstring, keyline/README.md step 3 and CHANGELOG say "whichever of the files is
+   written".
 
 ## Checked and found clean (both reviewers and both verifiers)
 

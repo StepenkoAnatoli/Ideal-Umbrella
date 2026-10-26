@@ -749,6 +749,32 @@ def test_interrupt_at_the_final_record_is_undone_by_the_uninstall(install_module
     assert not install_module.layout(home)["hook"].exists()
 
 
+def test_interrupt_at_the_final_record_over_a_marker_is_an_unfinished_record(install_module, tmp_path):
+    # The interim record was the old record plus claude_md, so over the marker an uninstall
+    # leaves ({"uninstalled": true}) it kept that key: the next uninstall read the record as
+    # neither unfinished nor absent, removed the keys from the hook evidence but left the deny
+    # tools with no notice at all. The marker key is not part of an install's record.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home)
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    uninstall_module.uninstall(home)
+    record_path = install_module.layout(home)["record"]
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+    _interrupt(install_module, home, 2, [])
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert list(record) == ["claude_md"], record
+    changes, notices = uninstall_module.uninstall(home)
+    assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
+    deny = install_module._read_json(install_module.USER_SETTINGS)["permissions"]["deny"]
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {
+        "model": "opus", "permissions": {"deny": deny}}, changes
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+
+
 def test_interrupt_at_the_interim_record_leaves_no_orphan_backup(install_module, tmp_path):
     # The backup of CLAUDE.md was made before the interim record that names it: an interrupt
     # at that record left a CLAUDE.md.bak-* nothing knew about, and the next install made a

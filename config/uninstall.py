@@ -22,6 +22,7 @@ Usage:
   python -I config/uninstall.py [--home PATH] [--dry-run]
 """
 import argparse
+import os
 import shutil
 import stat
 import sys
@@ -181,16 +182,30 @@ def _leftover_record(record, left, claude_md_left):
     return leftover
 
 
-def _remove(path):
-    """Delete a file, clearing a read-only mode first: Windows refuses to delete a file with
-    the read-only attribute (a POSIX unlink needs only the folder, so there this changes
-    nothing). A symlink is unlinked as it is: a chmod would reach through it."""
+def _clear_read_only(path):
+    """Clear a read-only mode: Windows refuses to delete a file with the read-only attribute
+    (a POSIX unlink needs only the folder, so there this changes nothing). A symlink is left
+    as it is: a chmod would reach through it."""
     if not path.is_symlink():
         try:
             path.chmod(path.stat().st_mode | stat.S_IWRITE)
         except OSError:
             pass
+
+
+def _remove(path):
+    """Delete a file, clearing a read-only mode first (see _clear_read_only)."""
+    _clear_read_only(path)
     path.unlink()
+
+
+def _remove_tree(path):
+    """Delete a folder and what it holds, clearing a read-only mode on each file first:
+    shutil.rmtree does not, and on Windows stops at the first read-only file."""
+    for folder, _, names in os.walk(path):
+        for name in names:
+            _clear_read_only(Path(folder, name))
+    shutil.rmtree(path)
 
 
 def _backup_of(claude_md, name):
@@ -283,6 +298,11 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             removals.append(claude_md)             # the delete branches below
         for path in removals:
             install._refuse_unwritable_folder(path, through_link=False)
+        # The state folder's own tree too: rmtree unlinks inside it and its sub-folders.
+        if paths["state"] in removals and not install._is_link(paths["state"]):
+            for folder, _, _ in os.walk(paths["state"]):
+                if not os.access(folder, os.W_OK):
+                    raise ValueError(f"{folder} is read-only; make it writable first")
     if setting_changes and not dry_run:
         backup_settings = install._backup(paths["settings"])
         done(f"settings backup: {backup_settings.name}")
@@ -308,7 +328,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if dry_run:
             changes.append("state folder deleted")
         else:
-            shutil.rmtree(paths["state"])
+            _remove_tree(paths["state"])
             done("state folder deleted")
     if paths["log"].is_file():
         if dry_run:

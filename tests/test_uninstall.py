@@ -736,6 +736,64 @@ def test_a_read_only_hook_folder_is_refused_before_settings_is_written(install_m
         (claude / "ballast").chmod(0o755)
 
 
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes into read-only folders")
+@pytest.mark.skipif(os.name == "nt", reason="os.access does not see a Windows folder as read-only")
+def test_a_read_only_state_folder_is_refused_before_settings_is_written(install_module, uninstall_module, tmp_path, capsys):
+    # The folder check covered the folder holding each removed path (ballast/ for the state
+    # folder), but rmtree also needs the state folder and its sub-folders to be writable: a
+    # read-only state/ was found after settings.json was rewritten and the hook deleted.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    claude = home / ".claude"
+    for p in claude.glob("settings.json.bak-*"):
+        p.unlink()
+    settings_before = settings_file(home).read_bytes()
+    state = install_module.layout(home)["state"]
+    (state / "sub").mkdir(parents=True)
+    (state / "sub" / "s1.json").write_text("{}", encoding="utf-8")
+    (state / "sub").chmod(0o555)
+    try:
+        for _ in range(2):
+            assert uninstall_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert "read-only" in err and "nothing written" in err and "Traceback" not in err, err
+        assert not list(claude.glob("settings.json.bak-*")), list(claude.iterdir())
+        assert settings_file(home).read_bytes() == settings_before
+        assert (claude / "ballast" / "context_check.py").exists()
+    finally:
+        (state / "sub").chmod(0o755)
+
+
+def test_read_only_files_inside_the_state_folder_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Windows refuses to delete a read-only file inside the state folder as it does the hook;
+    # shutil.rmtree does not clear the attribute. Here rmtree is made to refuse as Windows
+    # does, so the test fails without the fix on every platform.
+    import shutil
+    import stat
+    home = tmp_path / "home"
+    seed(home, {})
+    install_module.install(home)
+    state = install_module.layout(home)["state"]
+    (state / "sub").mkdir(parents=True)
+    files = [state / "s1.json", state / "sub" / "s2.json"]
+    for f in files:
+        f.write_text("{}", encoding="utf-8")
+        f.chmod(stat.S_IREAD)
+    real_rmtree = shutil.rmtree
+
+    def windows_like_rmtree(path, *args, **kwargs):
+        for f in files:
+            if f.exists() and not f.stat().st_mode & stat.S_IWRITE:
+                raise PermissionError(13, "Access is denied", str(f))
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", windows_like_rmtree)
+    changes, notices = uninstall_module.uninstall(home)
+    assert "state folder deleted" in changes, (changes, notices)
+    assert not state.exists()
+
+
 def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_module, tmp_path, monkeypatch):
     # Windows refuses to delete a file with the read-only attribute (a POSIX unlink needs only
     # the folder): a read-only hook, log or CLAUDE.md backup stopped the undo part way. The

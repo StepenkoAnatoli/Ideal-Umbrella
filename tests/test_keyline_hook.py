@@ -258,6 +258,52 @@ def test_an_explicit_watch_pattern_names_a_dotfile(keyline_hook, tmp_path, monke
     assert capsys.readouterr().err == ""
 
 
+def test_a_watch_glob_does_not_make_a_dotfile_a_note(keyline_hook, tmp_path, monkeypatch, capsys):
+    # The fix above turned the dotfile rule off for every --watch pattern: fnmatch's `*`
+    # matches a leading dot, so `--watch notes/*` linted notes/.gitignore ("# build output" is
+    # a furniture header, exit 2) where the same write was exit 0 without --watch. A dotfile
+    # is meant only by a pattern that spells the dot (notes/.todo.md, notes/.*), as a shell
+    # glob reads it.
+    pytest.importorskip("tiktoken")
+    ignore = tmp_path / "notes" / ".gitignore"
+    ignore.parent.mkdir()
+    ignore.write_text("# build output\n*.log\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(ignore)}}
+    for pattern in ("notes/*", "*", str(tmp_path / "notes" / "*"), "notes/*ignore"):
+        assert run_main(keyline_hook, monkeypatch, event, argv=["--watch", pattern]) == 0, pattern
+        assert capsys.readouterr().err == "", pattern
+    for pattern in ("notes/.*", "notes/.gitignore", str(ignore), "*/.git*"):
+        assert run_main(keyline_hook, monkeypatch, event, argv=["--watch", pattern]) == 2, pattern
+        err = capsys.readouterr().err
+        assert err.splitlines()[0] == keyline_hook.NOTE_HEADER and "furniture" in err, (pattern, err)
+
+
+def test_two_notes_are_reported_from_the_note_side_too(keyline_hook, tmp_path, monkeypatch, capsys):
+    # The rendering side says "keep the one it renders" with the notes named; a write of the
+    # other note still checked it against the rendering and said "fix the rendering" with a
+    # FAIL block: two writes of the same three files gave contradictory instructions.
+    pytest.importorskip("tiktoken")
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "c.txt").write_text("Deploy at 14:00 done.\n", encoding="utf-8")
+    other = notes / "c.md"
+    other.write_text("Deploy at 16:00 done.\n", encoding="utf-8")
+    (notes / "c.he.txt").write_text("פריסה ב-14:00 הושלמה.\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(other)}}
+    assert run_main(keyline_hook, monkeypatch, event) == 2
+    err = capsys.readouterr().err
+    lines = err.splitlines()
+    assert lines[0] == keyline_hook.TWO_NOTES_HEADER, err
+    assert "FAIL" not in err and "fix the rendering" not in err, err
+    assert "notes/c.txt" in err and "notes/c.md" in err and "notes/c.he.txt" in err, err
+    (notes / "c.txt").unlink()
+    assert run_main(keyline_hook, monkeypatch, event) == 2          # one note left: the check runs
+    err = capsys.readouterr().err
+    assert err.splitlines()[0] == keyline_hook.RENDERING_HEADER and "FAIL" in err, err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="a file name outside UTF-8 needs a POSIX file system")
 def test_a_file_name_outside_utf8_is_reported_not_a_traceback(keyline_hook, tmp_path, monkeypatch, capsys):
     # reconfigure(encoding="utf-8") also set errors="strict" on stderr (its default is

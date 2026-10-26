@@ -542,8 +542,12 @@ def install(home, force=False, progress=None, config_dir=None):
         # never restored. The settings values are recorded only once settings.json holds them,
         # so the interim record carries no settings data at all: one that said "added nothing"
         # was believed by the uninstall after an interrupt at the final record.
+        # The marker an uninstall leaves ("uninstalled") is not part of an install's record
+        # either: carried over, it made the uninstall read an interrupted re-install as neither
+        # unfinished nor absent, and the deny tools stayed with no notice.
+        interim = {k: v for k, v in old_record.items() if k != "uninstalled"}
         try:
-            _write_json(paths["record"], dict(old_record, claude_md=record["claude_md"]))
+            _write_json(paths["record"], dict(interim, claude_md=record["claude_md"]))
         except OSError:
             if backup is not None and backup is not recorded_copy:
                 # Nothing records this copy, and the file it copies is still in place: remove
