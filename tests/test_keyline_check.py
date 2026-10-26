@@ -404,12 +404,15 @@ def test_month_label_may_is_not_a_hedge(keyline_check):
     assert keyline_check.hedges("May we proceed?") == {"possibility": ["may"]}
 
 
-@pytest.mark.parametrize("text", [
-    "Zé" * 16000 + "_", "Zé" * 16000 + ".5", "Éé" * 16000 + ".5", "ÉÉ" * 8000 + ".5",
-    "ÉCOLE" * 4000 + "_", "ס" * 16000 + "_", "ס" * 16000 + ".5", "סZ" * 8000 + "_", "Zס" * 8000 + "_",
-    "ÉCOLE" * 4000 + "/x", "ס" * 16000 + "/x",
-])
-def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, text):
+# Each case has a short id: pytest puts the id in an environment variable, which Windows caps at
+# 32767 characters, and the 32000-character inputs themselves broke the run there.
+@pytest.mark.parametrize("unit, count, tail", [
+    ("Zé", 16000, "_"), ("Zé", 16000, ".5"), ("Éé", 16000, ".5"), ("ÉÉ", 8000, ".5"),
+    ("ÉCOLE", 4000, "_"), ("ס", 16000, "_"), ("ס", 16000, ".5"), ("סZ", 8000, "_"), ("Zס", 8000, "_"),
+    ("ÉCOLE", 4000, "/x"), ("ס", 16000, "/x"),
+], ids=lambda v: str(v))
+def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_check, unit, count, tail):
+    text = unit * count + tail
     # The left boundary L stayed ASCII when the name rule and R took Latin diacritics, so every
     # capital after a diacritic was a start and each start rescanned to the end of the run:
     # 16000 "Zé" pairs before "_" took 24 s against the hook's 30 s budget. A Hebrew letter
