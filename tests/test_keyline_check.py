@@ -287,3 +287,105 @@ def test_an_exponent_or_hex_number_is_one_invariant(keyline_check, tok):
     assert keyline_check.invariants(source) == {tok: "number"}
     assert keyline_check.check(source, source).ok
     assert not keyline_check.check(source, source.replace(tok, "9")).ok
+
+
+def test_space_separated_timestamp_counts_as_present_in_iso_form(keyline_check):
+    # The datetime fix accepted a space for the "T" but not a "T" for the space: a source that
+    # writes "2026-10-25 14:30" (a date and a time) failed against an ISO-normalising renderer.
+    assert keyline_check.check("Deploy at 2026-10-25 14:30.", "Deploy at 2026-10-25T14:30Z.").ok
+    assert keyline_check.check("Deploy at 2026-10-25 14:30.", "Deploy at 2026-10-25T15:30Z.").missing == ["14:30"]
+    assert keyline_check.check("Deploy at 2026-10-25 14:30.", "Deploy at 2026-10-26T14:30Z.").missing == ["2026-10-25"]
+    assert keyline_check.check("Deploy at 2026-10-25 14:30.", "Deploy at 2026-10-25 14:30.").ok
+
+
+@pytest.mark.parametrize("tok, longer", [
+    ("notes/a.txt", "notes/a.txt.bak"), ("notes/a.txt", "notes/a.txt/"), ("report.pdf", "report.pdf.gpg"),
+    ("~/.claude", "~/.claude.bak"), ("build.sh", "build.sh.old"), ("Jean-Luc", "Jean-Luc-Picard"),
+    ("API", "API.md"), ("sha256", "sha256.txt"), ("Postgres", "Postgres/Prisma"), ("max_conn", "max_conn.py"),
+])
+def test_a_path_or_name_is_not_found_inside_a_longer_one(keyline_check, tok, longer):
+    # Only numbers were looked up by extraction; every other kind used the right boundary R,
+    # which lets ".bak", "-Picard" or a trailing "/" follow, so a changed path or name passed.
+    src, ren = f"see {tok} at 14:02", f"see {longer} at 14:02"
+    assert keyline_check.check(src, ren).missing == [tok]
+    assert keyline_check.check(src, src).ok
+
+
+@pytest.mark.parametrize("src, ren", [
+    ("tests sit in __tests__/ next to src", "טסטים יושבים ב-__tests__/ ליד המקור"),
+    ("fix billing.spec.ts at 14:02", "לתקן ב-billing.spec.ts ב-14:02"),
+    ("see notes/a.txt at 14:02", "ראה בnotes/a.txt ב-14:02"),
+    ("db: moved to Postgres at 14:02", "Postgres הוא הבסיס מ-14:02"),
+    ("db: moved to Postgres at 14:02", "ב-14:02 עברנו. Postgres נשאר."),
+    ("stack: Postgres via Prisma", "Postgres through Prisma"),
+])
+def test_a_hebrew_prefix_or_a_sentence_start_still_counts_for_a_path_or_name(keyline_check, src, ren):
+    # Lookup by extraction must not lose what the boundary lookup had: a Hebrew prefix glued to
+    # a path or file ("ב-__tests__/"), and a name the rendering moves to a sentence start.
+    result = keyline_check.check(src, ren)
+    assert result.ok, result.missing
+
+
+@pytest.mark.parametrize("digest", ["3b4ca1f2" * 8, "ab4ca1f2" * 8, "3b4ca1f2" * 16])
+def test_a_long_hex_digest_is_one_invariant(keyline_check, digest):
+    # The hash alternative was capped at 40 hex digits (git SHA-1), so a sha256 or sha512 digest
+    # that starts with a digit matched nothing and a changed digest passed.
+    source = f"artifact sha256: {digest} at 14:02"
+    assert keyline_check.invariants(source)[digest] == "hash"
+    changed = source.replace(digest, digest[:-1] + ("0" if digest[-1] != "0" else "1"))
+    assert keyline_check.check(source, changed).missing == [digest]
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("name", ["Zürich", "Léa", "Øyvind", "São", "Café", "Łukasz"])
+def test_a_name_with_a_diacritic_is_a_proper_noun(keyline_check, name):
+    # The proper alternative and the boundary R were ASCII-only, so "Zürich" was not a name
+    # (and "Café" gave "Caf"); a rendering that swapped the name passed.
+    source = f"Meeting at 10:00 in {name} with Bob"
+    assert keyline_check.invariants(source)[name] == "proper"
+    assert "Caf" not in keyline_check.invariants(source)
+    assert keyline_check.check(source, source.replace(name, "Paris")).missing == [name]
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("english, hebrew", [("OCTOBER", "באוקטובר"), ("MONDAY", "ביום שני"), ("SATURDAY", "בשבת")])
+def test_an_all_caps_month_or_weekday_accepts_its_hebrew_form(keyline_check, english, hebrew):
+    # The Hebrew form was accepted for a capitalised name or "MAY" only; "DEC" and "SAT" are
+    # acronyms, but a full name in capitals is the month or the day.
+    source = f"Due {english} 3 at 14:02"
+    assert keyline_check.check(source, f"יעד {hebrew} 3 ב-14:02").ok
+    assert keyline_check.check(source, "יעד 3 ב-14:02").missing == [english]
+    assert keyline_check.check("code: DEC at 14:02", "קוד: דצמבר ב-14:02").missing == ["DEC"]
+
+
+def test_a_year_that_starts_a_sentence_is_a_number(keyline_check):
+    # LIST_MARKER stripped "2024. " as a numbered item, so the year went missing.
+    assert keyline_check.invariants("2024. Migration done") == {"2024": "number"}
+    assert keyline_check.check("2024. Migration done", "2025. Migration done").missing == ["2024"]
+    assert keyline_check.invariants("1. first\n12. twelfth\n123. last\n") == {}
+
+
+def test_a_url_keeps_its_scheme(keyline_check):
+    # A URL was extracted as the path "//example.com/a/b", so "https" -> "http" passed.
+    source = "see https://example.com/a/b?x=1 at 14:02"
+    assert keyline_check.invariants(source)["https://example.com/a/b?x=1"] == "url"
+    assert keyline_check.check(source, source.replace("https", "http")).missing == ["https://example.com/a/b?x=1"]
+    assert keyline_check.check(source, "ראה https://example.com/a/b?x=1 ב-14:02").ok
+    assert keyline_check.check(source, "ראה (https://example.com/a/b?x=1), ב-14:02").ok
+    assert keyline_check.check(source, source).ok
+
+
+def test_number_sign_no_is_not_a_negation(keyline_check):
+    # "No. 5" counted as a negation, so a Hebrew rendering "מס' 5" failed with "1 lost".
+    assert keyline_check.negations("ticket No. 5") == 0
+    assert keyline_check.negations("ticket no.5 and No.  7") == 0
+    assert keyline_check.negations("no 5xx errors, no data lost. No.") == 3
+    assert keyline_check.check("ticket No. 5 at 14:02", "כרטיס מס' 5 ב-14:02").ok
+
+
+def test_month_label_may_is_not_a_hedge(keyline_check):
+    # A line-leading label "May:" was a possibility hedge while "מאי:" is not.
+    assert keyline_check.hedges("May: ship v2") == {}
+    assert keyline_check.hedges("MAY: SHIP V2") == {}
+    assert keyline_check.check("May: ship v2", "מאי: לשלוח v2").ok
+    assert keyline_check.hedges("May we proceed?") == {"possibility": ["may"]}

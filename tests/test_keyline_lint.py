@@ -201,3 +201,22 @@ def test_missing_tiktoken_says_the_word_was_not_counted(monkeypatch):
     assert len(findings) == 1
     assert "not counted" in findings[0][1] and "tiktoken" in findings[0][1]
     assert "not one token" not in findings[0][1]
+
+
+def test_allow_file_words_on_one_line_are_all_allowed(tmp_path):
+    # "one word per line" was not enforced: a line "mgmt srvc" became the single entry
+    # "mgmt srvc", which never matches, and both words were still flagged.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    (tmp_path / keyline_lint.ALLOW_NAME).write_text("mgmt srvc  # tool names\n\tsref\n", encoding="utf-8")
+    note = tmp_path / "note.txt"
+    note.write_text("the mgmt srvc sref layer\n", encoding="utf-8")
+    assert keyline_lint.lint_file(note, words={"the", "layer"}) == []
+    allow = keyline_lint.load_allow(note, [])
+    assert {"mgmt", "srvc", "sref"} <= allow and "mgmt srvc" not in allow
+
+
+def test_a_year_with_a_full_stop_is_not_a_numbered_item():
+    # The furniture rule took "2024. Migration done" for a numbered list item.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    assert list(keyline_lint.lint_text("2024. migration done\n", {"migration", "done"}, set())) == []
+    assert [m for _, m in keyline_lint.lint_text("1. done\n12. done\n123. done\n", {"done"}, set())] == ["furniture: numbered item"] * 3
