@@ -136,7 +136,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 - `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
-- `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
+- `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`), and the Trail-Code floor measurement (`trail-code-floor-2026-10-26.md`: +1,900 tokens per fresh session, not adopted)
 - `scripts/` - measurement scripts (token counts, transcript breakdowns). `lint_validate.py` and `plugin_cost.py` take their input folder as an argument (defaults: the folder holding this repo, and the Claude app folder for your OS or `CLAUDE_APP_DIR`). `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts.
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 
