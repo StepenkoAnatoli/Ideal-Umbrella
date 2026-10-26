@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording); pass 7: keyline (R1) 1 high, 3 medium, 7 low (1 pre-existing neighbour of finding 97, 4 regressions of 00d8960, the rest doc claims, missing test rows and idle guard rows).
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording); pass 7: keyline (R1) 1 high, 3 medium, 7 low (1 pre-existing neighbour of finding 97, 4 regressions of 00d8960, the rest doc claims, missing test rows and idle guard rows), config (R2) 0 high, 2 medium, 8 low (4 regressions of 46eaec7, 1 incomplete fix, 1 pre-existing neighbour, a dead chain, a notice wording, a test that passed before its fix and a silent record field).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1885,8 +1885,10 @@ the fix and failing closed after it. R2's findings follow.
    interrupted run and is removed, so the twin interrupt (at the final record) is undone too.
    Tests: tests/test_install.py
    `test_a_template_change_interrupted_before_the_settings_write_keeps_the_earlier_value_as_installed`
-   (both re-run rows) and `test_a_template_change_interrupted_at_the_final_record_is_undone_from_the_template_value`
-   (all failed before the fix).
+   (both re-run rows; failed before the fix) and
+   `test_a_template_change_interrupted_at_the_final_record_is_undone_from_the_template_value`
+   (passed before the fix as first written, the old undo path giving the same end state; pass-7
+   finding 127 made it assert the interim record's pre-write value, which fails before the fix).
    Other hits: none (the `--force` path records the replaced value, which the existing skip
    handles; added keys are not in settings before the write).
    Prevention: the interim record's docstring line names the pre-write value; README.md:66 and
@@ -1991,7 +1993,14 @@ probes (`python3 -I .../selfcheck7g/r1/p1_neighbours.py`, `p5_claims.py`, `p7_ve
 `p8_v_stem_hour.py`) before the fix and failing closed after it; the fixed module re-run through
 every r1 probe (`p2_perf.py` worst 0.67 s, `p4_perf_single_start.py` worst 0.44 s, `p3_fuzz.py`
 0 self-fails over 40000 lines, `p6_lookbehind_guard.py` all rows under 0.2 s). The final test
-module against the pre-fix module: 28 failed, 244 passed.
+module against the pre-fix module: 28 failed, 244 passed. R2 findings 120-129: 0 high, 2 medium,
+8 low, the mediums reproduced with the reviewer's probes (`python3 -I .../selfcheck7g/r2/p2_stale_equals_template.py new`,
+`p3_settings_backup_name.py new`) before the fix and passing after it, the lows with `p4`-`p7` and the
+600-case `p1_matrix.py` (24 non-OK after the fix, down from 52, every one a pre-existing
+"interrupt at the first write leaves no record" expectation the probe itself makes; no case worse).
+Of the new or changed config tests, 25 fail against the pre-fix modules and 3 pass by design as
+controls. One regression of the pass-7 fix itself (the marker left while settings.json is missing
+dropped `pre_write`) was caught by the matrix before the commit and is tested (finding 122).
 
 One shape found during the fix and bounded before it was committed: with the date or time an
 unbounded interior component of a file name, `12` + `.14:30` x 1600 + `.x_` took 1.0 s and
@@ -2176,6 +2185,192 @@ percentage is bounded to three figures.
    Other hits: none.
    Prevention: a linear-time row is kept only when a variant without the guard is shown to be
    slow on it (`r1/p6_lookbehind_guard.py`, `fix_r1/unbounded_*_check.py`).
+
+120. (R2) config/install.py:584-586 (46eaec7) `stale` drop in the completion of an unfinished
+    record: a `--force` install interrupted before the settings write listed the user's value as
+    replaced; when the template later moved to that very value, a plain re-run dropped the claim
+    (the key held the replaced value) and the completion loop then recorded the key as installed,
+    so the undo removed the user's own value, and a later template change overwrote it without
+    `--force` (`installed[k] == existing[k]`). Reproduced (`../r2/p2_stale_equals_template.py`
+    cases b and a2, old PASS / new FAIL). Medium. Class: regression inside the fix (incomplete).
+   Fixed: config/install.py:584-586, the claim is dropped only when the key's value is not the
+   template's as well (`existing.get(k) != template.get(k)`), with the comment at :578-583 saying
+   why; a kept claim is what tells the undo to put the value back and the "template changed"
+   path to leave it. Tests: tests/test_install.py:1485
+   `test_completing_a_record_keeps_a_replacement_when_the_template_moved_to_the_replaced_value`
+   and :1514 `test_a_kept_replacement_guards_the_users_value_from_a_later_template_change`
+   (both failed before the fix).
+   Other hits: `known.update(stale)` (the review's second suggestion) is a no-op under the new
+   condition (a dropped key differs from the template, so the loop never claims it); not added.
+   Prevention: README.md:66 and :113 now say the replacement is dropped only when the earlier
+   value is not the template's; the docstring's last paragraph says the same.
+
+121. (R2) config/uninstall.py (46eaec7) orphan settings copy check and config/install.py reuse of
+    the recorded copy: `settings_backup` was accepted as any plain file name, so a record naming
+    `settings.json` itself (the file equals itself) made the undo delete settings.json and a
+    re-install reuse the file as its own backup (no copy made); a sibling of equal content
+    (`settings.local.json`) was removed too; the `claude_md.backup = "CLAUDE.md"` twin had the
+    same hole since before the commit. Reproduced (`../r2/p3_settings_backup_name.py`, three
+    cases, old PASS / new FAIL). Medium (a record-driven unlink of the user's settings.json; not
+    reachable through the installer's own writes). Class: incomplete fix; the CLAUDE.md twin a
+    pre-existing neighbour.
+   Fixed: config/install.py:307 `_backup_of(target, name)`, shared by both scripts, accepts only
+   a name `_backup` writes for the target (`<name>.bak-<stamp>[-n]`, a plain file name); used at
+   install.py:551 (CLAUDE.md copy reuse), :643 (settings copy reuse), uninstall.py:327 (CLAUDE.md
+   backup) and :355 (settings copy); a refused name gives the notice at uninstall.py:357 ("the
+   record names a copy of settings.json that is not a name the installer writes (...); nothing
+   removed") and :476 for CLAUDE.md ("... not a name the installer writes (...); fix the record
+   first"). Tests: tests/test_uninstall.py:1167
+   `test_a_settings_copy_name_the_installer_never_writes_is_refused` (four names), :1206
+   `test_a_claude_md_backup_name_the_installer_never_writes_is_refused`, tests/test_install.py:1647
+   `test_a_settings_copy_name_the_installer_never_writes_is_not_reused` (two names) and :1621
+   `test_a_claude_md_backup_name_the_installer_never_writes_is_not_reused` (all failed before the
+   fix).
+   Other hits: `_check_record` (install.py:460) still checks only the type; the name check lives
+   at the use sites, where the notice can say what was refused.
+   Prevention: README.md:113 says a backup or copy name that is not one the installer writes is
+   refused and reported; the docstring step 1 says the recorded name is not reused.
+
+122. (R2) config/uninstall.py:134 (46eaec7) undo rule for an unfinished record: a listed key
+    holding the template value was taken for the interrupted run's write, but the interim lists
+    the pre-write value only for keys the run changes; a key the run did not touch, which the
+    user had set by hand to the (moved) template value, was removed, or a stale replaced value
+    restored over it, after an interrupt at the hook write. Reproduced
+    (`../r2/p6_user_sets_template_value.py`, two cases, old PASS / new FAIL). Low (borderline
+    medium). Class: regression inside the fix.
+   Fixed: config/install.py:718-721, the interim record names the keys listed with their
+   pre-write value in a `pre_write` list (interim-only; `_check_record` :460 types it);
+   config/uninstall.py:87 and :134-139 apply the template rule to those keys only, every other
+   listed key holding the template value is the user's own ("not the installed value; left as
+   is", as before). The marker an undo leaves while settings.json is missing keeps the list for
+   the keys it keeps (uninstall.py:235-240): without it the run that found the file back read
+   the written template value as the user's and kept the key for good (my own regression, shown
+   by the p1 matrix `installed|forced/T2/*/at=final/then=missing` cases). Tests:
+   tests/test_uninstall.py:1225
+   `test_a_value_you_set_to_the_template_value_by_hand_survives_the_undo_of_a_later_interrupt`
+   (plain and `--force` first) and tests/test_install.py:1377
+   `test_the_pre_write_list_survives_an_undo_that_found_settings_json_missing` (failed before the
+   fix; the second against the tree before the marker change too).
+   Other hits: `INTERIM_FIELDS` (tests/test_install.py:727) and the interim shape test at :890
+   carry the new field.
+   Prevention: the docstring (step 1 and the last paragraph) and README.md:66 name `pre_write`
+   and say a template value in a listed key the run does not change is the user's own.
+
+123. (R2) config/install.py (46eaec7) settings copy made before the interim record: an interrupt
+    before any settings write left the copy; when the user then edited settings.json, the next
+    run found it differing, made a fresh copy and named only that one, and the undo left it too,
+    so a copy nothing names stayed for good (the old code made no copy at that point).
+    Reproduced (`../r2/p4_user_edit_between.py` cases re-run and uninstall, old PASS / new FAIL).
+    Low. Class: regression inside the fix.
+   Fixed: config/install.py:331 `_settings_write_pending(record, settings)` says whether
+   settings.json shows nothing of the recorded run's write (every added key absent, every
+   replaced key at its replaced value, every pre-write key at its pre-write value, no listed
+   deny tool present; false for a record that lists nothing); install.py:643-647 marks a
+   recorded copy that differs while the write is pending as stale and :742-751 removes it once
+   the fresh copy is recorded ("settings.json backup <name> removed (the interrupted install
+   never replaced settings.json)", a failure to remove it is a notice); uninstall.py:352-368
+   removes a copy that is equal or whose write is pending, keeps one that differs after the
+   write (a finished install's backup). Tests: tests/test_install.py:1547
+   `test_a_re_run_after_you_edited_settings_json_removes_the_copy_the_interrupted_run_made` and
+   tests/test_uninstall.py:1255
+   `test_the_undo_removes_the_copy_of_a_settings_json_you_edited_after_the_interrupt` (both
+   failed before the fix); the twins tests/test_install.py:1574
+   `test_a_copy_that_differs_after_the_settings_write_is_kept_by_the_re_run` and
+   tests/test_uninstall.py:1275 `test_the_copy_of_a_replaced_settings_json_is_kept_by_the_undo`
+   pin that a copy of a replaced file stays (pass on the old code; controls).
+   Other hits: a re-run over a finished record (not unfinished) never removes a differing copy;
+   a record that lists no key or tool is never judged pending (nothing to tell the two apart),
+   so its differing copy stays, named only in the record.
+   Prevention: README.md:66 and :113 say when the copy is reused, removed or kept; the
+   docstring step 1 says the same.
+
+124. (R2) config/install.py (46eaec7) order of the two copies: the CLAUDE.md copy was made before
+    the settings copy and both before the interim record, and the cleanup on failure covered only
+    the interim write, so a settings copy that failed (ENOSPC) left a CLAUDE.md copy nothing
+    recorded and the next run made a second one. Reproduced
+    (`../r2/p5_copy_failure_order.py`, old PASS / new FAIL). Low. Class: regression inside the
+    fix.
+   Fixed: config/install.py:633-654, the settings copy is made first; :665-673, a CLAUDE.md copy
+   that fails removes the fresh settings copy (`_discard` at :318 unlinks a copy and takes its
+   line out of the change and progress lists); the interim-write failure at :733-741 uses the
+   same helper for both. Test: tests/test_install.py:1592
+   `test_a_failed_copy_leaves_no_unrecorded_copy_of_the_other_file` (`settings.json` row failed
+   before the fix; the `CLAUDE.md` row is the control for the other order and passed).
+   Other hits: none; a copy an interrupted install recorded is reused, not re-made, so the
+   discard never touches one the record names.
+   Prevention: README.md:66 and the docstring step 1 say the settings copy comes before the
+   CLAUDE.md backup and that either is removed again when the other, or the record, cannot be
+   written.
+
+125. (R2) config/uninstall.py:404-410 (46eaec7) read-only folder check: the `if orphan_settings_copy`
+    statement was inserted between `if restore or orphan_copy` and its `elif`, so the CLAUDE.md
+    delete was no longer added to `removals` whenever an orphan settings copy existed (no
+    observable effect today: both live in the same folder, checked through the other entry).
+    Reproduced by reading (the report's F6). Low. Class: regression inside the fix.
+   Fixed: config/uninstall.py:404-410, the `if`/`elif` chain is as before the commit and the
+   orphan settings copy is appended after it. Test: tests/test_uninstall.py:1304
+   `test_the_folder_check_covers_a_claude_md_deleted_beside_an_orphan_settings_copy` (asserts
+   the folder check sees CLAUDE.md through `removals` with the copy present; failed before the
+   fix).
+   Other hits: none.
+   Prevention: the test pins the chain.
+
+126. (R2) config/install.py (46eaec7) change line "settings backup: <name>": reported as a change
+    by a re-run that reused the recorded copy and made none (the CLAUDE.md twin reports nothing
+    on reuse). Reproduced (the report's F7; `test_a_re_install_after_an_interrupted_settings_write_reuses_the_recorded_settings_backup`
+    asserted the line). Low. Class: wording.
+   Fixed: config/install.py:649-654, a reused copy is reported as "settings backup: <name>
+   (reused)", a fresh one as before. Test: tests/test_install.py:1459 (assert at :1477 for the
+   "(reused)" line and the absence of the plain one; failed before the fix).
+   Other hits: ../r2/p1_matrix.py counts `settings backup` lines as copies made; the "(reused)"
+   line still starts with it, so the matrix's copy count is conservative there (no case worse).
+   Prevention: README.md:66 names the "(reused)" line.
+
+127. (R2) tests/test_install.py:1351
+    `test_a_template_change_interrupted_at_the_final_record_is_undone_from_the_template_value`
+    (46eaec7): passed on the pre-commit code (at the final record the settings write is done, so
+    old and new agreed), while research/review-findings-main-b46792d.md:1889 says "all failed
+    before the fix". Reproduced (the reviewer's oldrepo/ run; see the F8 note above). Low.
+    Class: fix without a test / doc mismatch.
+   Fixed: tests/test_install.py:1365-1369, the test now asserts what the old code got wrong: the
+   interim record left behind lists the key with its pre-write value and names it in
+   `pre_write` (fails before the fix with a KeyError on `pre_write`; the undo assertions stay).
+   Other hits: the three other pass-6 tests that pass on the old code (findings 103, 104, 105)
+   are named in the F8 note; left as they are. The research report's sentence is not mine to
+   edit (research/* excluded); the F8 note above records what to change.
+   Prevention: before_results.txt is the record of which tests fail on the pre-fix modules.
+
+128. (R2) config/uninstall.py:140-144 and `_leftover_record` :220-225 (pre-existing): under an
+    unfinished record with hook evidence, an unlisted key holding the user's own value got "not
+    the installed value; left as is" (the record never listed it) and was kept in the marker as
+    `added_keys: [], replaced: {}, installed: {}`. Reproduced (p1 matrix, start state `user`,
+    interrupt at the hook, uninstall: 28 cases). Low. Class: wording; pre-existing neighbour.
+   Fixed: config/uninstall.py:140-144, the notice says "<key> is <value>, not the template value,
+   and the record of the install that did not finish does not list it; left as is" and the key
+   is not kept in the marker; `_leftover_record` :220-225 writes only non-empty settings fields.
+   Test: tests/test_uninstall.py:1328
+   `test_an_unlisted_key_holding_your_own_value_under_an_unfinished_record_is_named_as_unlisted`
+   (failed before the fix).
+   Other hits: the 28 p1 matrix cases are OK now (p1_new_stdout.txt).
+   Prevention: README.md:113 says a value of your own in a key the record does not list is
+   reported as unlisted.
+
+129. (R2) config/uninstall.py:352-361 and config/install.py:643 (46eaec7): a `settings_backup`
+    the record names that is not usable (a path, `""`, a missing file) was passed over in
+    silence, while a missing CLAUDE.md backup is named. Reproduced
+    (`../r2/p3_settings_backup_name.py` case missing_or_pathy). Low. Class: wording/notice.
+   Fixed: config/uninstall.py:356-361, a name the installer never writes gives "the record names
+   a copy of settings.json that is not a name the installer writes (<name>); nothing removed"
+   (through `_backup_of`, 121) and a missing file "the copy of settings.json the record names
+   (<name>) is missing; nothing removed"; the notice is appended at :385-386 after the
+   settings.json-missing branch, so the two never both fire. Tests: tests/test_uninstall.py:1191
+   `test_a_missing_settings_copy_the_record_names_is_reported` and :1167 (the four names; all
+   failed before the fix).
+   Other hits: the installer (install.py:643-647) ignores a missing or refused name without a
+   notice and makes a fresh copy, as the CLAUDE.md side does; the undo is where the name is
+   acted on.
+   Prevention: README.md:113 says a missing copy, or a name that is not the installer's, is
+   reported and nothing removed.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

@@ -15,10 +15,12 @@ What it does, in write order (everything is read and checked first):
      record step 5 will write (the old record, or the leftovers of the marker an uninstall
      left, merged with what this run adds, replaces or creates) marked "unfinished", with the
      CLAUDE.md change and its backup when step 3 writes one, and the name of the copy of
-     settings.json made for step 4 (a backup or copy whose record could not be written is
-     removed again; one an interrupted install recorded is reused when it still equals the
-     file); a key the run changes without replacing it is listed with the value it holds
-     until step 4
+     settings.json made for step 4 (the copy is made before the CLAUDE.md backup; a backup or
+     copy whose record, or whose partner, could not be written is removed again; a copy an
+     interrupted install recorded is reused when it still equals the file, removed when it
+     differs while settings.json shows nothing of that install's write, and a recorded name
+     that is not one the installer writes is not reused); a key the run changes without
+     replacing it is listed with the value it holds until step 4 and named in "pre_write"
   2. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
   3. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change)
   4. Merges config/user-settings.json into <home>/.claude/settings.json
@@ -28,13 +30,17 @@ What it does, in write order (everything is read and checked first):
 What it changed is recorded in <home>/.claude/ballast/install-record.json, so
 config/uninstall.py can put back the values that were there before. An install interrupted
 after step 1 and before step 5 leaves the interim record, marked unfinished: the uninstall
-restores what it lists (a replaced value the run never got to write is left as it is; a listed
-key holding the template value was written by the run), removes the copy of settings.json the
-run never replaced, judges the keys it does not list from the evidence (our hook entry), and
-the next install completes the record (the template values it finds in settings.json are
-recorded as installed, a replacement the run never wrote is dropped).
+restores what it lists (a replaced value the run never got to write is left as it is; a key
+named in "pre_write" holding the template value was written by the run, while the template
+value in any other listed key is the user's own), removes the copy of settings.json the run
+never replaced, judges the keys it does not list from the evidence (our hook entry) and names
+a value of the user's own it finds in one, and the next install completes the record (the
+template values it finds in settings.json are recorded as installed; a replacement the run
+never wrote is dropped when the key still holds the replaced value and that value is not the
+template's, so a template that moved to the user's value keeps the claim).
 """
 import argparse
+import copy
 import datetime
 import errno
 import hashlib
@@ -298,6 +304,51 @@ def _backup(path):
     return backup
 
 
+def _backup_of(target, name):
+    """The backup or copy of target that a record names, as a path beside it; None unless the
+    name is one _backup writes for target (<name>.bak-<stamp>[-n], a plain file name). The
+    file itself, a sibling the user keeps equal to it or a path is not a copy to restore
+    from, reuse or remove, whatever the record says."""
+    if (not isinstance(name, str) or not name.startswith(f"{target.name}.bak-")
+            or Path(name).name != name):
+        return None
+    return target.with_name(name)
+
+
+def _discard(copy_path, line, *lists):
+    """Remove a copy nothing records (its record was never written, or the copy it stood in
+    for failed) and the line naming it from each list; a copy that cannot be removed stays
+    named, so the user can see it."""
+    try:
+        copy_path.unlink()
+    except OSError:
+        return
+    for lines in lists:
+        if line in lines:
+            lines.remove(line)
+
+
+def _settings_write_pending(record, settings):
+    """Whether settings.json shows nothing of the write an unfinished record describes: every
+    key it adds is absent, every key it replaces holds the replaced value, every key it lists
+    with a pre-write value holds it, and no permissions.deny tool it adds is there. Then the
+    copy of the file the record names is of a file the run never replaced, whatever the file
+    holds now (the user may have edited it since). A record that describes no such key (a
+    re-run that only updates the hook entry) cannot be judged, and the answer is no: its copy
+    is kept, as a finished install's backups are."""
+    replaced = record.get("replaced", {})
+    installed = record.get("installed", {})
+    permissions = settings.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    checks = [key not in settings for key in record.get("added_keys", []) if key not in replaced]
+    checks += [key in settings and settings[key] == value for key, value in replaced.items()]
+    checks += [key in settings and key in installed and settings[key] == installed[key]
+               for key in record.get("pre_write", [])]
+    checks += [not (isinstance(deny, list) and tool in deny)
+               for tool in record.get("deny_added", [])]
+    return bool(checks) and all(checks)
+
+
 def _new_temp(directory, prefix):
     """Create a new file in directory with the mode a plain write gives (0666 less the umask,
     applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
@@ -406,7 +457,7 @@ def _check_record(path, data):
     which keeps the file and says so when the name is not usable."""
     def refuse(field, expected, value):
         raise ValueError(f"{path}: {field} must be {expected}, not {value!r}; fix it or delete it first")
-    for field in ("added_keys", "deny_added", "created"):
+    for field in ("added_keys", "deny_added", "created", "pre_write"):
         if field in data and not (isinstance(data[field], list)
                                   and all(isinstance(v, str) for v in data[field])):
             refuse(field, "a list of strings", data[field])
@@ -497,15 +548,14 @@ def install(home, force=False, progress=None, config_dir=None):
     # from (the install never got to replace it): the one to keep, not to make again.
     recorded_copy = None
     if isinstance(old_md, dict) and current_md is not None:
-        name = old_md.get("backup")
-        if isinstance(name, str) and name and Path(name).name == name:
-            candidate = paths["claude_md"].with_name(name)
-            if candidate.is_file() and _read_bytes(candidate) == _read_bytes(paths["claude_md"]):
-                recorded_copy = candidate
+        candidate = _backup_of(paths["claude_md"], old_md.get("backup"))
+        if (candidate is not None and candidate.is_file()
+                and _read_bytes(candidate) == _read_bytes(paths["claude_md"])):
+            recorded_copy = candidate
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
-    settings_before = dict(existing)
+    settings_before = copy.deepcopy(existing)   # merge_settings fills the containers in place
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
@@ -526,9 +576,14 @@ def install(home, force=False, progress=None, config_dir=None):
         # A replacement the interrupted run recorded for a key that still holds the replaced
         # value, and that this run does not make (no --force): the write never happened, and
         # keeping the claim would make the undo call the user's own value "not the installed
-        # value" and the marker carry the claim for good.
+        # value" and the marker carry the claim for good. Not when the template has since
+        # moved to that value: the key then holds the template value as well, which the loop
+        # below records as installed, and the claim is what tells the undo to put the user's
+        # value back rather than remove the key (dropping it made the undo remove the user's
+        # value, and a later template change overwrite it without --force).
         stale = [k for k, v in old_record.get("replaced", {}).items()
-                 if k not in record["replaced"] and existing.get(k) == v]
+                 if k not in record["replaced"] and k not in record["installed"]
+                 and existing.get(k) == v and existing.get(k) != template.get(k)]
         if stale:
             old_record = dict(
                 old_record,
@@ -575,6 +630,30 @@ def install(home, force=False, progress=None, config_dir=None):
         if will_write:
             _refuse_read_only(paths[name])
 
+    settings_backup, fresh_settings_backup, stale_settings_copy = None, False, None
+    if setting_changes and paths["settings"].exists():
+        # The copy of settings.json is made before the interim record and named in it, so an
+        # interrupt before the settings write leaves a copy the undo knows to remove; the copy
+        # an interrupted install recorded is reused while it still equals the file. One that
+        # differs while the file shows nothing of that install's write (edited since) is a
+        # copy of a file never replaced: it is removed once the fresh copy is recorded. One
+        # that differs after the write is the backup of the file that write replaced, and
+        # stays as a finished install's backups do; so does one the record names by a name
+        # the installer never writes (the file itself, a path), which is not a copy at all.
+        candidate = _backup_of(paths["settings"], old_record.get("settings_backup"))
+        if candidate is not None and candidate.is_file():
+            if _read_bytes(candidate) == _read_bytes(paths["settings"]):
+                settings_backup = candidate
+            elif unfinished_old and _settings_write_pending(old_record, settings_before):
+                stale_settings_copy = candidate
+        fresh_settings_backup = settings_backup is None
+        if fresh_settings_backup:
+            settings_backup = _backup(paths["settings"])
+            setting_changes.append(f"settings backup: {settings_backup.name}")
+        else:
+            setting_changes.append(f"settings backup: {settings_backup.name} (reused)")
+        progress.append(setting_changes[-1])
+
     backup = None
     if md_changed:
         # A file still holding what an earlier install wrote is the installer's own: no backup
@@ -584,7 +663,15 @@ def install(home, force=False, progress=None, config_dir=None):
         if claude_md_exists and not still_ours and recorded_copy is not None:
             backup = recorded_copy
         elif claude_md_exists and not still_ours:
-            backup = _backup(paths["claude_md"])
+            try:
+                backup = _backup(paths["claude_md"])
+            except OSError:
+                # The settings copy made just before it is recorded nowhere yet: remove it, or
+                # the next run makes a second copy of the same file.
+                if fresh_settings_backup:
+                    _discard(settings_backup, f"settings backup: {settings_backup.name}",
+                             setting_changes, progress)
+                raise
             changes.append(f"CLAUDE.md backup: {backup.name}")
             progress.append(changes[-1])
         # Keep the first backup when the file is still what an earlier install wrote. If the
@@ -623,28 +710,17 @@ def install(home, force=False, progress=None, config_dir=None):
     # uninstall after an interrupt at the final record; one without this run's data lost a
     # value --force replaced, or a container this run made, to that interrupt.
     # A key this run changes without replacing it (a changed template value over the one an
-    # earlier install wrote) is listed with the value it holds until the settings write: the
-    # undo of an interrupt before that write removes the key as it finds it, and one after it
-    # tells the write from the template value.
+    # earlier install wrote) is listed with the value it holds until the settings write, and
+    # named in "pre_write": the undo of an interrupt before that write removes the key as it
+    # finds it, and one after it tells the write from the template value for those keys only
+    # (a listed key the run does not change holds the earlier install's value, and a template
+    # value in its place is the user's own, set by hand).
     pre_write = {k: settings_before[k] for k in record["installed"]
                  if k in settings_before and settings_before[k] != existing[k]
                  and k not in record["replaced"]}
-    interim = dict(final, installed={**final["installed"], **pre_write}, unfinished=True)
-    settings_backup, fresh_settings_backup = None, False
-    if setting_changes and paths["settings"].exists():
-        # The copy of settings.json is made before the interim record and named in it, so an
-        # interrupt before the settings write leaves a copy the undo knows to remove; the copy
-        # an interrupted install recorded is reused while it still equals the file.
-        name = old_record.get("settings_backup")
-        if isinstance(name, str) and name and Path(name).name == name:
-            candidate = paths["settings"].with_name(name)
-            if candidate.is_file() and _read_bytes(candidate) == _read_bytes(paths["settings"]):
-                settings_backup = candidate
-        fresh_settings_backup = settings_backup is None
-        if fresh_settings_backup:
-            settings_backup = _backup(paths["settings"])
-        setting_changes.append(f"settings backup: {settings_backup.name}")
-        progress.append(setting_changes[-1])
+    interim = dict(final, installed={**final["installed"], **pre_write}, pre_write=list(pre_write),
+                   unfinished=True)
+    if settings_backup is not None:
         interim["settings_backup"] = settings_backup.name
 
     if hook_changed or md_changed or setting_changes:
@@ -656,25 +732,26 @@ def install(home, force=False, progress=None, config_dir=None):
         try:
             _write_json(paths["record"], interim)
         except OSError:
+            # Nothing records these copies, and the files they copy are still in place: remove
+            # them, or the next install makes a second copy of the same file.
             if backup is not None and backup is not recorded_copy:
-                # Nothing records this copy, and the file it copies is still in place: remove
-                # it, or the next install makes a second copy of the same file.
-                try:
-                    backup.unlink()
-                except OSError:
-                    pass
-                else:
-                    changes.remove(f"CLAUDE.md backup: {backup.name}")
-                    progress.remove(f"CLAUDE.md backup: {backup.name}")
-            if settings_backup is not None and fresh_settings_backup:
-                try:
-                    settings_backup.unlink()
-                except OSError:
-                    pass
-                else:
-                    setting_changes.remove(f"settings backup: {settings_backup.name}")
-                    progress.remove(f"settings backup: {settings_backup.name}")
+                _discard(backup, f"CLAUDE.md backup: {backup.name}", changes, progress)
+            if fresh_settings_backup:
+                _discard(settings_backup, f"settings backup: {settings_backup.name}",
+                         setting_changes, progress)
             raise
+        if stale_settings_copy is not None:
+            line = (f"settings.json backup {stale_settings_copy.name} removed (the interrupted "
+                    "install never replaced settings.json)")
+            try:
+                stale_settings_copy.unlink()
+            except OSError as e:
+                notices.append(f"the copy of settings.json the interrupted install made, "
+                               f"{stale_settings_copy.name}, no longer matches the file and could "
+                               f"not be removed ({e.strerror or e}); remove it by hand")
+            else:
+                setting_changes.append(line)
+                progress.append(line)
 
     if hook_changed:
         _write_bytes(paths["hook"], hook_bytes)

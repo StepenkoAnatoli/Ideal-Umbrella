@@ -84,6 +84,7 @@ def undo_settings(settings, template, record, evidence=None):
     replaced = record.get("replaced", {})
     added = record.get("added_keys", [])
     installed = record.get("installed", {})
+    pre_write = record.get("pre_write", [])     # listed with the value held before the write
     # Containers (permissions, permissions.deny, hooks, hooks.<event>) are removed when the
     # undo empties them only if the install created them; one the user had stays, empty. A
     # record from before "created" was written, or no record, says nothing, so those are removed
@@ -130,13 +131,22 @@ def undo_settings(settings, template, record, evidence=None):
         if settings[key] != expected:
             if unfinished and key in replaced and settings[key] == replaced[key]:
                 continue    # the value to put back is in place: the write never happened
-            if not (unfinished and key in installed and key in template
-                    and settings[key] == template[key]):
+            if unfinished and key in pre_write and key in template and settings[key] == template[key]:
+                # An unfinished record lists a key it changes with the value it held before
+                # the settings write, and names it in pre_write; the template value in its
+                # place is the interrupted run's write. For any other listed key the template
+                # value is the user's own, set by hand: the run never wrote it.
+                pass
+            elif unfinished and key in unlisted:
+                # Judged from the evidence, as without a record: the record never claimed it,
+                # so there is nothing of it to keep in the marker.
+                notices.append(f"{key} is {settings[key]!r}, not the template value, and the record "
+                               "of the install that did not finish does not list it; left as is")
+                continue
+            else:
                 notices.append(f"{key} is {settings[key]!r}, not the installed value; left as is")
                 left.append(key)
                 continue
-            # An unfinished record lists a key it changes with the value it held before the
-            # settings write; the template value in its place is the interrupted run's write.
         if key in replaced:
             settings[key] = replaced[key]
             changes.append(f"{key}: restored {replaced[key]!r}")
@@ -205,12 +215,14 @@ def _leftover_record(record, left, claude_md_left, unfinished=False):
     if record and left:
         # Only the fields the record holds: a record with no settings data (an interrupted
         # install) keeps none, since empty ones would read as a full record on the next run.
-        if "added_keys" in record:
-            leftover["added_keys"] = [k for k in record["added_keys"] if k in left]
-        if "replaced" in record:
-            leftover["replaced"] = {k: v for k, v in record["replaced"].items() if k in left}
-        if "installed" in record:
-            leftover["installed"] = {k: v for k, v in record["installed"].items() if k in left}
+        # Only the fields the record holds, and only with something in them: an empty one
+        # says nothing a later run needs.
+        for field in ("added_keys", "replaced", "installed"):
+            if field in record:
+                kept = ([k for k in record[field] if k in left] if field == "added_keys"
+                        else {k: v for k, v in record[field].items() if k in left})
+                if kept:
+                    leftover[field] = kept
         if "permissions.deny" in left and record.get("deny_added"):
             leftover["deny_added"] = record["deny_added"]
         if isinstance(record.get("created"), list):
@@ -220,6 +232,12 @@ def _leftover_record(record, left, claude_md_left, unfinished=False):
         leftover["claude_md"] = record["claude_md"]
     if unfinished and isinstance(record.get("settings_backup"), str):
         leftover["settings_backup"] = record["settings_backup"]
+    if unfinished and "installed" in leftover:
+        # The keys listed with their pre-write value stay named as such, or the run that finds
+        # settings.json back reads the template value the interrupted run wrote as the user's.
+        pre_write = [k for k in record.get("pre_write", []) if k in leftover["installed"]]
+        if pre_write:
+            leftover["pre_write"] = pre_write
     return leftover
 
 
@@ -276,17 +294,6 @@ def _refuse_unremovable_tree(root):
             raise ValueError(f"{folder} cannot be entered; make it searchable first")
 
 
-def _backup_of(claude_md, name):
-    """The backup file a record names, beside CLAUDE.md; None when the name is not a plain
-    file name (not a string, empty, or holding a separator), which the install never writes."""
-    if not isinstance(name, str) or not name or Path(name).name != name:
-        return None
-    try:
-        return claude_md.with_name(name)
-    except ValueError:
-        return None
-
-
 def uninstall(home, dry_run=False, progress=None, config_dir=None):
     """Undo the install; return (changes, notices). Each change is appended to `progress`
     (when given) once it is done, so an OSError part way can still name the backups made."""
@@ -317,7 +324,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     # refused while nothing has been touched.
     entry = (record or {}).get("claude_md")
     named = entry.get("backup") if isinstance(entry, dict) else None
-    backup = _backup_of(claude_md, named)
+    backup = install._backup_of(claude_md, named)
     if current_md is None:
         ours = False
     elif isinstance(entry, dict) and entry.get("sha256"):
@@ -336,26 +343,36 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         except OSError as e:
             raise ValueError(f"cannot read {backup} ({e.strerror or e})") from e
 
-    # The copy an interrupted install made of settings.json before a write it never got to,
-    # still equal to the file: nothing to restore, and the copy is removed. One that differs
-    # is a backup of the file the run did replace, and stays.
-    orphan_settings_copy = None
-    named_settings_copy = (record or {}).get("settings_backup")
-    if (settings is not None and _is_unfinished(record) and isinstance(named_settings_copy, str)
-            and named_settings_copy and Path(named_settings_copy).name == named_settings_copy):
-        candidate = paths["settings"].with_name(named_settings_copy)
-        if candidate.is_file():
+    # The copy an interrupted install made of settings.json before a write it never got to:
+    # still equal to the file, or differing while the file shows nothing of that write (the
+    # user edited it since), it has nothing to restore and is removed. One that differs after
+    # the write is a backup of the file the run did replace, and stays. A name the installer
+    # never writes (the file itself, a sibling, a path) names no copy, and a copy that is gone
+    # is named, as a missing CLAUDE.md backup is.
+    orphan_settings_copy, settings_copy_notice = None, None
+    if settings is not None and _is_unfinished(record) and "settings_backup" in record:
+        named_settings_copy = record["settings_backup"]
+        candidate = install._backup_of(paths["settings"], named_settings_copy)
+        if candidate is None:
+            settings_copy_notice = (f"the record names a copy of settings.json that is not a name the "
+                                    f"installer writes ({named_settings_copy!r}); nothing removed")
+        elif not candidate.is_file():
+            settings_copy_notice = (f"the copy of settings.json the record names ({candidate.name}) is "
+                                    "missing; nothing removed")
+        else:
             try:
-                if candidate.read_bytes() == paths["settings"].read_bytes():
-                    orphan_settings_copy = candidate
+                same = candidate.read_bytes() == paths["settings"].read_bytes()
             except OSError as e:
                 raise ValueError(f"cannot read {candidate} ({e.strerror or e})") from e
+            if same or install._settings_write_pending(record, settings):
+                orphan_settings_copy = candidate
 
     left = []
     setting_changes = []
     if settings is not None:
-        setting_changes, notices, left = undo_settings(settings, template, record, evidence)
+        setting_changes, setting_notices, left = undo_settings(settings, template, record, evidence)
         changes.extend(setting_changes)
+        notices.extend(setting_notices)
     elif record:
         # Absent is not "nothing to undo": the file may be back later (a sync, a restore), so
         # every recorded key stays in the record for that run.
@@ -365,6 +382,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if left:
             notices.append(f"{paths['settings']} is missing; the values recorded for it are kept "
                            "in the record for a later run")
+    if settings_copy_notice is not None:
+        notices.append(settings_copy_notice)
     if not dry_run:
         # A read-only target is refused before the settings backup; refusing it at its own
         # write left one more orphan settings.json.bak-* on every run.
@@ -384,11 +403,11 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             removals.append(paths["log"])
         if restore or orphan_copy:
             removals.append(backup)
-        if orphan_settings_copy is not None:
-            removals.append(orphan_settings_copy)
         elif (current_md is not None and ours and named is None
               and (entry is not None if record is not None else evidence)):
             removals.append(claude_md)             # the delete branches below
+        if orphan_settings_copy is not None:
+            removals.append(orphan_settings_copy)
         for path in removals:
             install._refuse_unwritable_folder(path, through_link=False)
         # The state folder's own tree too: rmtree lists it and its sub-folders and unlinks
@@ -454,8 +473,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         claude_md_left = True
         where = "CLAUDE.md left as is" if current_md is not None else "CLAUDE.md is already gone"
         if backup is None:
-            notices.append(f"{where}: the record names a backup that is not a plain file name "
-                           f"({named!r}); fix the record first")
+            notices.append(f"{where}: the record names a backup that is not a name the installer "
+                           f"writes ({named!r}); fix the record first")
         else:
             notices.append(f"{where}: the backup {backup.name} it should be restored from is missing")
     elif current_md is None:
