@@ -107,4 +107,4 @@ graphify reads a `.graphifyrc` per project (`rcfile.py`). The equivalent for us 
 
 - State: comparison written to `research/graphify-comparison.md` on branch `ccr-18e63515-crkba1`; no code changed. graphify clone at `/home/user/graphify-labs/graphify` (commit 92741d1) is scratch, not in the repo.
 - Decisions: graphify the tool is not adopted (saving scales with repo size, ~1x at our size, per its own docs); its install, drift-test, CI and documentation habits are the candidates, ranked above.
-- Open items: none until the user picks items; item 6 and the graphify-on-a-large-project experiment need measurement before any README claim.
+- Open items: the user asked for the suggestions to be implemented in a new session (brief: `research/graphify-implementation-brief.md`; scope items 1-5 and 7, new branch from main, new PR, Fable 5.1 review loop until clean, then merge). PR #24 stays as the reference and the user closes it at the end. Item 6 and the graphify-on-a-large-project experiment need measurement before any README claim.
