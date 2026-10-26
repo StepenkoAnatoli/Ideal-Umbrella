@@ -9,10 +9,10 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash, path, CamelCase name, proper noun, file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, URL, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash (7 to 128 digits), path, CamelCase name, proper noun (Latin letters with diacritics included), file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
-| `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
+| `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` or `.he.md` rendering exists. `--print-config` prints a ready-to-paste hook entry for this install. |
 | `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
 | `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (98 tokens o200k, header included). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
@@ -48,10 +48,16 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
 
 `--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
-Matching is exact and case-sensitive, on ASCII token boundaries: `5` does not count as present
-because `503` is, a bare number does not count as present inside a time or a grouped number
-(`10` is not in `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still
-counts. Markdown list numbers (`1. `) are not facts and are skipped. Proper nouns are extracted
+Matching is exact and case-sensitive, by extraction: a token of the source is present when the
+rendering's own extraction yields the same token, so `5` does not count as present because `503`
+is, a bare number does not count inside a time or a grouped number (`10` is not in `10:00`, `2`
+is not in `2,500`), a path or name does not count inside a longer one (`notes/a.txt` is not in
+`notes/a.txt.bak`, `Jean-Luc` is not in `Jean-Luc-Picard`), but a Hebrew prefix glued to an
+identifier or a path (`בv2.14.0`, `ב-__tests__/`) still counts, and so does a name the rendering
+moves to the start of a sentence. A date and a time are the same instant written as one token or
+two (`2026-10-25 14:30` passes against `2026-10-25T14:30Z` and the other way round). Markdown
+list numbers (`1. ` to `999. `) are not facts and are skipped; `2024. ` starts with a year.
+Proper nouns are extracted
 when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
 and `Prisma`; so does `- **Stack:** Postgres`). A month or weekday name may appear in its Hebrew
 form (`Monday` as `יום שני`, `October` as `אוקטובר`). Hedges are checked by class, so `could`
@@ -82,13 +88,13 @@ python keyline_lint.py notes/*.txt
   containing a digit (cp1252, sha256, git hashes), and plurals of a one-token word (diffs, slugs)
   pass. Chunks with `/ \ _ . = @ #` and similar characters, any capital letter, or a leading digit
   are treated as identifiers, names or numbers and skipped. Hyphenated words are checked part by part.
-  Measured on 400 markdown files in gittoken (2026-10-18): the old rule flagged 3,774 distinct
+  Measured on a 400-file markdown corpus (2026-10-18): the old rule flagged 3,774 distinct
   words, almost all real (worktree, uncommitted, harmlessly); this rule flags 87, mostly tool names
   and genuine shorthand, and still catches all eight invented test abbreviations.
 - The single-token list (47,450 words) is built once from the o200k vocabulary into
   `cache/o200k_single_token_words.txt`. Lint runs read only that file.
 - Common tool and format names (mcp, npm, npx, pnpm, venv, pwsh, docx, stdout...) are allowed by a
-  built-in list in `keyline_lint.py`. Other real names go in a `keyline-allow.txt`, one per line.
+  built-in list in `keyline_lint.py`. Other real names go in a `keyline-allow.txt`, one per line (several words on one line are each allowed; `#` starts a comment).
   Every such file in the note's folder or a parent folder is read. `--no-allow` ignores those files
   and the built-in list; `--allow FILE` adds one.
 
@@ -116,21 +122,25 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    replace `__PYTHON__` and `__KEYLINE_DIR__` in `hooks-example.json`. Paste the result.
    If the file already has a `"hooks"` key, add the `PostToolUse` entry to it instead.
 2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path
-   (a `notes/` folder outside the project too), and only acts on `.txt`, `.md`, `.keyline` or
-   extension-less files. To watch specific files
+   (a `notes/` folder outside the project too, and a dotfile such as `notes/.gitignore`), and only
+   acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
    absolute pattern matches the absolute path, a relative one the path from the project dir;
-   the suffix rule still applies, so a watched `.py` file is passed over).
+   the suffix rule still applies, so a watched `.py` file is passed over). A `--watch` with no
+   pattern, or any other flag, is an error on every write (exit 1, one line on stderr), not a
+   silent fall-back to the `notes/`/`plans/` rule.
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from.
-3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt`. The hook then checks it whenever
-   either file is written or edited.
+3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt` (or `notes/x.he.md`). The hook
+   then checks it whenever either file is written or edited. Two notes beside one rendering
+   (`x.txt` and `x.md`) are reported as a finding: the hook cannot tell which one it renders.
 4. Optional: add `keyline-allow.txt` at the repo root for project names that split into tokens.
 5. Paste `CLAUDE-snippet.md` into the repo's CLAUDE.md.
 6. Start a new Claude Code session in the repo so it loads the settings.
 
 How it behaves: the matcher is `Write|Edit`. On findings the hook exits 2 and prints them to
-stderr; when the note cannot be read or tiktoken is missing it exits 1 (non-blocking, one line on
+stderr, headed by the file to fix: the note when the lint found something, else the rendering (a
+note write that leaves its rendering stale is fixed in the rendering); when the note cannot be read or tiktoken is missing it exits 1 (non-blocking, one line on
 stderr). For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
 Claude fixes the file. The generated command uses absolute paths, so the repo can be anywhere.
 The hook has been tested by piping simulated PostToolUse events through the generated command. It has not yet run inside a live Claude Code session.
@@ -183,10 +193,20 @@ Two panel claims do not reproduce exactly:
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
-  are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
-  words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,
-  `b07b3b6`, `__init__`, `v2`, `S3`, `1e10` and `0x1f` are. A sign is not part of a number
-  (`-5` is the number `5`), so a rendering that drops it passes.
+  are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`) or longer than
+  128 digits, lowercase words without a digit (`utf`, `prisma`) or a one-letter acronym plural
+  (`Qs`); `PRs`, `sha256`, `b07b3b6`, a sha256 or sha512 digest, `__init__`, `v2`, `S3`, `1e10`,
+  `0x1f` and `https://x.y/z` (scheme included) are. A sign is not part of a number (`-5` is the
+  number `5`), so a rendering that drops it passes.
+- A name is a capitalised word of ASCII letters or Latin letters with diacritics (`Zürich`, `Léa`,
+  `Øyvind`, `São`, `Łukasz`); a name in another script (Greek, Cyrillic, Hebrew) is not extracted.
+- Presence is decided by extraction, so a rendering that joins a token to something else fails
+  closed even when the fact survived: `Postgres` is not found in `Postgres/Prisma` (a path to the
+  extractor), `10` not in `10/` and `API` not in `API.md`. A numbered item of up to three digits
+  is a list marker, so a line that starts with `503. ` loses the number; `2024. ` keeps it.
+  `No. 5` is a number sign, not a negation; `no 5xx errors` (no dot) still counts as one.
+- An allow-file line with several words allows each of them; the rule stays one word per line
+  because a comment after `#` applies to the whole line.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k
   vocabulary is multilingual, so short shorthands that are already one token pass: rb, cfg, err,
   conn, svc, msg, idx and others. Those are allowed by the spec. k8s, mgmt, dflt and similar are
