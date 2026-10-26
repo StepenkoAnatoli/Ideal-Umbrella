@@ -406,3 +406,78 @@ def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, unins
         uninstall_module.uninstall(home)
     assert claude_md.read_text(encoding="utf-8") == TEMPLATE_MD
     assert list((home / ".claude").glob("CLAUDE.md.bak-*"))
+
+
+@pytest.mark.parametrize("name", ["../CLAUDE.md.bak", "sub/CLAUDE.md.bak"])
+def test_backup_name_with_a_separator_in_record_does_not_crash(install_module, uninstall_module, tmp_path, name):
+    # Path.with_name raised ValueError on such a name after settings.json was already rewritten,
+    # and main() then said "nothing written".
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["claude_md"]["backup"] = name
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md deleted" in changes, (changes, notices)
+
+
+def test_uninstall_removes_the_state_folder_and_the_log(install_module, uninstall_module, tmp_path):
+    # The hook's ballast/state/ folder and context_check.log stayed behind, and neither README
+    # nor the docstring named them.
+    home = tmp_path / "home"
+    install_module.install(home)
+    ballast = home / ".claude" / "ballast"
+    (ballast / "state").mkdir()
+    (ballast / "state" / "session-1").write_text("1", encoding="utf-8")
+    (ballast / "context_check.log").write_text("log\n", encoding="utf-8")
+    dry, _ = uninstall_module.uninstall(home, dry_run=True)
+    assert "state folder deleted" in dry and "log deleted" in dry
+    assert (ballast / "state").is_dir() and (ballast / "context_check.log").is_file()
+    changes, _ = uninstall_module.uninstall(home)
+    assert "state folder deleted" in changes and "log deleted" in changes
+    assert not (ballast / "state").exists() and not (ballast / "context_check.log").exists()
+    assert (ballast / "install-record.json").is_file()
+
+
+def test_a_symlinked_state_folder_is_unlinked_not_followed(install_module, uninstall_module, tmp_path):
+    # shutil.rmtree refuses a symlink, so the undo stopped after the hook was deleted and every
+    # rerun failed at the same place.
+    home = tmp_path / "home"
+    install_module.install(home)
+    ballast = home / ".claude" / "ballast"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "session-1").write_text("1", encoding="utf-8")
+    try:
+        (ballast / "state").symlink_to(elsewhere, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    changes, _ = uninstall_module.uninstall(home)
+    assert "state link removed" in changes
+    assert not (ballast / "state").is_symlink()
+    assert (elsewhere / "session-1").is_file()
+    assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is a Windows directory link")
+def test_a_junctioned_state_folder_is_unlinked_not_followed(install_module, uninstall_module, tmp_path):
+    # Path.is_symlink() does not see a junction (the one directory link a Windows user can make
+    # without privileges), while shutil.rmtree refuses it, so the undo stopped on it as it had
+    # on a symlink.
+    home = tmp_path / "home"
+    install_module.install(home)
+    ballast = home / ".claude" / "ballast"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "session-1").write_text("1", encoding="utf-8")
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(ballast / "state"), str(elsewhere)],
+                          capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("cannot create a junction here")
+    changes, _ = uninstall_module.uninstall(home)
+    assert "state link removed" in changes
+    assert not os.path.lexists(ballast / "state")
+    assert (elsewhere / "session-1").is_file()
+    assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")

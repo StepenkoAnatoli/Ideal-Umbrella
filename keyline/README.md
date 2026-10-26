@@ -9,7 +9,7 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash, path, CamelCase name, proper noun, file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant is `INCONCLUSIVE`, not `PASS`. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash, path, CamelCase name, proper noun, file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
 | `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
@@ -129,7 +129,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 6. Start a new Claude Code session in the repo so it loads the settings.
 
 How it behaves: the matcher is `Write|Edit`. On findings the hook exits 2 and prints them to
-stderr. For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
+stderr; when the note cannot be read or tiktoken is missing it exits 1 (non-blocking, one line on
+stderr). For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
 Claude fixes the file. The generated command uses absolute paths, so the repo can be anywhere.
 The hook has been tested by piping simulated PostToolUse events through the generated command. It has not yet run inside a live Claude Code session.
 
@@ -157,7 +158,7 @@ Two panel claims do not reproduce exactly:
 - The panel says prose to Keyline passes in both directions. Keyline to prose passes, but prose
   to Keyline fails on `API`: the prose says "Checkout API" and the note lowercased it to
   `checkout-api`. The checker is right that the token changed.
-- The Keyline notes example passes the lint only with `pnpm` in `tests/keyline-allow.txt`.
+- The Keyline notes example passes the lint only because `pnpm` is on the built-in allow list (`--no-allow` fails it on `pnpm`).
 
 ## Honest limits
 

@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -15,6 +16,18 @@ def load_module(name, relative_path):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def umask_022():
+    """Pin the umask for a file-mode test: with the host's own umask the expected mode is
+    computed from the same value the code under test reads, and under umask 077 a temp
+    file's 0600 already equals it, so the test passes without the fix."""
+    old = os.umask(0o022)
+    try:
+        yield 0o022
+    finally:
+        os.umask(old)
 
 
 @pytest.fixture

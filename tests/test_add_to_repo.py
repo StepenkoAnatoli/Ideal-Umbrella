@@ -156,11 +156,47 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
-def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_path):
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_path, umask_022):
+    # The umask is pinned: under 077 a plain write's mode is the temp file's 0600 too, and
+    # the test held without the fix.
     repo = tmp_path / "repo"
     repo.mkdir()
     add_to_repo._add(str(repo), force=False)
-    expected = 0o666 & ~add_to_repo._umask()
     for name in ("settings.json", os.path.join("hooks", "context_check.py")):
         path = repo / ".claude" / name
-        assert path.stat().st_mode & 0o777 == expected, name
+        assert path.stat().st_mode & 0o777 == 0o644, name
+
+
+def test_writing_a_new_file_never_touches_the_process_umask(add_to_repo, tmp_path, monkeypatch):
+    # The mode came from reading the umask, which os.umask can only do by setting it: files
+    # another thread created in that window were made 0666.
+    monkeypatch.setattr(os, "umask", lambda *a: pytest.fail("os.umask was called"))
+    add_to_repo._write_bytes(str(tmp_path / "new.txt"), b"x\n")
+    assert (tmp_path / "new.txt").read_bytes() == b"x\n"
+
+
+def test_hooks_folder_in_the_way_leaves_settings_unwritten(tmp_path):
+    # settings.json was written before the hook was copied, so a `.claude/hooks` that is a file
+    # left a hook entry pointing at a hook that was never written.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "hooks").write_text("in the way", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monkeypatch, capsys):
+    # install.py and uninstall.py list the files written before an error; add_to_repo.py did not.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def boom(path, data):
+        raise OSError(28, "simulated disk full", str(path))
+
+    monkeypatch.setattr(add_to_repo, "_write_json", boom)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "Done before the error" in err and "context_check.py written" in err, err
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()

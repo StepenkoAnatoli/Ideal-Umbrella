@@ -420,33 +420,23 @@ def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
-def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path):
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path, umask_022):
     """A file written for the first time gets the mode a plain write would give it (0644 under
-    umask 022), not the private 0600 of the temp file it was written through."""
+    umask 022), not the private 0600 of the temp file it was written through. The umask is
+    pinned: under 077 the two modes are the same and the test held without the fix."""
     home = tmp_path / "home"
     install_module.install(home)
-    expected = 0o666 & ~install_module._umask()
     for name in ("settings.json", "CLAUDE.md", os.path.join("ballast", "context_check.py")):
         path = home / ".claude" / name
-        assert path.stat().st_mode & 0o777 == expected, name
+        assert path.stat().st_mode & 0o777 == 0o644, name
 
 
-def test_write_bytes_removes_the_temp_file_even_when_the_target_is_read_only(install_module, tmp_path, monkeypatch):
-    # With a read-only target the temp file got the read-only mode too; on Windows the failing
-    # rename then left it behind, since os.remove cannot delete a read-only file.
-    target = tmp_path / "CLAUDE.md"
-    target.write_text("old\n", encoding="utf-8")
-    target.chmod(0o444)
-    try:
-        def boom(src, dst):
-            raise PermissionError(13, "simulated rename failure", dst)
-        monkeypatch.setattr(install_module.os, "replace", boom)
-        with pytest.raises(PermissionError, match="simulated|read-only"):
-            install_module._write_bytes(target, b"new\n")
-        assert target.read_text(encoding="utf-8") == "old\n"
-        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
-    finally:
-        target.chmod(0o644)
+def test_writing_a_new_file_never_touches_the_process_umask(install_module, tmp_path, monkeypatch):
+    # The mode came from reading the umask, which os.umask can only do by setting it: files
+    # another thread created in that window were made 0666.
+    monkeypatch.setattr(os, "umask", lambda *a: pytest.fail("os.umask was called"))
+    install_module._write_bytes(tmp_path / "new.txt", b"x\n")
+    assert (tmp_path / "new.txt").read_bytes() == b"x\n"
 
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
@@ -476,3 +466,64 @@ def test_verify_accepts_a_hook_interpreter_written_with_tilde_or_a_variable(inst
     exe.write_text("", encoding="utf-8")
     for form in ("~/venv/bin/python", "$HOME/venv/bin/python"):
         assert install_module._runnable(form), form
+
+
+@pytest.mark.parametrize("value", [None, 5, "x"])
+def test_verify_reports_a_user_prompt_submit_that_is_not_a_list(install_module, tmp_path, value):
+    # `--verify-only` on a settings.json with "UserPromptSubmit": null was a TypeError.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["hooks"]["UserPromptSubmit"] = value
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok
+    assert any("UserPromptSubmit is not a list" in issue for issue in issues), issues
+
+
+def test_shell_risk_names_what_bash_changes_in_a_double_quoted_windows_path(install_module):
+    # On Windows the hook path is double-quoted; bash expands $name, `cmd` and \\ inside it.
+    assert install_module.shell_risk(r"C:\Users\me\.claude\ballast\context_check.py", windows=True) is None
+    for path in (r"C:\Users\$me\x.py", r"C:\Users\`me`\x.py", r"\\server\share\x.py"):
+        assert install_module.shell_risk(path, windows=True), path
+    assert install_module.shell_risk("/home/$me/x.py", windows=False) is None
+
+
+def test_claude_config_dir_is_honoured_when_home_is_not_given(install_module, tmp_path, monkeypatch):
+    # Claude Code reads CLAUDE_CONFIG_DIR instead of ~/.claude when it is set; the installer
+    # always wrote to ~/.claude.
+    config = tmp_path / "cfg"
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    assert install_module.main([]) == 0
+    assert (config / "settings.json").is_file()
+    assert (config / "ballast" / "context_check.py").is_file()
+    assert str(config / "ballast") in json.loads((config / "settings.json").read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert not (home / ".claude").exists()
+    assert install_module.main(["--verify-only"]) == 0
+    # An explicit --home wins over the variable.
+    assert install_module.main(["--home", str(tmp_path / "other")]) == 0
+    assert (tmp_path / "other" / ".claude" / "settings.json").is_file()
+
+
+def test_write_bytes_removes_the_temp_file_when_the_rename_fails(install_module, tmp_path, monkeypatch):
+    # With a read-only target the temp file got the read-only mode too; on Windows the failing
+    # rename then left it behind, since os.remove cannot delete a read-only file. The refusal of
+    # a read-only target happens first, so the access check is bypassed here to reach the rename.
+    target = tmp_path / "CLAUDE.md"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        def boom(src, dst):
+            raise PermissionError(13, "simulated rename failure", dst)
+        monkeypatch.setattr(install_module.os, "access", lambda *a, **k: True)
+        monkeypatch.setattr(install_module.os, "replace", boom)
+        with pytest.raises(PermissionError, match="simulated"):
+            install_module._write_bytes(target, b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
+    finally:
+        target.chmod(0o644)

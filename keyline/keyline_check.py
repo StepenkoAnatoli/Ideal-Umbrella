@@ -5,8 +5,8 @@ CamelCase name, proper noun, file name, snake_case token, git hash and lowercase
 digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
 Hebrew, JSON, markdown...). A month or weekday name may appear in its Hebrew form. Also fails if
 the rendering drops a hedge class (could/may, likely, should, can; English or Hebrew words) or
-has fewer negation words than the source. A source with no extractable invariant is
-INCONCLUSIVE, never PASS.
+has fewer negation words than the source. A source with no extractable invariant and no hedge
+is INCONCLUSIVE, never PASS.
 
 Usage:
   python keyline_check.py SOURCE RENDERING [RENDERING ...]
@@ -21,20 +21,32 @@ from dataclasses import dataclass
 # ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5".
 L = r"(?<![A-Za-z0-9_])"
 R = r"(?![A-Za-z0-9_]|\.\d)"
-# For a number looked up in a rendering: "10" is not present in "10:00", nor "2" in "2,500".
-L_NUMBER = r"(?<![A-Za-z0-9_])(?<!\d[.,:])"
-R_NUMBER = r"(?![A-Za-z0-9_]|[.,:]\d)"
+# A number is looked up by extraction, not by a boundary: "10" is present when the rendering's
+# own invariants hold "10" as a token, so it is not found inside "10:00", "2,500", "10%",
+# "10/25" or the date "2026-10-25" (each one token to the extractor), while both ends of the
+# range "5-10", the year range "2020-2024" and "10" in "ב-10" are (each a token of its own).
+# Whatever the extractor takes from a source line it takes from the same line in a rendering,
+# so a rendering holding the source verbatim always passes. A number glued to a path
+# separator ("10/", "/10", "10\\") is a path, as "notes/" is: the source's "10" is not in it.
+# For a time: "00:30" is not present at the end of "10:00:30".
+L_TIME = L + r"(?<!\d:)"
 
 
+# The path and file alternatives look ahead for a "/" or "." through the dash-joined words that
+# follow; the bound on that look-ahead (200 characters) keeps a long run ("ab-cd-ab-cd-...")
+# from costing a rescan of the whole rest of the run from every word in it. A path component or
+# file name longer than that is not extracted as one token. A time does not start after "N:",
+# so "3:1:30" is the numbers 3, 1 and 30, not the time "1:30" (which the lookup, bounded the
+# same way, would never find).
 INVARIANT = re.compile(
     L
     + r"""(?:
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
-    | (?P<time>\d{1,2}:\d{2}(?::\d{2})?Z?)
+    | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2})?Z?)
     | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
-    | (?P<path>(?:[A-Za-z]:)?[\w.~-]*[/\\][\w.~/\\-]*)
-    | (?P<file>[\w-]{2,}(?:\.[A-Za-z][A-Za-z0-9]*)+)
+    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{0,200}[/\\][\w.~/\\-]*)
+    | (?P<file>[\w-]{2,200}(?:\.[A-Za-z][A-Za-z0-9]*)+)
     | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*s?)
     | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
     | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
@@ -64,7 +76,8 @@ PROPER_STOP = {
 }
 
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
-LIST_MARKER = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+", re.M)
+# The marker's item follows on the same line: "10." alone on a line is the number 10, not a marker.
+LIST_MARKER = re.compile(r"^[ \t]*(?:\d+[.)]|[-*+])[ \t]+", re.M)
 
 # A month or weekday name is an invariant like any proper noun, and a Hebrew rendering may write
 # it in Hebrew: either the English token or one of these forms counts as present.
@@ -204,18 +217,25 @@ def hedges(text):
     return found
 
 
-def present(tok, kind, text):
+def present(tok, kind, text, tokens=None):
+    """Whether the source token tok of kind is in the rendering text. tokens is
+    invariants(text) when the caller already has it."""
+    if kind == "number":
+        return tok in (invariants(text) if tokens is None else tokens)
     tail = r"Z?" if kind == "time" else ""
     body = re.escape(tok)
     if kind == "datetime":
         # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
         body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
-    left, right = (L_NUMBER, R_NUMBER) if kind == "number" else (L, R)
+    left, right = (L_TIME if kind == "time" else L), R
     forms = [left + body + tail + right]
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
-    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day.
-    forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-              for form in CALENDAR.get(tok.lower(), ())]
+    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
+    # a capitalised name is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
+    # שבת ("MAY" is the one all-caps month, see hedges()).
+    if kind == "proper" or tok == "MAY":
+        forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+                  for form in CALENDAR.get(tok.lower(), ())]
     return re.search("(?:" + "|".join(forms) + ")", text) is not None
 
 
@@ -237,7 +257,8 @@ class CheckResult:
 def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
     inv = invariants(source)
-    missing = [t for t, k in inv.items() if not present(t, k, rendering)]
+    rendered = invariants(rendering)
+    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered)]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)

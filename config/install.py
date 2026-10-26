@@ -28,7 +28,6 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -46,15 +45,31 @@ REQUIRED_TOOLS = (
 )
 
 
-def layout(home):
-    claude = Path(home) / ".claude"
+def layout(home, config_dir=None):
+    """The files under <home>/.claude, or under config_dir when Claude Code reads its files
+    from there (CLAUDE_CONFIG_DIR) instead of ~/.claude."""
+    claude = Path(config_dir) if config_dir else Path(home) / ".claude"
     return {
         "claude": claude,
         "settings": claude / "settings.json",
         "claude_md": claude / "CLAUDE.md",
         "hook": claude / "ballast" / "context_check.py",
         "record": claude / "ballast" / "install-record.json",
+        "state": claude / "ballast" / "state",
+        "log": claude / "ballast" / "context_check.log",
     }
+
+
+def target(home_arg):
+    """(home, config_dir) for a --home argument. An explicit --home installs under
+    <home>/.claude; without it, CLAUDE_CONFIG_DIR (the folder Claude Code reads instead of
+    ~/.claude when it is set) is the target, else the current home."""
+    if home_arg:
+        # A relative or literal "~" home would put a relative path in the hook command, which
+        # Claude Code runs from the project folder.
+        return Path(home_arg).expanduser().resolve(), None
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path.home().resolve(), (Path(config).expanduser().resolve() if config else None)
 
 
 def quote(value):
@@ -66,10 +81,22 @@ def quote(value):
     return shlex.quote(str(value))
 
 
-def hook_command(home):
+def shell_risk(value, windows=None):
+    """What bash would change inside the double quotes a Windows hook command uses around a
+    path: $name and `cmd` expand, and \\ becomes one backslash (a UNC path). Returns the
+    characters found, or None; a POSIX path is single-quoted by shlex and safe as it is."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return None
+    found = [c for c in ("$", "`", "\\\\") if c in str(value)]
+    return found or None
+
+
+def hook_command(home, config_dir=None):
     # "|| exit 0": if this settings.json is synced to a machine without the hook file or this
     # interpreter, the shell's failure (exit 2 or 127) must not block every prompt there.
-    return f"{quote(sys.executable)} -I {quote(layout(home)['hook'])} || exit 0"
+    return f"{quote(sys.executable)} -I {quote(layout(home, config_dir)['hook'])} || exit 0"
 
 
 def _hook_entries(entry):
@@ -90,7 +117,8 @@ def _template_hook(entries):
     return None
 
 
-def merge_settings(existing, template, home, force=False, record=None, previous=None):
+def merge_settings(existing, template, home, force=False, record=None, previous=None,
+                   config_dir=None):
     """Merge template into existing; return (changes, notices).
 
     When record is a dict, it is filled with what was added or replaced so it can be undone.
@@ -163,7 +191,7 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
             if replacement is None:
                 continue
             replacement = dict(replacement)
-            replacement["command"] = hook_command(home)
+            replacement["command"] = hook_command(home, config_dir)
             ours = [entry for entry in current if _is_ours(entry)]
             if not ours:
                 new_entry = {"hooks": [replacement]}
@@ -212,11 +240,29 @@ def _backup(path):
     return backup
 
 
-def _umask():
-    """The process umask; os.umask can only read it by setting it."""
-    value = os.umask(0)
-    os.umask(value)
-    return value
+def _new_temp(directory, prefix):
+    """Create a new file in directory with the mode a plain write gives (0666 less the umask,
+    applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
+    read: reading it means setting it, which leaves a window where another thread's files are
+    created unmasked."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        tmp = os.path.join(directory, prefix + os.urandom(4).hex())
+        try:
+            return os.open(tmp, flags, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
+
+
+def _is_link(path):
+    """A symlink, or on Windows a junction: Path.is_symlink() does not see a junction, while
+    shutil.rmtree refuses one and a write through a dangling one fails like a dangling symlink."""
+    if Path(path).is_symlink():
+        return True
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+, Windows only
+    return bool(isjunction and isjunction(path))
 
 
 def _write_bytes(path, data):
@@ -224,19 +270,18 @@ def _write_bytes(path, data):
     A write that fails part way (disk full, a killed process) leaves the old file as it was
     instead of a truncated one. Writes through a symlink (dotfiles, stow, home-manager)
     instead of replacing the link, and keeps the file's mode; a new file gets the mode a
-    plain write would give it. A read-only target is refused, as a plain write refuses it."""
+    plain write would give it. A read-only target is refused, as a plain write refuses it.
+    A hard-linked target becomes a new file: the other links keep the old content."""
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not os.access(path, os.W_OK):
         raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    fd, tmp = _new_temp(path.parent, f".{path.name}-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         if path.exists():
             os.chmod(tmp, path.stat().st_mode & 0o7777)
-        else:
-            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -323,11 +368,11 @@ def _merge_record(old, new):
     return merged
 
 
-def install(home, force=False, progress=None):
-    """Install into home; return (changes, notices). Every file-level change is also appended
-    to `progress` (when given) as it happens, so a later OSError can still name the backups
-    and files written before it."""
-    paths = layout(home)
+def install(home, force=False, progress=None, config_dir=None):
+    """Install into home (or config_dir, see layout); return (changes, notices). Every
+    file-level change is also appended to `progress` (when given) as it happens, so a later
+    OSError can still name the backups and files written before it."""
+    paths = layout(home, config_dir)
     changes, notices = [], []
     if progress is None:
         progress = []
@@ -337,7 +382,7 @@ def install(home, force=False, progress=None):
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
     for name in ("settings", "claude_md", "hook", "record"):
-        if paths[name].is_symlink() and not paths[name].exists():
+        if _is_link(paths[name]) and not paths[name].exists():
             raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
@@ -349,7 +394,7 @@ def install(home, force=False, progress=None):
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
-                                                      old_record.get("installed"))
+                                                      old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
 
     if current_hook != hook_bytes:
@@ -420,11 +465,11 @@ def _runnable(exe):
     return shutil.which(exe) is not None
 
 
-def verify(home):
+def verify(home, config_dir=None):
     """Return (ok, issues, warnings). Warnings do not fail verification. The hook command
     embeds the interpreter that ran install.py; a deleted venv or a pyenv bump leaves a
     command that "|| exit 0" silences, so the interpreter is checked too."""
-    paths = layout(home)
+    paths = layout(home, config_dir)
     issues, warnings = [], []
 
     if not paths["settings"].exists():
@@ -461,6 +506,9 @@ def verify(home):
             hooks = []
         else:
             hooks = hooks_obj.get("UserPromptSubmit", [])
+            if not isinstance(hooks, list):
+                issues.append(f"hooks.UserPromptSubmit is not a list: {hooks!r}")
+                hooks = []
         found = False
         for entry in hooks:
             for hook in _hook_entries(entry):
@@ -479,6 +527,11 @@ def verify(home):
                                       "to point the hook at the current Python")
         if not found:
             issues.append("Ideal-Umbrella hook not found in UserPromptSubmit")
+        risk = shell_risk(paths["hook"])
+        if risk:
+            warnings.append(f"the hook path holds {' and '.join(risk)}, which bash changes inside the "
+                            "double quotes of the hook command; if the hook does not run, install "
+                            "from a home path without them")
 
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
@@ -495,22 +548,21 @@ def verify(home):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.strip())
-    parser.add_argument("--home", default=str(Path.home()), help="home folder to install into (default: current home)")
+    parser.add_argument("--home", default=None, help="home folder to install into (default: current home, "
+                                                     "or CLAUDE_CONFIG_DIR when it is set)")
     parser.add_argument("--force", action="store_true", help="replace differing scalar settings")
     parser.add_argument("--verify-only", action="store_true", help="check the installation without writing")
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    # A relative or literal "~" home would put a relative path in the hook command, which
-    # Claude Code runs from the project folder.
-    home = Path(args.home).expanduser().resolve()
+    home, config_dir = target(args.home)
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")
         progress = []
         try:
-            changes, notices = install(home, force=args.force, progress=progress)
+            changes, notices = install(home, force=args.force, progress=progress, config_dir=config_dir)
         except ValueError as e:
             print(f"Error: {e}; nothing written", file=sys.stderr)
             return 1
@@ -535,7 +587,7 @@ def main(argv=None):
         print("Verifying installation...")
 
     try:
-        ok, issues, warnings = verify(home)
+        ok, issues, warnings = verify(home, config_dir)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1

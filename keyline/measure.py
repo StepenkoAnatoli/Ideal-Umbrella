@@ -58,6 +58,9 @@ def main(argv):
             except UnicodeDecodeError:
                 print(f"skip (not UTF-8 text): {p}", file=sys.stderr)
                 continue
+            except OSError as e:
+                print(f"skip (cannot read: {e.strerror or e}): {p}", file=sys.stderr)
+                continue
             rows.append((p, len(text), *count(text, encs)))
     print(f"{'o200k':>7} {'cl100k':>7} {'chars':>7}  file")
     for p, chars, o, c in rows:

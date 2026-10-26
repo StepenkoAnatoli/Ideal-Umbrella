@@ -32,10 +32,18 @@ STATE_MAX_AGE = 30 * 24 * 3600   # state files of sessions older than this are r
 LOG_MAX_BYTES = 1024 * 1024      # the log keeps about its last half when it passes this
 
 
+def config_dir():
+    """Where Claude Code keeps its files: CLAUDE_CONFIG_DIR when set, else ~/.claude. The
+    variable is read as config/install.py reads it (~ expanded, made absolute), so the hook
+    and the installer agree on the folder."""
+    value = os.environ.get("CLAUDE_CONFIG_DIR")
+    if value:
+        return os.path.realpath(os.path.expanduser(value))
+    return os.path.join(os.path.expanduser("~"), ".claude")
+
+
 def state_dir():
-    return os.environ.get("IDEAL_UMBRELLA_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".claude", "ballast", "state"
-    )
+    return os.environ.get("IDEAL_UMBRELLA_STATE_DIR") or os.path.join(config_dir(), "ballast", "state")
 
 
 def log_path():

@@ -117,12 +117,18 @@ def main(argv=None):
 
         try:
             text = path.read_text(encoding="utf-8-sig")
-            o200k, cl100k = count_tiktoken(text)
         except (OSError, UnicodeDecodeError) as e:
             print(f"Error reading {path}: {e}", file=sys.stderr)
             continue
+        try:
+            o200k, cl100k = count_tiktoken(text)
         except ImportError as e:
             print(f"Error: {e}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            # tiktoken itself failed (its encoding download, most often): the same for every
+            # file, so say it once and stop.
+            print(f"Error: tiktoken failed on {path.name}: {e}", file=sys.stderr)
             return 1
 
         try:
@@ -149,7 +155,9 @@ def main(argv=None):
         print(f"                tiktoken cl100k_base is ~{avg_c:.0%} of Claude tokens")
         print(f"\nSo multiply o200k counts by ~{1/avg_o:.2f} to estimate Claude tokens.")
         print(f"   Multiply cl100k counts by ~{1/avg_c:.2f} to estimate Claude tokens.")
-    return 0
+        return 0
+    print("Error: no file was counted by the API; see the errors above", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

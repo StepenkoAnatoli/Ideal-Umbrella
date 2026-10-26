@@ -185,3 +185,22 @@ def test_compaction_above_threshold_starts_the_bands_again(tmp_path):
     assert after.returncode == 0, after.stderr
     assert "context about 160k tokens" in json.loads(after.stdout)["systemMessage"]
     assert run_hook(tmp_path, event(path)).stdout.strip() == ""
+
+
+def test_state_dir_follows_claude_config_dir(context_check, monkeypatch, tmp_path):
+    # Claude Code keeps its files in CLAUDE_CONFIG_DIR when it is set; the hook used ~/.claude.
+    # The value is read as install.py reads it (~ expanded, made absolute), so a quoted
+    # "~/cfg" does not put the state under a folder named "~" in every project.
+    monkeypatch.delenv("IDEAL_UMBRELLA_STATE_DIR", raising=False)
+    monkeypatch.delenv("IDEAL_UMBRELLA_LOG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~/cfg")
+    cfg = os.path.realpath(os.path.join(str(tmp_path), "cfg"))
+    assert context_check.state_dir() == os.path.join(cfg, "ballast", "state")
+    assert context_check.log_path() == os.path.join(cfg, "ballast", "context_check.log")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "rel")
+    monkeypatch.chdir(tmp_path)
+    assert context_check.state_dir() == os.path.join(os.path.realpath(str(tmp_path)), "rel", "ballast", "state")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert context_check.state_dir().endswith(os.path.join(".claude", "ballast", "state"))

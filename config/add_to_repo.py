@@ -17,7 +17,6 @@ import errno
 import json
 import os
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "repo-settings.json")
@@ -122,11 +121,28 @@ def _read_json(path):
     return data
 
 
-def _umask():
-    """The process umask; os.umask can only read it by setting it."""
-    value = os.umask(0)
-    os.umask(value)
-    return value
+def _new_temp(directory, prefix):
+    """Create a new file in directory with the mode a plain write gives (0666 less the umask,
+    applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
+    read: reading it means setting it, which leaves a window where another thread's files are
+    created unmasked."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        tmp = os.path.join(directory, prefix + os.urandom(4).hex())
+        try:
+            return os.open(tmp, flags, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
+
+
+def _is_link(path):
+    """A symlink, or on Windows a junction (os.path.islink does not see a junction)."""
+    if os.path.islink(path):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+, Windows only
+    return bool(isjunction and isjunction(path))
 
 
 def _write_bytes(path, data):
@@ -137,14 +153,12 @@ def _write_bytes(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
-    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
+    fd, tmp = _new_temp(os.path.dirname(path), f".{os.path.basename(path)}-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         if os.path.exists(path):
             os.chmod(tmp, os.stat(path).st_mode & 0o7777)
-        else:
-            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -167,15 +181,21 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
+    progress = []
     try:
-        changes, notices = _add(argv[0], force)
+        changes, notices = _add(argv[0], force, progress=progress)
     except ValueError as e:
         # Raised while reading or merging, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
         return 1
     except OSError as e:
-        # e.g. <repo>/.claude is a regular file, or the folder is read-only.
+        # e.g. <repo>/.claude is a regular file, or the folder is read-only. Every file is
+        # written whole or not at all; name what was done before the error.
         print(f"Error: {e}", file=sys.stderr)
+        if progress:
+            print("Done before the error:", file=sys.stderr)
+            for line in progress:
+                print(f"  - {line}", file=sys.stderr)
         return 1
     print("\n".join(changes) or "already up to date")
     for notice in notices:
@@ -185,14 +205,18 @@ def main(argv=None):
     return 0
 
 
-def _add(repo, force):
+def _add(repo, force, progress=None):
     """Merge the template into <repo>/.claude/settings.json and copy the hook; return
-    (changes, notices)."""
+    (changes, notices). Each file written is appended to `progress` (when given) as it is
+    done. The hook is copied before settings.json is written: a hook entry that points at a
+    hook file that was never copied would exit 2 on every prompt."""
+    if progress is None:
+        progress = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     for p in (path, target):
-        if os.path.islink(p) and not os.path.exists(p):
+        if _is_link(p) and not os.path.exists(p):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
@@ -201,17 +225,20 @@ def _add(repo, force):
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None
 
-    if changes:
-        _write_json(path, settings)
-
     old = b""
     if os.path.exists(target):
         with open(target, "rb") as f:
             old = f.read()
     with open(SCRIPT, "rb") as f:
         source = f.read()
-    if source != old:
+    hook_changed = source != old
+    if hook_changed:
         _write_bytes(target, source)
+        progress.append(".claude/hooks/context_check.py written")
+    if changes:
+        _write_json(path, settings)
+        progress.append(".claude/settings.json written")
+    if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
     return changes, notices
 
