@@ -148,8 +148,13 @@ def main():
     root = os.environ.get("CLAUDE_PROJECT_DIR") or cwd
     if not path.is_absolute():
         path = Path(cwd) / path
-    if not path.is_file() or not watched(path, root, patterns):
-        return 0
+    try:
+        if not path.is_file() or not watched(path, root, patterns):
+            return 0
+    except OSError as e:
+        # A file in a folder that cannot be searched: the stat itself fails.
+        print(f"keyline hook: cannot read {path}: {e.strerror or e}", file=sys.stderr)
+        return 1                                   # non-blocking error
     is_rendering = path.name.lower().endswith(HE)
     is_note = not is_rendering and path.suffix.lower() in NOTE_SUFFIXES
     if is_note:

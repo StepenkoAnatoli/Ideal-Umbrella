@@ -537,3 +537,42 @@ def test_a_second_uninstall_run_still_keeps_the_users_empty_container(install_mo
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
     uninstall_module.uninstall(home)
     assert read_settings(home) == {"hooks": {}}
+
+
+def test_reinstall_after_a_clean_uninstall_still_knows_what_it_created(install_module, uninstall_module, tmp_path):
+    # A clean uninstall leaves the marker record {"uninstalled": true}; a re-install over it
+    # must record the containers it creates, or the next uninstall deletes the user's own.
+    home = tmp_path / "home"
+    seed(home, {"hooks": {}})
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}}
+    install_module.install(home)
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert "permissions" in record["created"] and "hooks" not in record["created"]
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}}
+
+
+def test_a_container_the_user_adds_between_uninstall_and_reinstall_is_kept(install_module, uninstall_module, tmp_path):
+    # The leftover record carries "created"; a re-install must not union a container the
+    # first uninstall already deleted and the user then made by hand.
+    home = tmp_path / "home"
+    seed(home, {"hooks": {}})
+    install_module.install(home)
+    settings = read_settings(home)
+    installed_value = settings["autoCompactWindow"]
+    settings["autoCompactWindow"] = 1
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}, "autoCompactWindow": 1}
+
+    settings = read_settings(home)
+    settings["permissions"] = {}
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = installed_value
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}, "permissions": {}}

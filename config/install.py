@@ -367,14 +367,22 @@ def _merge_record(old, new):
     added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
     deny = list(old.get("deny_added", []))
     deny += [t for t in new.get("deny_added", []) if t not in deny]
-    created = list(old.get("created", []))
-    created += [c for c in new.get("created", []) if c not in created]
+    if old.get("uninstalled"):
+        # After an uninstall only the containers this install sees are ours to delete; the
+        # leftover list may name one the uninstall deleted and the user then made by hand.
+        created = list(new.get("created", []))
+    else:
+        created = list(old.get("created", []))
+        created += [c for c in new.get("created", []) if c not in created]
     installed = dict(old_installed) if isinstance(old_installed, dict) else {}
     installed.update(new.get("installed", {}))
     merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed}
-    if "created" in old or not old:
+    install_data = ("added_keys", "replaced", "deny_added", "installed")
+    if "created" in old or not any(k in old for k in install_data):
         # A record from before "created" was written says nothing about who made the containers;
-        # an empty list would say "the install made none", and the uninstall would keep them.
+        # an empty list would say "the install made none", and the uninstall would keep them. A
+        # marker record from a clean uninstall ({"uninstalled": true}) holds no install data, so
+        # this install's list is written.
         merged["created"] = created
     if "claude_md" in new:
         merged["claude_md"] = new["claude_md"]

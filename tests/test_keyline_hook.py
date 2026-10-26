@@ -98,3 +98,24 @@ def test_watch_patterns_do_not_lift_the_suffix_rule(keyline_hook, tmp_path, monk
     assert capsys.readouterr().err == ""
     doc = keyline_hook.__doc__ + (ROOT / "keyline" / "README.md").read_text(encoding="utf-8")
     assert doc.count("suffix rule still applies") == 2
+
+
+def test_a_file_that_cannot_be_stated_is_one_line_not_a_traceback(keyline_hook, tmp_path, monkeypatch, capsys):
+    # path.is_file() on a file in a folder that cannot be searched raises PermissionError;
+    # it was outside every handler in main().
+    from pathlib import Path
+    note = tmp_path / "notes" / "todo.md"
+    note.parent.mkdir()
+    note.write_text("# My todo\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    real_is_file = Path.is_file
+
+    def is_file(self, *a, **k):
+        if self == note:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_file(self, *a, **k)
+    monkeypatch.setattr(Path, "is_file", is_file)
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(note)}}
+    assert run_main(keyline_hook, monkeypatch, event) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "cannot read" in err and "todo.md" in err

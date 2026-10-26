@@ -52,6 +52,10 @@ def main(argv):
         except FileNotFoundError:
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
+        except OSError as e:
+            # The argument itself cannot be stat'ed (a file in a folder that cannot be searched).
+            print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
+            return 2
         for p in paths:
             try:
                 # A named pipe or socket in a walked folder would block the read; a symlink to
