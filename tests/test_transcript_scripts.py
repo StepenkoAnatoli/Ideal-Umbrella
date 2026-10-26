@@ -83,3 +83,23 @@ def test_a_missing_transcript_is_one_line_not_a_traceback(script, tmp_path):
     assert result.returncode == 1
     assert "Traceback" not in result.stderr, result.stderr
     assert "error:" in result.stderr and "missing.jsonl" in result.stderr
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_wrong_typed_fields_do_not_crash_and_a_bom_is_read(script, tmp_path):
+    # Siblings of usage_breakdown's field types: a null role, a null text or thinking, a list
+    # for a tool id each raised in toolresult_share.py; a BOM dropped the first line in all three.
+    import json
+    odd = tmp_path / "odd.jsonl"
+    lines = [
+        {"message": {"role": "user", "content": "please list the files"}},
+        {"message": {"role": None, "content": [{"type": "text", "text": None}, {"type": "thinking", "thinking": None}]}},
+        {"message": {"role": "assistant", "content": [{"type": "tool_use", "id": ["t1"], "name": None, "input": {}}]}},
+        {"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": ["t1"], "content": "a.py\n"}]}},
+        {"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t9", "content": {"k": None}}]}},
+    ]
+    odd.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8-sig")
+    result = run(script, str(odd))
+    assert "Traceback" not in result.stderr, result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "please list" in result.stdout or "typed by user" in result.stdout or "user_text" in result.stdout

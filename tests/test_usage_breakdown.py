@@ -133,3 +133,45 @@ def test_a_folder_named_like_a_transcript_is_skipped(usage_breakdown, tmp_path, 
     }])
     assert usage_breakdown.main([str(tmp_path)]) == 0
     assert "1 transcripts" in capsys.readouterr().out
+
+
+def test_an_unreadable_transcript_is_one_line(usage_breakdown, tmp_path, capsys, monkeypatch):
+    # The transcript was opened outside any try, so a file unreadable between the glob and
+    # the read was a traceback; the other transcript scripts open in a try with one line.
+    import builtins
+    good = write_jsonl(tmp_path / "good.jsonl", [{
+        "type": "assistant",
+        "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": []},
+    }])
+    locked = write_jsonl(tmp_path / "locked.jsonl", [])
+    real_open = builtins.open
+
+    def failing_open(file, *args, **kwargs):
+        if str(file) == str(locked):
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", failing_open)
+    totals, _, turns = usage_breakdown.summarize([locked, good])
+    err = capsys.readouterr().err
+    assert turns == 1 and totals["input_tokens"] == 10
+    assert err.count("\n") == 1 and "locked.jsonl" in err and "Permission denied" in err
+
+
+def test_wrong_typed_usage_fields_are_skipped_and_a_bom_is_read(usage_breakdown, tmp_path):
+    # `usage` that is a list, `message.id` that is a list and `"text": null` each raised; a
+    # BOM made the first line unparseable, so it was dropped in silence.
+    path = tmp_path / "transcript.jsonl"
+    lines = [
+        {"type": "assistant", "message": {"id": "m0", "usage": {"input_tokens": 10}, "content": []}},
+        {"type": "assistant", "message": {"id": "m1", "usage": [1], "content": []}},
+        {"type": "assistant", "message": {"id": "m2", "usage": "x", "content": []}},
+        {"type": "assistant", "message": {"id": ["m3"], "usage": {"input_tokens": 1}, "content": []}},
+        {"type": "assistant", "message": {"id": "m4", "usage": {"input_tokens": 1}, "content": [
+            {"type": "text", "text": None}, {"type": "thinking", "thinking": 5},
+            {"type": "text", "text": "ok"}]}},
+        {"type": "assistant", "message": {"id": "m5", "usage": {"input_tokens": 1}, "content": "text"}},
+    ]
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8-sig")
+    totals, chars, turns = usage_breakdown.summarize([path])
+    assert turns == 3 and totals["input_tokens"] == 12
+    assert chars["visible text"] == 2

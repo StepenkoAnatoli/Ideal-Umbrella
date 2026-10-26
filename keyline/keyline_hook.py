@@ -5,17 +5,20 @@ Usage:
   python keyline_hook.py --print-config   print a ready-to-paste hook entry for this install
 
 Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extension-less files
-inside a notes/ or plans/ folder of the project (a file outside the project is ignored), or, when one or more --watch PATTERN arguments
+inside a notes/ or plans/ folder of the project (a file outside the project is ignored, and so is
+a dotfile such as notes/.gitignore), or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
-project dir; the suffix rule still applies, so a watched .py file is passed over).
+project dir; the suffix rule still applies, so a watched .py file is passed over). A --watch
+without a pattern, or any other flag, is an error (exit 1, one line).
 Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
-    incident.he.txt exists, run keyline_check.py note -> rendering;
-  - a rendering (incident.he.txt): run keyline_check.py against its note (incident.txt / .md /
-    .keyline / no extension).
+    incident.he.txt or incident.he.md exists, run keyline_check.py note -> rendering;
+  - a rendering (incident.he.txt, incident.he.md): run keyline_check.py against its note
+    (incident.txt / .md / .keyline / no extension); two notes beside one rendering is a finding.
 Exit 0 when clean or not applicable. Exit 2 with the findings on stderr when anything fails:
 for PostToolUse the file is already written, and Claude Code shows stderr to Claude so it fixes it.
+The first line says which file to fix: the note when the lint found something, else the rendering.
 Exit 1 (non-blocking, one line on stderr) when the file cannot be read or tiktoken is missing.
 """
 import fnmatch
@@ -31,8 +34,10 @@ import keyline_check  # noqa: E402
 import keyline_lint  # noqa: E402
 
 WATCHED_DIRS = {"notes", "plans"}
-NOTE_SUFFIXES = {".txt", ".md", ".keyline", ""}
-HE = ".he.txt"
+NOTE_SUFFIXES = (".txt", ".md", ".keyline", "")
+HE_SUFFIXES = (".he.txt", ".he.md")
+NOTE_HEADER = "keyline: this machine note breaks the Keyline rules; fix the file."
+RENDERING_HEADER = "keyline: this rendering no longer matches its machine note; fix the rendering."
 
 
 def _quote(value):
@@ -91,18 +96,23 @@ def watched(path, root, patterns=()):
     return bool({p.lower() for p in rel.parent.parts} & WATCHED_DIRS)
 
 
-def rendering_for(note):
+def rendering_suffix(path):
+    """The rendering suffix of path's name (".he.txt", ".he.md"), or None for a note."""
+    name = path.name.lower()
+    return next((he for he in HE_SUFFIXES if name.endswith(he)), None)
+
+
+def renderings_for(note):
+    """The existing renderings beside a note: notes/a.txt -> notes/a.he.txt, notes/a.he.md."""
     stem = note.name[: -len(note.suffix)] if note.suffix else note.name
-    return note.with_name(stem + HE)
+    return [he for he in (note.with_name(stem + suffix) for suffix in HE_SUFFIXES) if he.is_file()]
 
 
-def note_for(rendering):
-    stem = rendering.name[: -len(HE)]
-    for ext in (".txt", ".md", ".keyline", ""):
-        cand = rendering.with_name(stem + ext)
-        if cand.is_file():
-            return cand
-    return None
+def notes_for(rendering):
+    """The existing notes beside a rendering: notes/a.he.txt -> notes/a.txt, .md, .keyline, a.
+    More than one is a finding (the hook cannot tell which the rendering renders)."""
+    stem = rendering.name[: -len(rendering_suffix(rendering))]
+    return [cand for cand in (rendering.with_name(stem + ext) for ext in NOTE_SUFFIXES) if cand.is_file()]
 
 
 def shown(path, root):
@@ -120,12 +130,18 @@ def run_check(note, rendering, problems, root):
 
 
 def parse_watch(argv):
+    """The --watch patterns of argv. A --watch without a pattern or any other argument is a
+    ValueError: a hook command that is wrong in settings.json would otherwise fall back to
+    the notes/plans rule in silence (keyline_lint's main() refuses the same shapes)."""
     patterns, it = [], iter(argv)
     for a in it:
         if a == "--watch":
             nxt = next(it, None)
-            if nxt:
-                patterns.append(nxt)
+            if not nxt:
+                raise ValueError("--watch needs a pattern (--watch PATTERN)")
+            patterns.append(nxt)
+        else:
+            raise ValueError(f"unknown argument {a!r} (only --watch PATTERN is accepted)")
     return patterns
 
 
@@ -133,10 +149,14 @@ def main():
     if sys.argv[1:] == ["--print-config"]:
         print_config()
         return 0
-    patterns = parse_watch(sys.argv[1:])
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
             s.reconfigure(encoding="utf-8")
+    try:
+        patterns = parse_watch(sys.argv[1:])
+    except ValueError as e:
+        print(f"keyline hook: {e}; fix the hook command in settings.json", file=sys.stderr)
+        return 1                                   # non-blocking: the hook itself is misconfigured
     try:
         event = json.load(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"))
         path = Path(event["tool_input"]["file_path"])
@@ -155,7 +175,10 @@ def main():
         # A file in a folder that cannot be searched: the stat itself fails.
         print(f"keyline hook: cannot read {path}: {e.strerror or e}", file=sys.stderr)
         return 1                                   # non-blocking error
-    is_rendering = path.name.lower().endswith(HE)
+    if path.name.startswith("."):
+        return 0                                   # notes/.gitignore, .DS_Store: not a note
+    he = rendering_suffix(path)
+    is_rendering = he is not None
     is_note = not is_rendering and path.suffix.lower() in NOTE_SUFFIXES
     if is_note:
         # The lint's word list comes from keyline/cache/, not from the note: an error there
@@ -165,27 +188,37 @@ def main():
         except (OSError, keyline_lint.TiktokenMissing) as e:
             print(f"keyline hook: {e}", file=sys.stderr)
             return 1                               # non-blocking: the note cannot be linted yet
-    problems = []
+    lint_problems, problems = [], []
     try:
         if is_rendering:
-            note = note_for(path)
-            if note:
+            notes = notes_for(path)
+            if len(notes) > 1:
+                names = ", ".join(shown(n, root) for n in notes)
+                problems.append(f"{shown(path, root)}: more than one note beside this rendering "
+                                f"({names}); keep the one it renders")
+            for note in notes:
                 run_check(note, path, problems, root)
         elif is_note:
             for no, msg in keyline_lint.lint_file(path, words):
-                problems.append(f"{shown(path, root)}:{no}: {msg}")
-            he = rendering_for(path)
-            if he.is_file():
-                run_check(path, he, problems, root)
+                lint_problems.append(f"{shown(path, root)}:{no}: {msg}")
+            for rendering in renderings_for(path):
+                run_check(path, rendering, problems, root)
     except OSError as e:
-        # The note, its rendering or a keyline-allow.txt beside it; the error names the file
-        # when it is not the note.
-        where = "" if e.filename or str(path) in str(e) else f" {path}"
-        print(f"keyline hook: cannot read{where}: {e}", file=sys.stderr)
+        # The note, its rendering or a keyline-allow.txt beside it. A system error names its
+        # file in e.filename; the not-UTF-8 error of keyline_check.read / keyline_lint.read has
+        # no errno and its message already names the file ("<file> is not UTF-8 ...").
+        if e.filename:
+            print(f"keyline hook: cannot read {e.filename}: {e.strerror or e}", file=sys.stderr)
+        elif e.errno is None:
+            print(f"keyline hook: {e}", file=sys.stderr)
+        else:
+            print(f"keyline hook: cannot read {path}: {e}", file=sys.stderr)
         return 1                                   # non-blocking error
-    if problems:
-        print("keyline: this machine note breaks the Keyline rules; fix the file.", file=sys.stderr)
-        print("\n".join(problems), file=sys.stderr)
+    if lint_problems or problems:
+        # The first line names the file to fix: the note when the lint found something, else
+        # the rendering (a note write that leaves its rendering stale is fixed in the rendering).
+        print(NOTE_HEADER if lint_problems else RENDERING_HEADER, file=sys.stderr)
+        print("\n".join(lint_problems + problems), file=sys.stderr)
         return 2
     return 0
 

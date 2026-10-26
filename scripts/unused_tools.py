@@ -20,7 +20,14 @@ def tool_calls(folder):
     called = collections.Counter()
     files = sorted(p for p in Path(folder).rglob("*.jsonl") if p.is_file())
     for path in files:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        try:
+            # utf-8-sig: a transcript saved with a BOM would otherwise lose its first line.
+            f = open(path, encoding="utf-8-sig", errors="replace")
+        except OSError as e:
+            # Unreadable between the glob and the read: one line, the others are still counted.
+            print(f"error: cannot read {path}: {e.strerror or e}", file=sys.stderr)
+            continue
+        with f:
             for line in f:
                 try:
                     event = json.loads(line)
@@ -59,7 +66,7 @@ def main(argv=None):
         print(f"  ... and {len(called) - args.top} more")
 
     try:
-        with open(USER_SETTINGS, encoding="utf-8") as f:
+        with open(USER_SETTINGS, encoding="utf-8-sig") as f:   # -sig: a hand edit on Windows may add a BOM
             denied = json.load(f).get("permissions", {}).get("deny", [])
     except (OSError, ValueError) as e:
         print(f"error: cannot read {USER_SETTINGS}: {e}", file=sys.stderr)
