@@ -10,11 +10,13 @@ being on PATH.
 Usage:
   python -I config/install.py [--home PATH] [--force] [--verify-only]
 
-What it does:
-  1. Merges config/user-settings.json into <home>/.claude/settings.json
-  2. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change)
-  3. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
-  4. Verifies the files and prints a command to run in a new session.
+What it does, in write order (everything is read and checked first):
+  1. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
+  2. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change), recording
+     the change and its backup in <home>/.claude/ballast/install-record.json first
+  3. Merges config/user-settings.json into <home>/.claude/settings.json
+  4. Writes the full install record
+  5. Verifies the files and prints a command to run in a new session.
 
 What it changed is recorded in <home>/.claude/ballast/install-record.json, so
 config/uninstall.py can put back the values that were there before.
@@ -238,6 +240,16 @@ def _read_json(path):
     return data
 
 
+def _refuse_read_only(path):
+    """A target that exists but cannot be written is a ValueError, raised in the read-and-check
+    phase: refusing it when its turn came (as _write_bytes still does) left its backup and the
+    files written before it behind on every attempt. os.access sees the Windows read-only
+    attribute as well as a POSIX mode."""
+    path = Path(path)
+    if path.exists() and not os.access(path, os.W_OK):
+        raise ValueError(f"{path} is read-only; make it writable first")
+
+
 def _backup(path):
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
@@ -335,15 +347,40 @@ def read_record(path):
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
+    except UnicodeDecodeError as e:
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); fix it or delete it first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it or delete it first") from e
     except OSError as e:
         raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
         raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
+    _check_record(path, data)
     return data
+
+
+def _check_record(path, data):
+    """Every field the two scripts read from the record has the type they expect, or the
+    record is refused before anything is written: a wrong-typed field used to raise a TypeError
+    in _merge_record after CLAUDE.md was replaced, or to be read as something else (a string
+    added_keys as its letters). The backup name inside claude_md is left to the uninstall,
+    which keeps the file and says so when the name is not usable."""
+    def refuse(field, expected, value):
+        raise ValueError(f"{path}: {field} must be {expected}, not {value!r}; fix it or delete it first")
+    for field in ("added_keys", "deny_added", "created"):
+        if field in data and not (isinstance(data[field], list)
+                                  and all(isinstance(v, str) for v in data[field])):
+            refuse(field, "a list of strings", data[field])
+    for field in ("replaced", "installed", "claude_md"):
+        if field in data and not isinstance(data[field], dict):
+            refuse(field, "an object", data[field])
+    if "uninstalled" in data and not isinstance(data["uninstalled"], bool):
+        refuse("uninstalled", "true or false", data["uninstalled"])
+    claude_md = data.get("claude_md", {})
+    if "sha256" in claude_md and not isinstance(claude_md["sha256"], str):
+        refuse("claude_md.sha256", "a string", claude_md["sha256"])
 
 
 def _merge_record(old, new):
@@ -419,13 +456,23 @@ def install(home, force=False, progress=None, config_dir=None):
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
+    hook_changed = current_hook != hook_bytes
+    md_changed = current_md != claude_md
+    # A read-only target is refused now, while nothing is written yet, not when its turn comes
+    # after its backup and the files before it; only the files this run will write are checked,
+    # so a read-only file that is already up to date does not stop a re-run.
+    for name, will_write in (("hook", hook_changed), ("claude_md", md_changed),
+                             ("settings", bool(setting_changes)),
+                             ("record", hook_changed or md_changed or bool(setting_changes))):
+        if will_write:
+            _refuse_read_only(paths[name])
 
-    if current_hook != hook_bytes:
+    if hook_changed:
         _write_bytes(paths["hook"], hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
         progress.append(changes[-1])
 
-    if current_md != claude_md:
+    if md_changed:
         paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
         old_md = old_record.get("claude_md")
         # A file still holding what an earlier install wrote is the installer's own: no backup
@@ -441,18 +488,29 @@ def install(home, force=False, progress=None, config_dir=None):
         # user edited it since, their edits are what an uninstall should put back.
         if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md or still_ours):
             record["claude_md"] = dict(old_md, sha256=text_hash(claude_md))
+            if backup is not None and "sha256" not in old_md:
+                # A record from before the content hash cannot tell the user's edits from the
+                # installer's own text, so the first backup stays the one to restore; say so,
+                # and name the copy of today's file.
+                earlier = old_md.get("backup")
+                outcome = (f"uninstall will restore {earlier}" if isinstance(earlier, str) and earlier
+                           else "uninstall will delete CLAUDE.md")
+                notices.append(f"CLAUDE.md differed from the last install (the record has no content "
+                               f"hash, so edits cannot be told apart); today's file is in {backup.name}; "
+                               f"{outcome}")
         else:
             record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
             if isinstance(old_md, dict) and backup is not None:
                 notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
+        # Record the CLAUDE.md change before the file is replaced, and before settings.json: an
+        # interruption between the record and the write leaves the old file, which the next
+        # install backs up and installs again; the other order left a template CLAUDE.md with no
+        # record of its backup, which the next install saw as already matching and the undo
+        # never restored. The settings values are recorded only once settings.json holds them.
+        _write_json(paths["record"], _merge_record(old_record, {"claude_md": record["claude_md"]}))
         _write_bytes(paths["claude_md"], claude_md.encode("utf-8"))
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
         progress.append(changes[-1])
-        # Record the CLAUDE.md change now, before settings.json: if that write fails, the next
-        # install would otherwise see a file that already matches, record nothing for it, and
-        # the undo would never restore the backup. The settings values are recorded only once
-        # settings.json holds them.
-        _write_json(paths["record"], _merge_record(old_record, {"claude_md": record["claude_md"]}))
 
     if setting_changes:
         if paths["settings"].exists():

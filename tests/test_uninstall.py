@@ -346,6 +346,9 @@ def test_record_without_claude_md_entry_keeps_the_file_and_says_so(install_modul
 
 
 def test_non_string_backup_name_in_record_does_not_crash(install_module, uninstall_module, tmp_path):
+    # A backup name that is not a plain file name used to take the "no backup was made" branch
+    # and delete CLAUDE.md, while the user's real backup stayed on disk unmentioned: the file
+    # stays, the notice names the bad name, and the record keeps the entry.
     home = tmp_path / "home"
     seed(home, {}, claude_md="mine\n")
     install_module.install(home)
@@ -355,7 +358,10 @@ def test_non_string_backup_name_in_record_does_not_crash(install_module, uninsta
     record_path.write_text(json.dumps(record), encoding="utf-8")
 
     changes, notices = uninstall_module.uninstall(home)
-    assert "CLAUDE.md deleted" in changes, (changes, notices)
+    assert not any("CLAUDE.md" in c for c in changes), (changes, notices)
+    assert any("CLAUDE.md left as is" in n and "1" in n for n in notices), notices
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert json.loads(record_path.read_text(encoding="utf-8"))["claude_md"]["backup"] == 1
 
 
 def test_deny_that_is_not_a_list_is_reported_and_kept_in_the_record(install_module, uninstall_module, tmp_path):
@@ -411,7 +417,8 @@ def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, unins
 @pytest.mark.parametrize("name", ["../CLAUDE.md.bak", "sub/CLAUDE.md.bak"])
 def test_backup_name_with_a_separator_in_record_does_not_crash(install_module, uninstall_module, tmp_path, name):
     # Path.with_name raised ValueError on such a name after settings.json was already rewritten,
-    # and main() then said "nothing written".
+    # and main() then said "nothing written"; the first fix then deleted CLAUDE.md as if no
+    # backup had been made. The file stays, the notice names the bad name, the record keeps it.
     home = tmp_path / "home"
     seed(home, {}, claude_md="mine\n")
     install_module.install(home)
@@ -420,7 +427,10 @@ def test_backup_name_with_a_separator_in_record_does_not_crash(install_module, u
     record["claude_md"]["backup"] = name
     record_path.write_text(json.dumps(record), encoding="utf-8")
     changes, notices = uninstall_module.uninstall(home)
-    assert "CLAUDE.md deleted" in changes, (changes, notices)
+    assert not any("CLAUDE.md" in c for c in changes), (changes, notices)
+    assert any("CLAUDE.md left as is" in n and name in n for n in notices), notices
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert json.loads(record_path.read_text(encoding="utf-8"))["claude_md"]["backup"] == name
 
 
 def test_uninstall_removes_the_state_folder_and_the_log(install_module, uninstall_module, tmp_path):
@@ -576,3 +586,125 @@ def test_a_container_the_user_adds_between_uninstall_and_reinstall_is_kept(insta
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
     uninstall_module.uninstall(home)
     assert read_settings(home) == {"hooks": {}, "permissions": {}}
+
+
+def test_record_with_a_wrong_typed_field_is_reported_not_raised(install_module, uninstall_module, tmp_path, capsys):
+    # `{"added_keys": 5}` passed read_record and raised a TypeError in undo_settings, a
+    # traceback instead of the one-line "fix it or delete it first" a broken record gets.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = home / ".claude" / "ballast" / "install-record.json"
+    record.write_text(json.dumps({"added_keys": 5}), encoding="utf-8")
+    settings_before = settings_file(home).read_text(encoding="utf-8")
+
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Traceback" not in err, err
+    assert str(record) in err and "fix it or delete it first" in err and "nothing written" in err, err
+    assert settings_file(home).read_text(encoding="utf-8") == settings_before
+    assert (home / ".claude" / "ballast" / "context_check.py").exists()
+    assert json.loads(record.read_text(encoding="utf-8")) == {"added_keys": 5}
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_a_read_only_settings_file_is_refused_before_it_is_backed_up(install_module, uninstall_module, tmp_path, capsys):
+    # The backup was made, then _write_bytes refused the read-only settings.json: each run left
+    # one more orphan settings.json.bak-* and reported the undo as stopped part way.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    claude = home / ".claude"
+    for p in claude.glob("settings.json.bak-*"):
+        p.unlink()
+    settings_before = settings_file(home).read_bytes()
+    settings_file(home).chmod(0o444)
+    try:
+        for _ in range(2):
+            assert uninstall_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert "read-only" in err and "nothing written" in err and "Traceback" not in err, err
+        assert not list(claude.glob("settings.json.bak-*")), list(claude.iterdir())
+        assert settings_file(home).read_bytes() == settings_before
+        assert (claude / "ballast" / "context_check.py").exists()
+        assert (claude / "CLAUDE.md").exists()
+    finally:
+        settings_file(home).chmod(0o644)
+
+
+def test_deleted_claude_md_still_restores_the_backup(install_module, uninstall_module, tmp_path):
+    # With CLAUDE.md deleted after the install, the whole CLAUDE.md block was skipped: the
+    # backup of the user's pre-install file was neither restored nor mentioned, and the
+    # leftover record dropped it, so no later run could restore it either.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    claude = home / ".claude"
+    (claude / "CLAUDE.md").unlink()
+    backups = [p.name for p in claude.glob("CLAUDE.md.bak-*")]
+    assert len(backups) == 1
+
+    dry, _ = uninstall_module.uninstall(home, dry_run=True)
+    assert f"CLAUDE.md restored from {backups[0]}" in dry
+    assert not (claude / "CLAUDE.md").exists()
+    changes, notices = uninstall_module.uninstall(home)
+    assert f"CLAUDE.md restored from {backups[0]}" in changes, (changes, notices)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+    assert not list(claude.glob("CLAUDE.md.bak-*"))
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record == {"uninstalled": True}
+
+
+def test_deleted_claude_md_with_a_missing_backup_keeps_the_record(install_module, uninstall_module, tmp_path):
+    # Both gone: nothing can be restored now, but the record keeps the backup's name so a
+    # restored backup plus a later run still works, as it does when CLAUDE.md is present.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    claude = home / ".claude"
+    (claude / "CLAUDE.md").unlink()
+    backup = next(claude.glob("CLAUDE.md.bak-*"))
+    backup.unlink()
+    changes, notices = uninstall_module.uninstall(home)
+    assert not any("CLAUDE.md" in c for c in changes), changes
+    assert any(backup.name in n and "missing" in n for n in notices), notices
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["claude_md"]["backup"] == backup.name
+
+
+def test_missing_settings_keeps_the_record_for_a_later_run(install_module, uninstall_module, tmp_path):
+    # With settings.json absent, undo_settings never ran and the leftover record was the bare
+    # marker: the --force original and deny_added were gone, so after the file came back a
+    # later run only removed the hook entry.
+    import shutil
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 123})
+    install_module.install(home, force=True)
+    away = tmp_path / "settings.json.away"
+    shutil.move(settings_file(home), away)
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert any("settings.json" in n and "missing" in n for n in notices), notices
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["uninstalled"] is True
+    assert record["replaced"] == {"autoCompactWindow": 123}
+    assert "skillListingBudgetFraction" in record["added_keys"]
+    assert record["deny_added"] == list(install_module.REQUIRED_TOOLS)
+
+    shutil.move(away, settings_file(home))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow: restored 123" in changes, (changes, notices)
+    assert read_settings(home) == {"autoCompactWindow": 123}
+
+
+def test_removed_replaced_key_is_reported(install_module, uninstall_module, tmp_path):
+    # A key the user removed after a --force install was skipped in silence and its earlier
+    # value dropped from the record; README says values you changed are left alone and reported.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 123})
+    install_module.install(home, force=True)
+    settings = read_settings(home)
+    del settings["autoCompactWindow"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert any("autoCompactWindow" in n and "123" in n for n in notices), notices
+    assert "autoCompactWindow" not in read_settings(home)

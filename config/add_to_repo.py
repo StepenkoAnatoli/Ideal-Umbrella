@@ -145,6 +145,14 @@ def _is_link(path):
     return bool(isjunction and isjunction(path))
 
 
+def _refuse_read_only(path):
+    """A target that exists but cannot be written is a ValueError, raised before anything is
+    written: refusing it at its own write left the hook copied and settings.json untouched.
+    os.access sees the Windows read-only attribute as well as a POSIX mode."""
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise ValueError(f"{path} is read-only; make it writable first")
+
+
 def _write_bytes(path, data):
     """Write whole or not at all (temp file beside the target, then rename), through a
     symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
@@ -232,6 +240,10 @@ def _add(repo, force, progress=None):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     hook_changed = source != old
+    if hook_changed:
+        _refuse_read_only(target)
+    if changes:
+        _refuse_read_only(path)
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py written")

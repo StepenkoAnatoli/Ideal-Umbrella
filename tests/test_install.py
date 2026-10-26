@@ -574,3 +574,124 @@ def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_f
     backups = sorted(claude.glob("CLAUDE.md.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "my own rules\n"
+
+
+@pytest.mark.parametrize("record", [{"added_keys": 5}, {"installed": None}, {"replaced": "x"}, {"created": "hooks"}])
+def test_record_with_a_wrong_typed_field_stops_the_install_before_any_write(install_module, tmp_path, capsys, record):
+    # A record that is a JSON object with a wrong-typed field passed read_record and raised a
+    # TypeError in _merge_record, after the hook and CLAUDE.md were written: the user's
+    # CLAUDE.md was replaced with its backup unrecorded.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    paths = install_module.layout(home)
+    paths["record"].parent.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    paths["record"].write_text(json.dumps(record), encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "Traceback" not in err, err
+    assert str(paths["record"]) in err and "fix it or delete it first" in err and "nothing written" in err, err
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert not paths["hook"].exists() and not settings_file(home).exists()
+    assert not list(claude.glob("*.bak-*"))
+    assert json.loads(paths["record"].read_text(encoding="utf-8")) == record
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+@pytest.mark.parametrize("name", ["CLAUDE.md", "settings.json"])
+def test_a_read_only_target_is_refused_before_any_write(install_module, tmp_path, capsys, name):
+    # _write_bytes refused the read-only file only when its turn came, after its backup (and
+    # the hook, and for settings.json also CLAUDE.md) were written: every attempt left one
+    # more orphan *.bak-*. Writability is checkable while reading, so it is checked there.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    target = claude / name
+    target.chmod(0o444)
+    try:
+        for _ in range(2):
+            assert install_module.main(["--home", str(home)]) == 1
+            err = capsys.readouterr().err
+            assert "read-only" in err and "nothing written" in err and "Traceback" not in err, err
+        assert not list(claude.glob("*.bak-*")), list(claude.iterdir())
+        assert not (claude / "ballast").exists()
+        assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+        assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus"}
+    finally:
+        target.chmod(0o644)
+
+
+def test_interrupt_before_the_interim_record_is_recovered_by_the_next_install(install_module, tmp_path, monkeypatch):
+    # CLAUDE.md was written before the interim record: an interruption between the two left a
+    # template CLAUDE.md with no record of its backup, the next install saw a file that already
+    # matched and recorded nothing, and the uninstall said "not written by this install".
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    real_write = install_module._write_json
+    calls = []
+
+    def failing_once(path, data):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    monkeypatch.setattr(install_module, "_write_json", failing_once)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    assert calls == [install_module.layout(home)["record"]]
+    # The record comes first, so the interrupted run never got to replace the file.
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    monkeypatch.setattr(install_module, "_write_json", real_write)
+    install_module.install(home)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == install_module._read_text(install_module.CLAUDE_MD)
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+
+
+def test_record_with_a_bom_is_read(install_module, tmp_path):
+    # _read_json accepts a BOM (a hand repair in a Windows editor, which the error message
+    # invites); read_record did not, and both scripts refused the record as "not valid JSON".
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = install_module.layout(home)["record"]
+    data = json.loads(record.read_text(encoding="utf-8"))
+    record.write_bytes(b"\xef\xbb\xbf" + json.dumps(data).encode("utf-8"))
+    assert install_module.read_record(record) == data
+    assert install_module.install(home) == ([], [])
+
+
+def test_legacy_record_without_sha256_reports_the_second_backup(install_module, tmp_path, monkeypatch):
+    # With a record from before sha256 existed, an edited CLAUDE.md plus a template change
+    # backed the edits up but kept the first backup in the record, and nothing said which one
+    # the uninstall restores.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home)
+    record = install_module.layout(home)["record"]
+    data = json.loads(record.read_text(encoding="utf-8"))
+    first = data["claude_md"]["backup"]
+    del data["claude_md"]["sha256"]
+    record.write_text(json.dumps(data), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("edited after install\n", encoding="utf-8")
+    newer = tmp_path / "CLAUDE.md"
+    newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
+    monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
+
+    changes, notices = install_module.install(home)
+    backups = sorted(p.name for p in claude.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 2 and first in backups
+    second = next(b for b in backups if b != first)
+    assert any(first in n and second in n and "uninstall" in n for n in notices), notices
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, _ = uninstall_module.uninstall(home)
+    assert f"CLAUDE.md restored from {first}" in changes, changes
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"

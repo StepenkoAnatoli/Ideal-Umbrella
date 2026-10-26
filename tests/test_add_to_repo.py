@@ -200,3 +200,80 @@ def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monke
     err = capsys.readouterr().err
     assert "Done before the error" in err and "context_check.py written" in err, err
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+
+
+def test_symlinked_settings_and_hook_stay_symlinks(add_to_repo, tmp_path):
+    # install.py's write-through is pinned by test_symlinked_settings_stay_symlinks; the twin
+    # in add_to_repo.py (os.path.realpath before the temp file and rename) was not.
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "settings.json").write_text(json.dumps({"customKey": "keep"}), encoding="utf-8")
+    (elsewhere / "context_check.py").write_bytes(b"old hook\n")
+    settings = repo / ".claude" / "settings.json"
+    hook = repo / ".claude" / "hooks" / "context_check.py"
+    try:
+        settings.symlink_to(elsewhere / "settings.json")
+        hook.symlink_to(elsewhere / "context_check.py")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    add_to_repo._add(str(repo), force=False)
+    assert settings.is_symlink() and hook.is_symlink()
+    data = json.loads((elsewhere / "settings.json").read_text(encoding="utf-8"))
+    assert data["customKey"] == "keep" and data["autoCompactWindow"] == TEMPLATE["autoCompactWindow"]
+    assert (elsewhere / "context_check.py").read_bytes() == (ROOT / "hooks" / "context_check.py").read_bytes()
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_write_bytes_refuses_a_read_only_target(add_to_repo, tmp_path):
+    # The same refusal install.py's _write_bytes has, pinned here for the copy in this script.
+    target = tmp_path / "settings.json"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        with pytest.raises(PermissionError):
+            add_to_repo._write_bytes(str(target), b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+    finally:
+        target.chmod(0o644)
+
+
+def test_write_bytes_removes_the_temp_file_when_the_rename_fails(add_to_repo, tmp_path, monkeypatch):
+    # The temp file gets the read-only target's mode before the rename; a failing rename must
+    # not leave it behind (on Windows os.remove cannot delete a read-only file without the
+    # chmod in the cleanup). The access check is bypassed to reach the rename.
+    target = tmp_path / "settings.json"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o444)
+    try:
+        def boom(src, dst):
+            raise PermissionError(13, "simulated rename failure", dst)
+        monkeypatch.setattr(add_to_repo.os, "access", lambda *a, **k: True)
+        monkeypatch.setattr(add_to_repo.os, "replace", boom)
+        with pytest.raises(PermissionError, match="simulated"):
+            add_to_repo._write_bytes(str(target), b"new\n")
+        assert target.read_text(encoding="utf-8") == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+    finally:
+        target.chmod(0o644)
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")
+def test_a_read_only_settings_file_is_refused_before_the_hook_is_written(tmp_path):
+    # install.py got the read-and-check refusal of a read-only target; here the hook was
+    # copied first and only then was settings.json refused.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    settings = repo / ".claude" / "settings.json"
+    settings.write_text(json.dumps({"customKey": "keep"}), encoding="utf-8")
+    settings.chmod(0o444)
+    try:
+        result = run(repo)
+        assert result.returncode == 1
+        assert "read-only" in result.stderr and "nothing written" in result.stderr, result.stderr
+        assert "Traceback" not in result.stderr
+        assert not (repo / ".claude" / "hooks").exists()
+    finally:
+        settings.chmod(0o644)

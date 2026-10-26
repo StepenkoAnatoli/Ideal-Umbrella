@@ -85,7 +85,12 @@ def undo_settings(settings, template, record, evidence=None):
         keys = []
         notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
-        if key in ("hooks", "permissions") or key not in settings:
+        if key in ("hooks", "permissions"):
+            continue
+        if key not in settings:
+            if key in replaced:
+                notices.append(f"{key} was removed after the install; its earlier value "
+                               f"{replaced[key]!r} is not put back")
             continue
         if key in installed:
             expected = installed[key]
@@ -195,15 +200,49 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     template_md = install._read_text(install.CLAUDE_MD)
     evidence = paths["hook"].exists() or (settings is not None and has_our_hook(settings))
 
+    # What happens to CLAUDE.md is decided here, before any write, so a read-only file can be
+    # refused while nothing has been touched.
+    entry = (record or {}).get("claude_md")
+    named = entry.get("backup") if isinstance(entry, dict) else None
+    backup = _backup_of(claude_md, named)
+    if current_md is None:
+        ours = False
+    elif isinstance(entry, dict) and entry.get("sha256"):
+        ours = install.text_hash(current_md) == entry["sha256"]
+    else:
+        ours = current_md == template_md
+    # A backup is restored over the install's own text, or where the file was when the user
+    # has deleted it since: the install's write is gone, the backup is what remains to undo.
+    restore = backup is not None and backup.exists() and (ours or current_md is None)
+
     left = []
+    setting_changes = []
     if settings is not None:
         setting_changes, notices, left = undo_settings(settings, template, record, evidence)
         changes.extend(setting_changes)
-        if setting_changes and not dry_run:
-            backup = install._backup(paths["settings"])
-            done(f"settings backup: {backup.name}")
-            install._write_json(paths["settings"], settings)
-            progress.append("settings.json written")
+    elif record:
+        # Absent is not "nothing to undo": the file may be back later (a sync, a restore), so
+        # every recorded key stays in the record for that run.
+        left = list(dict.fromkeys([*record.get("added_keys", []), *record.get("replaced", {})]))
+        if record.get("deny_added"):
+            left.append("permissions.deny")
+        if left:
+            notices.append(f"{paths['settings']} is missing; the values recorded for it are kept "
+                           "in the record for a later run")
+    if not dry_run:
+        # A read-only target is refused before the settings backup; refusing it at its own
+        # write left one more orphan settings.json.bak-* on every run.
+        if setting_changes:
+            install._refuse_read_only(paths["settings"])
+        if restore:
+            install._refuse_read_only(claude_md)
+        if record is not None or paths["record"].exists():
+            install._refuse_read_only(paths["record"])
+    if setting_changes and not dry_run:
+        backup_settings = install._backup(paths["settings"])
+        done(f"settings backup: {backup_settings.name}")
+        install._write_json(paths["settings"], settings)
+        progress.append("settings.json written")
 
     if paths["hook"].exists():
         if dry_run:
@@ -233,34 +272,35 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             paths["log"].unlink()
             done("log deleted")
 
-    entry = (record or {}).get("claude_md")
     claude_md_left = False
-    if current_md is not None:
-        if isinstance(entry, dict) and entry.get("sha256"):
-            ours = install.text_hash(current_md) == entry["sha256"]
+    if restore:
+        if dry_run:
+            changes.append(f"CLAUDE.md restored from {backup.name}")
         else:
-            ours = current_md == template_md
-        backup = _backup_of(claude_md, entry.get("backup") if isinstance(entry, dict) else None)
-        if not ours:
-            claude_md_left = True
-            notices.append("CLAUDE.md differs from what was installed; left as is"
-                           + (f" (your earlier file is in {backup.name})" if backup and backup.exists() else ""))
-        elif backup is not None and backup.exists():
-            if dry_run:
-                changes.append(f"CLAUDE.md restored from {backup.name}")
-            else:
-                # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
-                # link; a copy that fails part way must not leave a truncated file.
-                install._write_bytes(claude_md, backup.read_bytes())
-                done(f"CLAUDE.md restored from {backup.name}")
-                backup.unlink()
-        elif backup is not None:
-            # The install replaced a file of yours and its backup is gone: deleting now would
-            # lose the only copy left, so keep it and say so.
-            claude_md_left = True
-            notices.append(f"CLAUDE.md left as is: the backup {backup.name} it should be restored "
-                           "from is missing")
-        elif record is not None and entry is not None:
+            # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
+            # link; a copy that fails part way must not leave a truncated file.
+            install._write_bytes(claude_md, backup.read_bytes())
+            done(f"CLAUDE.md restored from {backup.name}")
+            backup.unlink()
+    elif named is not None and (ours or current_md is None):
+        # The install replaced a file of yours and the record names its backup, but the backup
+        # is gone or the name is not a plain file name: deleting now would lose the only copy
+        # left, so keep the file and the record entry, and say so.
+        claude_md_left = True
+        where = "CLAUDE.md left as is" if current_md is not None else "CLAUDE.md is already gone"
+        if backup is None:
+            notices.append(f"{where}: the record names a backup that is not a plain file name "
+                           f"({named!r}); fix the record first")
+        else:
+            notices.append(f"{where}: the backup {backup.name} it should be restored from is missing")
+    elif current_md is None:
+        pass    # deleted by the user, and the install made it: nothing left to undo
+    elif not ours:
+        claude_md_left = True
+        notices.append("CLAUDE.md differs from what was installed; left as is"
+                       + (f" (your earlier file is in {backup.name})" if backup and backup.exists() else ""))
+    else:
+        if record is not None and entry is not None:
             if dry_run:
                 changes.append("CLAUDE.md deleted")
             else:
@@ -275,9 +315,9 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             if dry_run:
                 changes.append("CLAUDE.md deleted (a backup is kept)")
             else:
-                backup = install._backup(claude_md)
+                copy = install._backup(claude_md)
                 claude_md.unlink()
-                done(f"CLAUDE.md deleted (copy kept as {backup.name})")
+                done(f"CLAUDE.md deleted (copy kept as {copy.name})")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
         install._write_json(paths["record"], _leftover_record(record, left, claude_md_left))
