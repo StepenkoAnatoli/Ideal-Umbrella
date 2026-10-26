@@ -2672,9 +2672,13 @@ before); the whole suite 601 passed, 24 skipped.
        `permissions.deny`, which is all the run compares later (the pre-write values of the keys
        it lists and the hook/deny evidence); merge_settings fills those two containers in place
        and replaces the rest. `import copy` is gone.
-     Test: tests/test_install.py:1684 test_a_settings_json_nested_1500_levels_installs_re_runs_and_undoes
-       (install, interrupted re-run, completing re-run and undo over a 1500-deep value; failed
-       before the fix with RecursionError).
+     Test: tests/test_install.py:1684 test_a_settings_json_nested_700_levels_installs_re_runs_and_undoes
+       (install, interrupted re-run, completing re-run and undo over a 700-deep value; failed
+       before the fix with RecursionError). The test was first written at 1500 levels and
+       passed here on Python 3.13, but CI on Python 3.12 (Ubuntu and Windows) failed it in the
+       installer's indented json encoder, whose generator frames count against the recursion
+       limit there; 700 keeps the deep copy failing (two frames per level) and the encoder
+       within the limit on both versions.
      Other hits: none; the undo never deep-copied. probe_crash.py deep-json now rc=0, no traceback
        at every depth up to 1500.
      Prevention: the deep-json probe row; the test runs the whole chain, not the install alone.

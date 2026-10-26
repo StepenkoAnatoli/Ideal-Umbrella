@@ -1681,15 +1681,18 @@ def test_a_settings_copy_name_the_installer_never_writes_is_not_reused(install_m
     assert "unfinished" not in record and "settings_backup" not in record, record
 
 
-def test_a_settings_json_nested_1500_levels_installs_re_runs_and_undoes(install_module, tmp_path):
+def test_a_settings_json_nested_700_levels_installs_re_runs_and_undoes(install_module, tmp_path):
     # The snapshot of settings.json the run keeps for its pre-write comparisons was a deep copy
     # of the whole file: a value of yours nested a few hundred levels deep (json reads and
     # writes it without trouble) made the copy hit the interpreter's recursion limit, and the
     # install died with a traceback before its first write. Only what the run compares later
-    # is kept: the top-level values, and the permissions.deny list as it was.
+    # is kept: the top-level values, and the permissions.deny list as it was. 700 levels: the
+    # deep copy needs two frames per level and fails under the default limit of 1000, while
+    # the indented json encoder the installer writes with needs one and gets through (at 1500
+    # it did not on Python 3.12, where the generator frames count against that limit).
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
-    deep = json.loads("[" * 1500 + "]" * 1500)
+    deep = json.loads("[" * 700 + "]" * 700)
     settings_file(home).write_text(json.dumps({"model": "opus", "deep": deep}), encoding="utf-8")
     changes, notices = install_module.install(home)
     assert any(c.startswith("autoCompactWindow: added") for c in changes), changes
