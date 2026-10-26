@@ -12,7 +12,7 @@ probe output. The fixes landed in the same PR (#20); each finding below ends wit
 changed, the other hits of its class, and the prevention.
 
 Status: all 11 fixed class-wide in PR #20 (merged as main 02e57bb), plus 3 findings of the
-self-review of the diff; a check of those fixes found 3 more, fixed in PR #21
+self-review of the diff; a check of those fixes found 3 more, fixed in PR #22
 (pytest 241 passed, 4 skipped; keyline suite 35/35).
 Counts: 0 high, 3 medium, 8 low. Every finding was CONFIRMED by
 a run or is visible in the code as quoted. Line numbers are the reviewed tree's (main d608788).
@@ -466,7 +466,7 @@ unreachable (every `OSError` the block raises names the file), harmless; the mea
 ## Check of the self-review fixes
 
 A fresh-context pass over b5b03eb (the only commit of PR #20 no reviewer had read) found
-three defects, fixed in PR #21 the same way; everything else in that commit (the interim
+three defects, fixed in PR #22 the same way; everything else in that commit (the interim
 record path, every measure.py entry kind, the new test as root, as CI's user and on Windows,
 the docs) was checked and found sound.
 
