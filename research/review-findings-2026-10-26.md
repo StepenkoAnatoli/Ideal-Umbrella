@@ -1,0 +1,24 @@
+# Review rounds for PR #26 (branch `learnings-and-savings-line`, base main b46792d)
+
+The two ideas from the Trail-Code comparison: the learnings template and the savings line. Each round runs two fresh-context reviewers on the PR's head: a breaker agent (the `first-pass:breaker` plugin is not installed in this environment, so a general-purpose agent was given its brief: prove each finding with a repro, rank it, propose the smallest fix) and the `code-review` skill at effort high. A round is logged here before anything is fixed; the fixes and the next round follow after the user's go.
+
+## Round 1 — head eb91ef6
+
+Checks at that head: pytest 264 passed 4 skipped, keyline 35/35, the three JSON files parse (Linux). CI: Ubuntu green, Windows red (finding 1).
+
+### code-review skill (11 findings, 2 confirmed by execution)
+
+1. MEDIUM, CONFIRMED (CI run 40320657075, windows-latest). `tests/test_learnings.py:25` asserts no `\r` in the two learnings files, and `.gitattributes` pins only `*.sh` to LF, so the Windows checkout (core.autocrlf=true) turns `config/learnings.md` and `notes/learnings.md` into CRLF and both parametrizations fail. The same checkout makes `add_to_repo.py` copy a CRLF template into user repositories (it copies raw bytes), which the Keyline rule rejects. Planned fix: `.gitattributes` gets `*.md text eol=lf` (the root fix; the test stays as the guard).
+2. MEDIUM, CONFIRMED against main's hook. `hooks/context_check.py:185` calls `_prompt_tokens()` outside the `try`, so a first main-chain assistant line whose usage holds a non-integer (`"input_tokens": "n/a"`) or is a list raises out of `run()`: the new hook prints only "unexpected error" and no JSON, while main's hook printed the hand-off note for the same transcript. Planned fix: compute the status line under its own handler (log the error, fall back to no line), so the cosmetic line can never take the hand-off note down; the per-line parse catches `(ValueError, TypeError, AttributeError)`.
+3. LOW. `config/add_to_repo.py:256` writes the optional learnings copy between the hook and `settings.json`, so a `notes` file, an unwritable `notes/` or an uncreatable `notes/learnings.md` aborts the core install with the hook on disk and no hook entry. Planned fix: write the courtesy file last, after `settings.json`, so the core install is whole and "Done before the error" lists it; the in-the-way test flips its expectation.
+4. LOW, CONFIRMED. `IDEAL_UMBRELLA_TAIL_BYTES` is parsed again in `floor_tokens()`: an invalid value warns and logs twice per prompt. Planned fix: parse once in `run()` and pass the limit to both readers.
+5. LOW. The floor is immutable but recomputed from the transcript head on every prompt, even when `n == 0`. Planned fix: skip the floor read when there is nothing to show (`n == 0`); the read stops at the first main-chain call, normally within the first few KB, so the state-file cache is not taken (it would couple the floor to a file that is dropped below the threshold).
+6. LOW. `config/add_to_repo.py:212` builds the "Commit ..." hint by sniffing change messages and names files not written this run (a repository that already had the hook and settings and now gets only the learnings file is told to commit all three). Planned fix: build the hint from `progress`, the list of files written this run.
+7. LOW, style. `handoff_due()` reads as a predicate but writes the band state. Planned: rename to `record_handoff()`; the docstring already says it keeps the state.
+8. LOW. `config/add_to_repo.py:231` checks `notes/learnings.md` for a dangling link but not `notes` itself (nor `.claude`, pre-existing): a dangling `notes -> /mnt/sync/notes` makes `_write_bytes()` realpath through it, create the missing folder and write the template outside the repository while reporting "notes/learnings.md written". Planned fix: the dangling-link check covers the parent folders too (`.claude`, `.claude/hooks`, `notes`).
+9. LOW, docs. README quick start runs `git add .claude notes/learnings.md` unconditionally: it stages a pre-existing user file's edits, and fails when `notes/` is gitignored. Planned fix: "git add the files the script names".
+10. LOW, docs. `keyline/CLAUDE-snippet.md` says to save learnings in `notes/learnings.md` unconditionally, while `config/CLAUDE.md` says "when the repo has it". Planned fix: the same qualifier in the snippet (token count in `keyline/README.md` updated).
+11. LOW. Right after a compaction `now` is `compactMetadata.postTokens`, which leaves out the system prompt and tools, so the line can read "floor 40k, now 20k" until the next call. Planned fix: when the measure comes from a compact boundary the line says "now 20k after compaction" (the number is real; the suffix says why it is below the floor); `max(now, floor)` would invent a number.
+
+### breaker agent
+(pending: the agent was still running when this round was logged; its findings are appended below when it reports)
