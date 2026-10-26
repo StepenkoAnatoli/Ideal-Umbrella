@@ -428,7 +428,8 @@ def test_a_long_diacritic_or_hebrew_run_is_extracted_in_linear_time(keyline_chec
     # file name holds at most two dotted dates or times before its first extension and two
     # after it, so a run of them is not rescanned from every start the number rule leaves
     # after a ":" or a "-" ("30.14:30.14:30...30_", "25.2026-10-25.2026-10-25...25_": 6.3 s
-    # and 5.2 s, quadratic, when the run was unbounded).
+    # and 5.2 s, quadratic, when the run was unbounded; the two rows pin that bound, not the
+    # code before the interior date, which had no such run to scan and passes them too).
     import time
     start = time.perf_counter()
     keyline_check.invariants(text)
@@ -723,6 +724,10 @@ def test_a_file_name_with_a_numeric_suffix_is_one_token(keyline_check, src, ren,
     ("tag v2.14:30 at 14:02", "tag v2.15:30 at 14:02",
      {"v2": "version", "14:30": "time", "14:02": "time"}),
     ("tag v2.5% at 14:02", "tag v2.6% at 14:02", {"v2": "version", "5%": "number", "14:02": "time"}),
+    ("grew to GPT4.1,5% at 14:02", "grew to GPT4.1,6% at 14:02",
+     {"GPT4": "upper", "1,5%": "number", "14:02": "time"}),
+    ("see notes/a.txt.5% done at 14:02", "see notes/a.txt.5 done at 14:02",
+     {"notes/a.txt": "path", "5%": "number", "14:02": "time"}),
 ])
 def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src, ren, expected):
     # The numeric tail of a file name ("app.log.1") or of a name ending in a digit ("GPT4.5")
@@ -735,7 +740,9 @@ def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src,
     # and a dot (the linear-time guard), so "GPT4.6%" passed; it starts there when a percentage
     # follows. A decimal percentage ("notes.txt.12.5%") was cut at its own dot and its figure
     # lost the same way: the guard knows the decimal shape. The "v" version's tail took the
-    # year, the hour or the figure like every other tail ("v2.2026", "v2.14", "v2.5").
+    # year, the hour or the figure like every other tail ("v2.2026", "v2.14", "v2.5"). A
+    # path's dotted tail took the figure too ("notes/a.txt.5%" was the path "notes/a.txt.5"
+    # and no percentage): the path rule has the same guard, so "5%" is the number.
     assert keyline_check.invariants(src) == expected
     result = keyline_check.check(src, ren)
     assert not result.ok, result
@@ -754,6 +761,19 @@ def test_a_date_time_or_percentage_after_a_dot_is_not_a_tail(keyline_check, src,
     ("rotate app.log.2026-10-25.1.gz at 14:02", "rotate app.log.2026-10-26.1.gz at 14:02", "app.log.2026-10-25.1.gz"),
     ("rotate app.log.2026-10-25.1 at 14:02", "rotate app.log.2026-11-25.1 at 14:02", "app.log.2026-10-25.1"),
     ("keep סיכום.2026-10-25.md at 14:02", "keep סיכום.2026-10-25.txt at 14:02", "סיכום.2026-10-25.md"),
+    ("tag v2.2026-10-25.txt at 14:02", "tag v2.2026-10-25.pdf at 14:02", "v2.2026-10-25.txt"),
+    ("tag v2.14:30.txt at 14:02", "tag v2.14:30.pdf at 14:02", "v2.14:30.txt"),
+    ("keep app.log.2026-10-25T14:30Z.gz at 14:02", "keep app.log.2026-10-25T14:30Z.xz at 14:02",
+     "app.log.2026-10-25T14:30Z.gz"),
+    ("keep app.log.2026-10-25T14:30:00.000Z.gz at 14:02", "keep app.log.2026-10-25T14:30:00.000Z.xz at 14:02",
+     "app.log.2026-10-25T14:30:00.000Z.gz"),
+    ("keep app.2026-10-25T14:30:00+02:00.log at 14:02", "keep web.2026-10-25T14:30:00+02:00.txt at 14:02",
+     "app.2026-10-25T14:30:00+02:00.log"),
+    ("keep app.log.14:30Z.gz at 14:02", "keep app.log.14:30Z.xz at 14:02", "app.log.14:30Z.gz"),
+    ("keep backup.2026-10-25.14:30.sql at 14:02", "keep backup.2026-10-25.14:30.bak at 14:02",
+     "backup.2026-10-25.14:30.sql"),
+    ("keep notes.txt.2026-10-25.2026-10-26.gz at 14:02", "keep notes.txt.2026-10-25.2026-10-26.xz at 14:02",
+     "notes.txt.2026-10-25.2026-10-26.gz"),
 ])
 def test_a_date_or_time_before_an_extension_is_inside_the_file_name(keyline_check, src, ren, name):
     # A dated backup, report or rotated log ("backup.2026-10-25.sql", "report.2026-10-25.pdf",
@@ -763,8 +783,17 @@ def test_a_date_or_time_before_an_extension_is_inside_the_file_name(keyline_chec
     # extension dropped, and a rendering with another stem, another extension, or the date
     # alone passed. A date, a timestamp or a time followed by another dotted component is an
     # interior component of the file name, which is one token; a trailing one is its own token
-    # ("app.log.2026-10-25" stays the file name and the date), and a source that names the
-    # date alone still finds it inside the file name.
+    # ("app.log.2026-10-25" stays the file name and the date). The interior timestamp may
+    # carry a fraction and a zone ("14:30:00.000Z", "+02:00"), and a time a zone ("14:30Z"):
+    # without them the name was cut at the timestamp and a swapped extension passed. The "v"
+    # version ended at "v2" before an interior date ("v2.2026-10-25.txt" was the version and
+    # the date, the extension lost): the file rule takes the name, as it does "v2.14.0.txt".
+    # Two dated components stand before the extension ("backup.2026-10-25.14:30.sql") or
+    # after it ("notes.txt.2026-10-25.2026-10-26.gz"); a third ends the name, see
+    # test_a_third_dated_component_ends_the_file_name. A source that names the date alone
+    # finds it inside the file name before an extension ("backup.2026-10-25.sql"), not before
+    # a rotation number ("app.log.2026-10-25.1": the boundary refuses a dotted digit after a
+    # date), a limit the README names.
     found = keyline_check.invariants(src)
     assert found[name] == "file" and set(found) == {name, "14:02"}, found
     result = keyline_check.check(src, ren)
@@ -772,11 +801,53 @@ def test_a_date_or_time_before_an_extension_is_inside_the_file_name(keyline_chec
     assert keyline_check.invariants("rotate app.log.2026-10-25 at 14:02") == {
         "app.log": "file", "2026-10-25": "date", "14:02": "time"}
     assert keyline_check.check("dump of 2026-10-25 at 14:30", "dump db.sql.14:30.gz of 2026-10-25").ok
+    assert keyline_check.check("dump of 2026-10-25 at 14:30", "dump backup.2026-10-25.sql at 14:30").ok
+    assert not keyline_check.check("dump of 2026-10-25 at 14:30", "rotate app.log.2026-10-25.1 at 14:30").ok
+
+
+def test_a_third_dated_component_ends_the_file_name(keyline_check):
+    # A file name holds at most two dotted dates or times before its first extension and two
+    # after it (the linear-time bound, see the long-run test): a third such component ends
+    # the name, and what follows it is not part of it. "notes.txt.2026-10-25.2026-10-26" is
+    # the file name and "2026-10-27" the date; the ".gz" after the third date is not extracted.
+    # "backup.2026-10-25.14:30.2026-10-26.sql" has no name token: its three dated components
+    # are tokens of their own. The rows pin the documented bound, not a wanted outcome.
+    assert keyline_check.invariants("keep notes.txt.2026-10-25.2026-10-26.2026-10-27.gz at 14:02") == {
+        "notes.txt.2026-10-25.2026-10-26": "file", "2026-10-27": "date", "14:02": "time"}
+    assert keyline_check.invariants("keep backup.2026-10-25.14:30.2026-10-26.sql at 14:02") == {
+        "2026-10-25": "date", "14:30": "time", "2026-10-26": "date", "14:02": "time"}
+    src = "keep notes.txt.2026-10-25.2026-10-26.2026-10-27.gz at 14:02"
+    assert keyline_check.check(src, src).ok
+    assert not keyline_check.check(src, src.replace("2026-10-27", "2026-10-28")).ok
+
+
+@pytest.mark.parametrize("src, ren, expected", [
+    ("see backups/backup.2026-10-25.sql at 14:02", "see backups/backup.2026-10-26.sql at 14:02",
+     {"backups/backup.2026-10-25.sql": "path", "14:02": "time"}),
+    ("see notes/db.sql.14:30.gz at 14:02", "see notes/db.sql.14:31.gz at 14:02",
+     {"notes/db.sql.14:30.gz": "path", "14:02": "time"}),
+    ("see notes/app.log.2026-10-25 at 14:02", "see notes/app.log.2026-10-26 at 14:02",
+     {"notes/app.log": "path", "2026-10-25": "date", "14:02": "time"}),
+    ("see notes/a.txt.2026-10-25T14:30Z at 14:02", "see notes/a.txt.2026-10-25T15:30Z at 14:02",
+     {"notes/a.txt": "path", "2026-10-25T14:30Z": "datetime", "14:02": "time"}),
+])
+def test_a_path_takes_an_interior_date_or_time_and_ends_before_a_trailing_one(keyline_check, src, ren, expected):
+    # The path rule's tail took any dotted component, so "notes/a.txt.5%" was the path
+    # "notes/a.txt.5" and the figure was no token, while a time inside a path was cut at its
+    # colon ("notes/db.sql.14:30.gz" was the path "notes/db.sql.14" and the file "30.gz"). A
+    # path's dotted tail follows the file rule: a date, a timestamp or a time before another
+    # dotted component is inside the path, a trailing one is a token of its own, and a
+    # percentage is the number.
+    assert keyline_check.invariants(src) == expected
+    assert not keyline_check.check(src, ren).ok
+    assert keyline_check.check(src, src).ok
 
 
 @pytest.mark.parametrize("src, expected", [
     ("use v1.0.0.RELEASE at 14:02", {"v1.0.0": "version", "RELEASE": "upper", "14:02": "time"}),
-    ("see v2.14.0.Then more at 14:02", {"v2.14.0": "version", "14:02": "time"}),
+    # "Then" glued to the version's dot is a word of its own, not a sentence start: see
+    # test_a_capitalised_word_glued_after_a_dot_is_held_to_the_rendering.
+    ("see v2.14.0.Then more at 14:02", {"v2.14.0": "version", "Then": "proper", "14:02": "time"}),
     ("use v2.14.0 at 14:02", {"v2.14.0": "version", "14:02": "time"}),
     ("use v2.14.0.txt at 14:02", {"v2.14.0.txt": "file", "14:02": "time"}),
     ("use v2.pdf at 14:02", {"v2.pdf": "file", "14:02": "time"}),
@@ -785,9 +856,9 @@ def test_a_date_or_time_before_an_extension_is_inside_the_file_name(keyline_chec
 def test_a_version_ends_before_a_dotted_capitalised_word_but_not_before_an_extension(keyline_check, src, expected):
     # A "v" version does not end before a lowercase extension ("v2.14.0.txt", "v2.pdf",
     # "v1.log.1" are file names), but it does before a capitalised word: "v1.0.0.RELEASE" is
-    # the version and the qualifier, "v2.14.0.Then" the version before a sentence start (which
-    # the proper rule skips). The lookahead took any letter, so both were one file token and a
-    # rendering with "v1.0.0 RELEASE" or "v2.14.0. Then" failed.
+    # the version and the qualifier, "v2.14.0.Then" the version and the word "Then". The
+    # lookahead took any letter, so both were one file token and a rendering with
+    # "v1.0.0 RELEASE" or "v2.14.0. Then" failed.
     assert keyline_check.invariants(src) == expected
     assert keyline_check.check("use v1.0.0.RELEASE at 14:02", "use v1.0.0 RELEASE at 14:02").ok
     assert keyline_check.check("see v2.14.0.Then more at 14:02", "see v2.14.0. Then more at 14:02").ok
@@ -797,19 +868,72 @@ def test_a_version_ends_before_a_dotted_capitalised_word_but_not_before_an_exten
     ("run a.out at 14:02", "run b.out at 14:02", "a.out"),
     ("keep x.tar.gz.1 at 14:02", "keep y.tar.gz.1 at 14:02", "x.tar.gz.1"),
     ("keep x.tar.gz.1 at 14:02", "keep x.tar.gz.2 at 14:02", "x.tar.gz.1"),
+    ("run a.py at 14:02", "run b.py at 14:02", "a.py"),
+    ("keep a.1.out at 14:02", "keep b.1.out at 14:02", "a.1.out"),
+    ("keep x.2026-10-25.tar.gz at 14:02", "keep y.2026-10-25.tar.xz at 14:02", "x.2026-10-25.tar.gz"),
+    # A control: a two-character digit stem was a file name before the one-character rule too.
     ("see 12.3.txt at 14:02", "see 12.4.txt at 14:02", "12.3.txt"),
 ])
 def test_a_one_character_stem_before_a_longer_extension_is_a_file_name(keyline_check, src, ren, name):
     # A file name's stem was at least two characters, so that "e.g." and "i.e." are prose; the
     # rule also dropped "a.out" (no token: "b.out" passed) and cut "x.tar.gz.1" to "tar.gz.1".
-    # A one-character stem is a file name when its first extension has two or more letters;
-    # "e.g.", "i.e." and "x.y" stay prose. "12.3.txt" is a file name, not the number 12.3.
+    # A one-character stem is a file name when it is a lowercase letter and a lowercase
+    # extension of two or more letters follows, after the dotted numbers and dates any stem
+    # takes ("a.1.out", "x.2026-10-25.tar.gz" are one token each, where "1.out" or the date
+    # alone was the token); "e.g.", "i.e." and "x.y" stay prose. "12.3.txt" is a file name,
+    # not the number 12.3.
     found = keyline_check.invariants(src)
     assert found[name] == "file" and set(found) == {name, "14:02"}, found
     result = keyline_check.check(src, ren)
     assert not result.ok and name in result.missing, result
     assert keyline_check.invariants("e.g. x.y, i.e. at 14:02") == {"14:02": "time"}
     assert keyline_check.check("e.g. notes.txt at 14:02", "למשל notes.txt ב-14:02").ok
+
+
+@pytest.mark.parametrize("src, ren, expected", [
+    ("p.ex. notes.txt at 14:02", "למשל notes.txt ב-14:02", {"notes.txt": "file", "14:02": "time"}),
+    ("p.ej. notes.txt at 14:02", "למשל notes.txt ב-14:02", {"notes.txt": "file", "14:02": "time"}),
+    ("f.eks. notes.txt at 14:02", "למשל notes.txt ב-14:02", {"notes.txt": "file", "14:02": "time"}),
+    ("z.Bsp. notes.txt at 14:02", "למשל notes.txt ב-14:02", {"notes.txt": "file", "14:02": "time"}),
+    ("born 44 v.Chr. at 14:02", "נולד 44 לפנה\"ס ב-14:02", {"44": "number", "14:02": "time"}),
+    ("the 2.nd try at 14:02", "הניסיון ה-2 ב-14:02", {"2": "number", "14:02": "time"}),
+])
+def test_a_one_character_abbreviation_is_prose(keyline_check, src, ren, expected):
+    # The one-character stem took any letter before any two-letter extension, so the
+    # abbreviations of other languages ("p.ex.", "p.ej.", "f.eks.", "z.Bsp.", "v.Chr.") and
+    # an initial ("J.Smith") or an ordinal ("2.nd") were file tokens a translated rendering
+    # lacked. A one-character stem is a lowercase letter, its extension is lowercase, and the
+    # extension is not itself followed by a period: an abbreviation's parts each end with one
+    # ("p.ex." is prose, "a.out" and "x.tar.gz.1" are file names; "a.out." at a sentence end
+    # is not extracted, a limit the README names). The capitalised part of "z.Bsp." or
+    # "v.Chr." is not a name either: a period after a lowercase letter still ends a sentence.
+    assert keyline_check.invariants(src) == expected
+    assert keyline_check.check(src, ren).ok, src
+    assert keyline_check.invariants("run a.out. Then x.tar.gz. at 14:02") == {"x.tar.gz": "file", "14:02": "time"}
+
+
+@pytest.mark.parametrize("src, ren, expected", [
+    ("use v5.6.15.Final at 14:02", "use v5.6.15.Beta at 14:02",
+     {"v5.6.15": "version", "Final": "proper", "14:02": "time"}),
+    ("use v2.14.0.Beta at 14:02", "use v2.14.0 at 14:02", {"v2.14.0": "version", "Beta": "proper", "14:02": "time"}),
+    ("tag v2.A at 14:02", "tag v2.B at 14:02", {"v2.A": "version", "14:02": "time"}),
+    ("see J.Smith at 14:02", "see J.Jones at 14:02", {"Smith": "proper", "14:02": "time"}),
+    ("read java.lang.String at 14:02", "read java.lang.Object at 14:02",
+     {"java.lang.String": "file", "14:02": "time"}),
+])
+def test_a_capitalised_word_glued_after_a_dot_is_held_to_the_rendering(keyline_check, src, ren, expected):
+    # The "v" version ends before a capitalised word, and the sentence-start rule then read
+    # the period glued to that word as a sentence end, so "Final" in "v5.6.15.Final" was
+    # furniture no rendering had to keep, and "v5.6.15.Beta" passed. A period with no space
+    # after it does not end a sentence: the word after it is a name of its own ("Final",
+    # "Beta", "Smith"), and a one-letter qualifier stays on the version ("v2.A" is one token:
+    # a lone capital letter is no identifier). "Done. Next step" still starts a sentence.
+    assert keyline_check.invariants(src) == expected
+    assert not keyline_check.check(src, ren).ok
+    assert keyline_check.check(src, src).ok
+    assert keyline_check.invariants("Done. Next step at 14:02") == {"14:02": "time"}
+    assert keyline_check.check("Done. Next step at 14:02", "בוצע. השלב הבא ב-14:02").ok
+    assert keyline_check.check("use v1.0.0.RELEASE at 14:02", "use v1.0.0 RELEASE at 14:02").ok
 
 
 @pytest.mark.parametrize("src, ren, missing", [

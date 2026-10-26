@@ -33,15 +33,22 @@ L = rf"(?<![A-Za-z0-9_{LATIN}])"
 # a token may end before ".2026-10-25", ".14:30", ".5%" or ".12.5%", and a dotted tail never
 # takes them. The percentage is the number rule's shape, whole or decimal ("5%", "12.5%",
 # "1,5%"), bounded to three dotted groups so a long dotted digit run is not rescanned from every
-# component; the number rule starts after a digit and a dot only for such a percentage (PCT).
+# component (a longer one is split at the bound, "GPT4.1.2.3.4%" into "GPT4.1" and "2.3.4%",
+# each still held to the rendering); the number rule starts after a digit and a dot only for
+# such a percentage (PCT).
 PCT = r"\d+(?:[.,]\d+){0,2}%"
 NOT_DT = rf"(?!\d{{4}}-\d{{2}}-\d{{2}}(?!\d)|\d{{1,2}}:\d{{2}}|{PCT})"
 R = rf"(?![A-Za-z0-9_{LATIN}]|\.{NOT_DT}\d)"
 TAIL = rf"(?:(?<=\d)\.{NOT_DT}\d+)*"
-# A date, a timestamp or a time is an interior component of a file name when another dotted
-# component follows it ("backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz",
-# "app.log.2026-10-25.1"); a trailing one is a token of its own ("app.log.2026-10-25").
-FILE_DT = r"(?:\d{4}-\d{2}-\d{2}(?:T\d{1,2}:\d{2}(?::\d{2})?Z?)?|\d{1,2}:\d{2}(?::\d{2})?)(?=\.[A-Za-z0-9])"
+# A date, a timestamp or a time (DT; the clock may carry a fraction and a zone, "14:30:00.000Z",
+# "14:30+02:00") is an interior component of a file name or a path when another dotted
+# component follows it (FILE_DT: "backup.2026-10-25.sql", "app.log.2026-10-25.gz",
+# "db.sql.14:30.gz", "app.log.2026-10-25.1", "notes/db.sql.14:30.gz"); a trailing one is a
+# token of its own ("app.log.2026-10-25"). Where the extension that must follow is part of
+# the rule, DT alone serves (the lookahead would be implied).
+CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?"
+DT = rf"(?:\d{{4}}-\d{{2}}-\d{{2}}(?:T{CLOCK})?|{CLOCK})"
+FILE_DT = DT + r"(?=\.[A-Za-z0-9])"
 # A path or file name may also start at a Hebrew letter ("סיכום.md", "תיקיה/קובץ.txt"), but only
 # at the first letter of its word, so a long Hebrew run has one start and not one per letter,
 # and only when no Latin letter, digit or dash follows it, so the prefix of "בnotes/a.txt" and
@@ -89,35 +96,56 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # stem may be numbers as well as letter extensions, in any order, with a letter extension among
 # them ("app.log.1", "backup.tar.gz.1", "app.log.1.gz", "syslog.2.gz" are one token each;
 # "syslog.1" has no extension and is the number alone), and whose stem is one character only
-# before a letter extension of two or more ("a.out", "x.tar.gz.1" are one token each; "e.g.",
-# "i.e.", "x.y" are prose); a date or a time between a file name's components is inside it
-# (FILE_DT: "backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz" are one token
-# each, at most two such components before the first extension and two after it, so a long
-# run of them is not rescanned from every start), while a dotted component that opens a date,
-# a time or a percentage at the end of a name is not part of it ("app.log.2026-10-25T14:30Z"
-# is the file "app.log" and the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%"
-# the name "GPT4" and the number "5%", "notes.txt.12.5%" the file and the number "12.5%"):
-# NOT_DT in the file rule, in every name's dotted tail, in the "v" version's tail and in R, so
-# a token may end before such a component, and the number rule starts after a digit and a
-# dot only before such a percentage (PCT); the numeric version keeps its tail, so that
-# "10.0.0.1:8080" stays one address; a "v" version ends before a dotted lowercase component
-# ("v2.14.0.txt", "v2.pdf" are file names) but not before a capitalised one ("v1.0.0.RELEASE"
-# is the version and the word "RELEASE"); the CamelCase rule tries one
+# when it is a lowercase letter before a lowercase extension of two or more letters that no
+# period follows, after the dotted numbers and dates any stem takes ("a.out", "a.py",
+# "x.tar.gz.1", "a.1.out", "x.2026-10-25.tar.gz" are one token each; "e.g.", "i.e.", "x.y"
+# and the abbreviations of other languages, "p.ex.", "f.eks.", "z.Bsp.", "v.Chr.", are prose,
+# as are an initial, "J.Smith", an ordinal, "2.nd", and "a.out." at the end of a sentence); a
+# date or a time between a file name's components is inside it (FILE_DT:
+# "backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz",
+# "app.log.2026-10-25T14:30:00.000Z.gz" are one token each, at most two such components
+# before the first extension and two after it, so a long run of them is not rescanned from
+# every start; a third ends the name, "notes.txt.2026-10-25.2026-10-26" before
+# ".2026-10-27.gz"), while a dotted component that opens a date, a time or a percentage at
+# the end of a name is not part of it ("app.log.2026-10-25T14:30Z" is the file "app.log" and
+# the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%" the name "GPT4" and the
+# number "5%", "notes.txt.12.5%" the file and the number "12.5%"): NOT_DT in the file rule,
+# in every name's dotted tail, in the "v" version's tail, in a path's dotted tail (which
+# takes an interior date or time as the file rule does: "notes/db.sql.14:30.gz" is one path,
+# "notes/a.txt.5%" the path and the number "5%", "notes/app.log.2026-10-25" the path and the
+# date) and in R, so a token may end before such a component, and the number rule starts
+# after a digit and a dot only before such a percentage (PCT); the numeric version keeps its
+# tail, so that "10.0.0.1:8080" stays one address; a "v" version ends before a dotted
+# lowercase component ("v2.14.0.txt", "v2.pdf" are file names) and before an interior date
+# or time ("v2.2026-10-25.txt", "v2.14:30.txt" are file names; "v2.2026-10-25T14:30Z" is the
+# version and the timestamp), but not before a capitalised word ("v1.0.0.RELEASE" is the
+# version and the word "RELEASE", "v5.6.15.Final" the version and the name "Final": a period
+# glued to the next word after a digit or a capital does not end a sentence, see
+# _is_sentence_start), except a lone
+# capital letter, which stays on the version ("v2.A" is one token; a lone letter is no
+# identifier); the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
 # CamelCase rule, and "xZürichAirport" yields nothing ("richAirport" is not a start: L).
+# A file name's dotted components before its first extension: numbers, and at most two dates
+# or times (each followed by another component, so DT alone: the extension is the lookahead).
+PRE_EXT = rf"(?:\.{NOT_DT}\d+)*(?:\.{DT}(?:\.{NOT_DT}\d+)*){{0,2}}"
 INVARIANT = re.compile(
     L
     + r"""(?:
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
     | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)
-    | (?P<version>v\d+(?:\.""" + NOT_DT + r"""\d+)*(?!\.[a-z])|(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
+    | (?P<version>v\d+(?:\.""" + NOT_DT + r"""\d+)*(?:\.[A-Z""" + LATIN_UPPER + r"""](?![A-Za-z0-9_""" + LATIN + r"""]))?
+                   (?!\.[a-z]|\.""" + FILE_DT + r""")
+                 |(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
     | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
-    | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\][\w.~/\\-]*)
-    | (?P<file>(?<!\d\.)(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")(?:[\w-]{1,199}|(?=\.[A-Za-z]{2}))
-                (?:\.""" + NOT_DT + r"""\d+)*(?:\.""" + FILE_DT + r"""(?:\.""" + NOT_DT + r"""\d+)*){0,2}
+    | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\]
+                (?:[\w~/\\-]|\.(?:""" + FILE_DT + r"""|""" + NOT_DT + r"""))*)
+    | (?P<file>(?<!\d\.)(?:(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}
+                  |[a-z""" + LATIN_LOWER + r"""](?=""" + PRE_EXT + r"""\.[a-z]{2,}(?!\w|\.(?!\w))))
+                """ + PRE_EXT + r"""
                 \.[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*
                 (?:\.""" + FILE_DT + r"""(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*){0,2})
     | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?""" + TAIL + r""")
@@ -211,6 +239,9 @@ HEDGE_HE = {
 }
 
 BOUNDARY = ".?!\n"
+# The character before a period that joins the next word to the one before it, see
+# _is_sentence_start.
+GLUE_BEFORE = re.compile(rf"[0-9A-Z{LATIN_UPPER}]")
 # Markdown markers a line may open with before its first word ("## ", "> ", "- ", "**"), and
 # the furniture a heading or label line may hold around its one word (bold, "_", a label
 # colon, a closing "#").
@@ -266,15 +297,18 @@ def _line(text, start, end, cache):
 def _is_sentence_start(text, start, cache):
     """True when only whitespace, a sentence end or a line-leading marker ("## ", "> ", "**")
     separates this token from a line or sentence edge. A dash or ">" mid-line is a separator
-    ("Postgres - Prisma"), not a marker: the word after it is checked. cache holds the line
-    found last, see _Line."""
+    ("Postgres - Prisma"), not a marker: the word after it is checked. A period glued to the
+    token after a digit or a capital ("v5.6.15.Final", "J.Smith") joins it to the word
+    before, it does not end a sentence: "Final" and "Smith" are checked. After a lowercase
+    letter it does ("z.Bsp.", "v.Chr.", "e.g.Foo": an abbreviation of another language, or a
+    missing space). cache holds the line found last, see _Line."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
     if i < 0:
         return True
     if text[i] in BOUNDARY:
-        return True
+        return not (text[i] == "." and i == start - 1 and i > 0 and GLUE_BEFORE.match(text, i - 1))
     if text[i] in "-*+#>":
         return _line(text, start, start, cache).markers_end > i
     return False

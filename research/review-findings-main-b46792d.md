@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording); pass 7: keyline (R1) 1 high, 3 medium, 7 low (1 pre-existing neighbour of finding 97, 4 regressions of 00d8960, the rest doc claims, missing test rows and idle guard rows), config (R2) 0 high, 2 medium, 8 low (4 regressions of 46eaec7, 1 incomplete fix, 1 pre-existing neighbour, a dead chain, a notice wording, a test that passed before its fix and a silent record field).
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording); pass 7: keyline (R1) 1 high, 3 medium, 7 low (1 pre-existing neighbour of finding 97, 4 regressions of 00d8960, the rest doc claims, missing test rows and idle guard rows), config (R2) 0 high, 2 medium, 8 low (4 regressions of 46eaec7, 1 incomplete fix, 1 pre-existing neighbour, a dead chain, a notice wording, a test that passed before its fix and a silent record field); pass 8: keyline (R1) 0 high, 4 medium, 10 low (3 regressions of a1fd037, 1 regression of the first fix caught before the commit, neighbours, a false test comment, five unpinned regex pieces, a redundant lookahead).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -2371,6 +2371,284 @@ percentage is bounded to three figures.
    acted on.
    Prevention: README.md:113 says a missing copy, or a name that is not the installer's, is
    reported and nothing removed.
+
+## Self-check pass 8 (fresh-context pass over the fix commits a1fd037 and 87df692)
+
+Two fresh-context reviewers, one per fix commit, no report read: R1 over a1fd037 (keyline,
+findings 109-119), R2 over 87df692 (config, findings 120-129). Same adversarial brief as the
+earlier passes. R1 findings 130-140: 0 high, 3 medium, 8 low, every medium reproduced here with
+the reviewer's probes (`python3 -I .../selfcheck7h/r1/compare.py both`, `regress.py both`,
+`onechar.py both`) before the fix: a capitalised qualifier glued after a version was skipped as a
+sentence start, so `v5.6.15.Beta` passed for `v5.6.15.Final`; the one-character stem of a1fd037
+made `p.ex.`, `f.eks.`, `J.Smith` file names, so a correct translation failed; `v2.2026-10-25.txt`
+lost its extension to the version rule. Three more were made while fixing (141-143, 1 medium:
+the first form of the glued-period rule would have made `z.Bsp.` and `v.Chr.` names). The fixed
+module re-run through every r1 probe: `timing.py` every shape under 1 s at N=16000 (worst `check`
+0.98 s on `"25.2026-10-" * 16000 + "25_"`, `invariants` 0.34 s), `fuzz.py` 40000 lines on seeds
+7 and 8 with 0 self-fails, `docs.py` every claim OK, `compare.py`/`regress.py` with only the
+intended differences from the old module. The new test file against the pre-fix module: 56
+failed, 245 passed; the suite on the fixed module 301 passed (272 before).
+
+130. (R1) keyline/keyline_check.py:116 and :276 (before this fix), the version alternative
+    stopped before a dotted capitalised word (`(?!\.[a-z])` let `v5.6.15.Final` end at
+    `v5.6.15`) and `_is_sentence_start` read the period glued to `Final` as a sentence end, so
+    the proper-noun rule skipped `Final`: `v5.6.15.Final` was the version alone, `v2.14.0.Beta`
+    likewise, `tag v2.A` the version `v2`, and a rendering `v5.6.15.Beta` or `v2.B` passed
+    where the code before a1fd037 held `v5.6.15.Final` as a file name and failed it. Reproduced
+    (`r1/compare.py both` rows `use v5.6.15.Final`, `use v2.14.0.Beta`, `tag v2.A`;
+    `r1/regress.py both` rows `v5.6.15.Final -> .Beta`, `v2.A -> v2.B`, old FAIL new PASS).
+    Medium. Class: regression inside the fix (a1fd037 moved the version's end; the word it
+    freed landed in no rule).
+   Fixed: keyline/keyline_check.py:297-311 `_is_sentence_start`, a period glued to the token
+   after a digit or a capital letter (`GLUE_BEFORE`, :241-244) joins it to the word before and
+   is not a sentence boundary: `Final`, `Beta`, `Smith` (`J.Smith`) are proper nouns held to the
+   rendering. After a lowercase letter the period still ends a sentence (`z.Bsp.`, `v.Chr.`,
+   `e.g.Foo`: an abbreviation of another language or a missing space, see finding 142). The
+   version alternative (:140-141) takes one lone capital letter (`v2.A` is one token;
+   `v1.0.0.RELEASE` stays the version and the identifier, as before). The `v2.14.0.Then` row's
+   expectation changes with the rule: `Then` is a proper token now (tests:850, 864: the
+   rendering `v2.14.0. Then` still passes, a sentence start is not held to the rendering).
+   Comment block :121-125, keyline/README.md:57 (the `v` version sentence and the sentence-start
+   sentence) say so.
+   Test: tests/test_keyline_check.py:914-933
+   `test_a_capitalised_word_glued_after_a_dot_is_held_to_the_rendering` (rows `v5.6.15.Final`
+   vs `.Beta`, `v2.14.0.Beta` vs `v2.14.0`, `v2.A` vs `v2.B`, `J.Smith` vs `J.Jones`, failed
+   before the fix; `java.lang.String` vs `.Object` is a control that passed before; asserts
+   `Done. Next step` keeps a sentence start unheld and `v1.0.0.RELEASE` vs `v1.0.0 RELEASE`
+   passes).
+   Other hits: finding 142 (the rule's lowercase exception), finding 132 (the same version
+   alternative).
+   Prevention: when a rule's end moves, the token it frees is checked to land in another rule
+   (the reviewer's compare probe does this; a swapped-qualifier rendering is now a test row).
+
+131. (R1) keyline/keyline_check.py:119 (before this fix), the one-character stem
+    (`(?=\.[A-Za-z]{2})`) accepted any letter before any two letters, so the abbreviations of
+    other languages (`p.ex.`, `p.ej.`, `f.eks.`, `m.fl.`, `z.Bsp.`, `v.Chr.`), an initial
+    (`J.Smith`) and an ordinal (`2.nd`) were file tokens, and a correct translation
+    (`p.ex. notes.txt` -> `למשל notes.txt`) failed with the abbreviation missing. Reproduced
+    (`r1/onechar.py both`, every row; `r1/regress.py both` row `p.ex. notes.txt`, old PASS new
+    FAIL). Medium. Class: regression inside the fix (a1fd037's one-character stem, checked
+    against `e.g.` and `i.e.` only).
+   Fixed: keyline/keyline_check.py:146-147, the one-character stem is a lowercase letter
+   (`[a-z]` and the Latin lowercase set) whose lookahead demands, after the dotted numbers and
+   dates any stem takes (`PRE_EXT`), a lowercase extension of two or more letters that neither
+   a word character nor a period follows (`(?!\w|\.(?!\w))`): `a.out`, `a.py`, `x.tar.gz.1`,
+   `a.1.out`, `x.2026-10-25.tar.gz` are one token each; `p.ex.`, `f.eks.`, `z.Bsp.`, `v.Chr.`,
+   `J.Smith`, `2.nd` are prose (`Smith` a proper noun by finding 130), and so is `a.out.` at a
+   sentence end, a limit keyline/README.md:210 (Honest limits) names with the rule; comment
+   block :96-104.
+   Test: tests/test_keyline_check.py:891-912 `test_a_one_character_abbreviation_is_prose`
+   (rows `p.ex.`, `p.ej.`, `f.eks.`, `z.Bsp.` against the Hebrew `למשל`, `v.Chr.` against
+   `לפנה"ס`, `2.nd` against `ה-2`, each with the exact token dict; the `a.out. Then x.tar.gz.`
+   assert; failed before the fix), and the `a.py` vs `b.py` row at :871 (a two-letter extension
+   stays in).
+   Other hits: finding 135 (the stem before a dotted number or date), finding 143 (the
+   extension lookahead's backtracking).
+   Prevention: a shortened stem rule is probed against the abbreviation lists of the languages
+   the renderings are written in (the reviewer's `onechar.py` rows are kept in the probe
+   folder), not only against English ones.
+
+132. (R1) keyline/keyline_check.py:116 (before this fix), the version alternative's tail
+    stopped at an interior date or time (`NOT_DT`) and the file alternative never tried from
+    `v`, so `v2.2026-10-25.txt` was the version `v2` and the date, `v2.14:30.txt` the version
+    and the time, the extension lost, and a rendering `v2.2026-10-25.pdf` passed. Reproduced
+    (`r1/compare.py both` rows `tag v2.2026-10-25.txt`, `tag v2.14:30.txt`; `r1/regress.py
+    both` the same rows, old FAIL new PASS). Medium. Class: regression of this commit (a1fd037
+    added `NOT_DT` to the version tail without letting the file rule take the name).
+   Fixed: keyline/keyline_check.py:141, the version alternative's lookahead is
+   `(?!\.[a-z]|\.FILE_DT)` (the reviewer's validated mutant): a `v` version ends before an
+   interior date or time as it ends before a lowercase extension, and the file alternative
+   takes `v2.2026-10-25.txt`, `v2.14:30.txt` as one token each; `v2.2026-10-25T14:30Z` stays
+   `v2` and the timestamp (a trailing one is a token of its own). Comment block :117-121,
+   keyline/README.md:57.
+   Test: tests/test_keyline_check.py:764-765, rows `v2.2026-10-25.txt` vs `.pdf` and
+   `v2.14:30.txt` vs `.pdf` in `test_a_date_or_time_before_an_extension_is_inside_the_file_name`
+   (failed before the fix). Timing: `"v1" + ".1" * 16000 + "_"` 0.13 s `invariants`, 0.34 s
+   `check`.
+   Other hits: none.
+   Prevention: a guard added to one rule's tail is probed with the shapes the next rule in the
+   alternation would have taken (the `v` stem before every dated shape is in `compare.py`).
+
+133. (R1) keyline/keyline_check.py:120, :122 (before this fix), the `{0,2}` bound on dated
+    components inside a name was not documented: `notes.txt.2026-10-25.2026-10-26.2026-10-27.gz`
+    is the file name `notes.txt.2026-10-25.2026-10-26` and the date `2026-10-27` (the `.gz`
+    lost, as before a1fd037), `backup.2026-10-25.14:30.2026-10-26.sql` three dated tokens and
+    no name, while the README said only that a trailing date is a token of its own. Reproduced
+    (`r1/docs.py both` rows "3 before", "3 after + ext"). Low. Class: neighbour of the fixed
+    input, undocumented bound.
+   Fixed: the bound stays (it is what keeps the scan linear: 6.3 s unbounded, 0.008 s now on the
+   CHANGELOG shape); the comment at keyline/keyline_check.py:131-133 (`PRE_EXT`) and :105-108
+   and keyline/README.md:57 say "at most two of them on each side of the first extension; a
+   third ends the name and is a date of its own". No code change for this finding.
+   Test: tests/test_keyline_check.py:808-832 `test_a_third_dated_component_ends_the_file_name`
+   (pins the two tokenisations above, the self-check and a swapped third date; it passed before
+   the fix: it pins the bound, not a change) and the two-component rows :773-776
+   (`backup.2026-10-25.14:30.sql` vs `.bak`, `notes.txt.2026-10-25.2026-10-26.gz` vs `.xz`,
+   which fail with `{0,1}`: the reviewer's mutant (c) is caught).
+   Other hits: finding 137 (the unpinned "two").
+   Prevention: a numeric bound in a rule gets a row at the bound and one past it, and a README
+   sentence, when it is introduced.
+
+134. (R1) keyline/keyline_check.py:44 (before this fix), `FILE_DT` took a timestamp with no
+    fraction and only a `Z` zone, and a time with no zone, while the comment (:41-43) and the
+    README said "a date, a timestamp or a time": `app.log.2026-10-25T14:30:00.000Z.gz`,
+    `app.log.2026-10-25T14:30+02:00.gz`, `app.log.14:30Z.gz` were not one token (the extension
+    lost; a swapped extension passed), as before a1fd037. Reproduced (`r1/docs.py both` rows
+    "timestamp with fraction", "timestamp with numeric zone", "time with Z"). Low. Class:
+    neighbour of the fixed input, and the comment overstated the rule.
+   Fixed: keyline/keyline_check.py:49-51, `CLOCK` (a time with optional seconds, fraction of
+   any length, since `isoformat` writes six digits, and a `Z` or `+hh:mm` zone), `DT` (a date,
+   a timestamp or a time) and `FILE_DT = DT + (?=\.[A-Za-z0-9])`: the four names above are
+   one token each; a trailing one is still a token of its own. Timing at N=16000 unchanged
+   within noise (worst `check` 0.69-0.98 s on `"25.2026-10-" * N + "25_"`, the reviewer's
+   worst before this fix 0.83 s). Comment :41-48, keyline/README.md:57 (the
+   `app.log.2026-10-25T14:30:00.000Z.gz` example).
+   Test: tests/test_keyline_check.py:766-772, rows `app.log.2026-10-25T14:30Z.gz` vs `.xz`,
+   `app.log.2026-10-25T14:30:00.000Z.gz` vs `.xz`, `app.2026-10-25T14:30:00+02:00.log` vs a
+   swapped stem, `app.log.14:30Z.gz` vs `.xz` (failed before the fix, the first one also pins
+   the reviewer's mutant (a)).
+   Other hits: finding 138 (the same constants).
+   Prevention: a rule named after a kind (`FILE_DT`) is built from the kind's own regex (the
+   time rule's shape), not a shorter copy of it.
+
+135. (R1) keyline/keyline_check.py:119 (before this fix), the one-character stem's lookahead
+    demanded the letter extension right after the stem, so a dotted number or a date between
+    them left the stem out: `a.1.out` was the file `1.out` (the wrong token: a rendering
+    `b.1.out` passed), `x.2026-10-25.tar.gz` the date alone. Reproduced (`r1/onechar.py both`
+    rows `a.1.out`, `x.2026-10-25.tar.gz`). Low. Class: neighbour of the fixed input.
+   Fixed: keyline/keyline_check.py:147, the stem's lookahead skips `PRE_EXT` (the dotted
+   numbers and at most two dates or times any stem takes) before the extension: `a.1.out`,
+   `x.2026-10-25.tar.gz`, `x.14:30.log` are one token each. Comment block :99-101,
+   keyline/README.md:210.
+   Test: tests/test_keyline_check.py:872-873, rows `a.1.out` vs `b.1.out` and
+   `x.2026-10-25.tar.gz` vs `y.2026-10-25.tar.xz` (failed before the fix).
+   Other hits: finding 131 (the same stem rule).
+   Prevention: a stem rule is probed with every interior component the long stem takes.
+
+136. (R1) tests/test_keyline_check.py:767-769 (before this fix), the comment said "a source
+    that names the date alone still finds it inside the file name", which is true before an
+    extension (`backup.2026-10-25.sql`) and false before a rotation number
+    (`app.log.2026-10-25.1`, `db.sql.14:30.1`: the right boundary refuses a dotted digit after
+    the date). Reproduced (`r1/regress.py both` rows `dump of 2026-10-25 -> rotate
+    app.log.2026-10-25.1`, `at 14:30 -> db.sql.14:30.1`, FAIL on both). Low. Class: comment
+    overstated the rule.
+   Fixed: the comment is narrowed (my call, not the boundary: a dotted digit after a date is
+   what keeps `2026-10-25.1` from being read as a date in `app.log.2026-10-25.1.gz` and the
+   number rule's digit-dot guard rests on it): tests/test_keyline_check.py:793-797 says the
+   date alone is found before an extension, not before a rotation number, and
+   keyline/README.md:210 (Honest limits) names the limit.
+   Test: tests/test_keyline_check.py:804-805, the two asserts (`dump of 2026-10-25` passes
+   against `backup.2026-10-25.sql`, fails against `app.log.2026-10-25.1`); they pin the
+   documented behaviour and passed before the fix.
+   Other hits: none.
+   Prevention: a test comment that claims a lookup works is written as an assert next to it.
+
+137. (R1) tests/test_keyline_check.py (before this fix), five parts of a1fd037 had no row of
+    their own: the timestamp branch of `FILE_DT`, the comma in `PCT`, the "two" of `{0,2}`,
+    the two-letter minimum of the one-character stem, and the `12.3.txt` row (:800) and the
+    two timing rows (:414) passed on the old module. Reproduced (the reviewer's mutants (a)-(d)
+    pass 272/272; `r1/oldtests`). Low. Class: fix without a test.
+   Fixed: rows added, tests/test_keyline_check.py:766-767 `app.log.2026-10-25T14:30Z.gz` vs
+   `.xz` (mutant (a)), :727-728 `GPT4.1,5%` vs `GPT4.1,6%` (mutant (b)), :773-776 the
+   two-component rows and :808 the third-component test (mutant (c)), :871 `a.py` vs `b.py`
+   (mutant (d)); the `12.3.txt` row (:874-875) is commented as a control ("a two-character
+   digit stem was a file name before the one-character rule too"); the timing test's comment
+   (:431-433) says the two rows pin the bound, not the code before the interior date, which had
+   no such run to scan and passes them too.
+   Test: the rows above (each new row failed before the fix, except the control and the bound
+   test, said so in their comments).
+   Other hits: findings 133, 134.
+   Prevention: a fix's commit runs the new test file against the pre-fix module and names the
+   rows that pass as controls (the `oldtests` setup in the probe folder).
+
+138. (R1) keyline/keyline_check.py:120 (before this fix), `FILE_DT`'s lookahead
+    `(?=\.[A-Za-z0-9])` was implied by the component that must follow in the pre-extension
+    group; only the post-extension use (:122) needed it. Reproduced (the reviewer's mutant
+    `no_lookahead_in_pre_ext_FILE_DT` is behaviour-identical). Low. Class: redundant code.
+   Fixed: keyline/keyline_check.py:49-51 split the rule into `DT` (the kind) and `FILE_DT` (the
+   kind with the lookahead); `PRE_EXT` (:133) and the one-character stem's lookahead (:147)
+   use `DT`, the post-extension group (:150) and the version and path alternatives keep
+   `FILE_DT`. The comment (:46-48) says where each serves.
+   Test: no new row (no behaviour changed); the suite, `compare.py` and `fuzz.py` are
+   unchanged by it.
+   Other hits: none.
+   Prevention: a lookahead that repeats the next component of the rule is written once, as the
+   component.
+
+139. (R1) keyline/keyline_check.py:118 (before this fix), the path alternative's tail
+    `[\w.~/\\-]` took any dotted component, so `notes/a.txt.5%` was the path `notes/a.txt.5`
+    and a rendering `notes/a.txt.5` passed, where the file alternative had `NOT_DT` since
+    a1fd037. Reproduced (`r1/compare.py both` row `see notes/a.txt.5%`, same on both;
+    `r1/regress.py both`, the rendering passes both). Low. Class: neighbour of the fixed input
+    (the path rule missed what the file rule got).
+   Fixed: keyline/keyline_check.py:145, the path's dotted tail is
+   `\.(?:FILE_DT|NOT_DT)`: a dotted component that opens a date, a time or a percentage ends
+   the path unless another component follows it (finding 141): `notes/a.txt.5%` is the path
+   `notes/a.txt` and `5%`, `notes/app.log.2026-10-25` the path and the date,
+   `notes/db.sql.14:30.gz` one path. Timing: `"x/" + ".2026" * 16000 + "_"` and the path
+   shapes of `timing.py` unchanged (0.18 s / 0.45 s worst). Comment block :113-116,
+   keyline/README.md:57.
+   Test: tests/test_keyline_check.py:729-730, row `notes/a.txt.5%` vs `notes/a.txt.5` (failed
+   before the fix) and :818-840
+   `test_a_path_takes_an_interior_date_or_time_and_ends_before_a_trailing_one`.
+   Other hits: finding 141.
+   Prevention: a guard added to the file rule's tail is added to the path rule's tail in the
+   same change (both comment blocks now say "in a path's dotted tail too").
+
+140. (R1) keyline/keyline_check.py:34 (before this fix), the percentage bound of `PCT`
+    (`{0,2}` groups) splits a longer dotted figure at the bound: `GPT4.1.2.3.4%` is `GPT4.1` and
+    `2.3.4%`, `GPT4.5%ile` is `GPT4` and `5`. A changed figure still fails; only the split is
+    odd. Reproduced (`r1/compare.py new`). Low. Class: cosmetic, documented.
+   Fixed: no code change (the bound is the linear-time fix of finding 110); the comment at
+   keyline/keyline_check.py:36-38 names the split and that each part is still held to the
+   rendering.
+   Test: none (no behaviour changed).
+   Other hits: none.
+   Prevention: a bound that shapes a token is named in the comment next to the bound.
+
+141. (fix) keyline/keyline_check.py:118 (before this fix), the path alternative's tail stopped
+    at the colon of an interior time, so `notes/db.sql.14:30.gz` was the path `notes/db.sql.14`
+    and the file `30.gz`, and a rendering `notes/db.sql.14:31.gz` passed; adding `NOT_DT` alone
+    (finding 139) would have made it the path `notes/db.sql`, the time and the file `30.gz`.
+    Found while fixing 139 (`compare.py` row). Low. Class: neighbour of the fixed input (the
+    path rule missed the interior date that a1fd037 gave the file rule).
+   Fixed: keyline/keyline_check.py:145, the path's dotted tail takes `FILE_DT` as the file
+   rule does: `backups/backup.2026-10-25.sql`, `notes/db.sql.14:30.gz` are one path each,
+   `notes/app.log.2026-10-25` the path and the date, `notes/a.txt.2026-10-25T14:30Z` the path
+   and the timestamp. Comment block :113-116, keyline/README.md:57.
+   Test: tests/test_keyline_check.py:818-840
+   `test_a_path_takes_an_interior_date_or_time_and_ends_before_a_trailing_one` (four rows;
+   `notes/db.sql.14:30.gz` vs `14:31` and the two trailing rows failed before the fix).
+   Other hits: finding 139.
+   Prevention: as finding 139.
+
+142. (fix) keyline/keyline_check.py:276 (before this fix), the first form of the glued-period
+    rule (finding 130: no glued period is a sentence boundary) made `Bsp` and `Chr` proper
+    nouns in `z.Bsp.` and `v.Chr.`, and the Hebrew renderings `למשל` and `לפנה"ס` failed with
+    the "name" missing. Found by the abbreviation rows while fixing 130 and 131. Medium (a
+    regression the first fix would have shipped). Class: regression inside the fix, caught
+    before the commit.
+   Fixed: keyline/keyline_check.py:241-244 `GLUE_BEFORE` and :311, the glued period is not a
+   boundary only after a digit or a capital letter (`v5.6.15.Final`, `J.Smith`); after a
+   lowercase letter it still ends a sentence (`z.Bsp.`, `v.Chr.`, and `e.g.Foo`, a missing
+   space). Docstring :300-304, keyline/README.md:57.
+   Test: tests/test_keyline_check.py:896-898, rows `z.Bsp.` and `v.Chr.` (fail with the first
+   form; pass before and after the fix), and :916-920 the glued rows that need the rule.
+   Other hits: finding 130.
+   Prevention: a sentence-boundary change is run against the abbreviation rows of finding 131
+   before it is kept.
+
+143. (fix) keyline/keyline_check.py:147 (during this fix), the one-character stem's extension
+    lookahead `\.[a-z]{2,}(?!\.(?!\w))` backtracked (`eks` to `ek`), so `f.eks.` and `a.out.`
+    still matched as `f.ek` and `a.ou`. Found by the `f.eks.` row and the `a.out.` assert
+    while fixing 131. Low. Class: regression inside the fix, caught before the commit.
+   Fixed: the lookahead is `\.[a-z]{2,}(?!\w|\.(?!\w))`, which anchors the extension's end to a
+   non-word character before refusing a period that ends the sentence.
+   Test: tests/test_keyline_check.py:896 row `f.eks.` and :912 the `a.out. Then x.tar.gz.`
+   assert (failed with the backtracking form).
+   Other hits: none.
+   Prevention: a quantified class inside a negative lookahead is anchored at its end, or the
+   lookahead is probed with a word one letter longer than the minimum.
 
 ## Checked and found clean (both reviewers and both verifiers)
 
