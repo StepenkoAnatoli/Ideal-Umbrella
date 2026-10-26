@@ -32,15 +32,16 @@ config/uninstall.py can put back the values that were there before. An install i
 after step 1 and before step 5 leaves the interim record, marked unfinished: the uninstall
 restores what it lists (a replaced value the run never got to write is left as it is; a key
 named in "pre_write" holding the template value was written by the run, while the template
-value in any other listed key is the user's own), removes the copy of settings.json the run
-never replaced, judges the keys it does not list from the evidence (our hook entry) and names
-a value of the user's own it finds in one, and the next install completes the record (the
-template values it finds in settings.json are recorded as installed; a replacement the run
-never wrote is dropped when the key still holds the replaced value and that value is not the
-template's, so a template that moved to the user's value keeps the claim).
+value in any other listed key is the user's own; a record from before "pre_write" names no
+such key, and the template value in any listed key is read as the run's write, as it was
+then), removes the copy of settings.json the run never replaced, judges the keys it does not
+list from the evidence (our hook entry) and names a value of the user's own it finds in one,
+and the next install completes the record (the template values it finds in settings.json are
+recorded as installed; a replacement the run never wrote is dropped when the key still holds
+the replaced value and that value is not the template's, so a template that moved to the
+user's value keeps the claim, and the undo puts the user's value back).
 """
 import argparse
-import copy
 import datetime
 import errno
 import hashlib
@@ -315,6 +316,19 @@ def _backup_of(target, name):
     return target.with_name(name)
 
 
+def _not_a_copy(path):
+    """Why what sits at a recorded copy or backup name is not a copy the installer writes (a
+    regular file, never a link): "a symlink", "a directory" or "not a regular file"; None when
+    it is one, and when nothing is there (missing is the caller's to name)."""
+    if path.is_symlink():
+        return "a symlink"
+    if path.is_dir():
+        return "a directory"
+    if path.exists() and not path.is_file():
+        return "not a regular file"
+    return None
+
+
 def _discard(copy_path, line, *lists):
     """Remove a copy nothing records (its record was never written, or the copy it stood in
     for failed) and the line naming it from each list; a copy that cannot be removed stays
@@ -545,17 +559,36 @@ def install(home, force=False, progress=None, config_dir=None):
     current_md = _read_text(paths["claude_md"]) if claude_md_exists else None
     old_md = old_record.get("claude_md")
     # The copy an interrupted install made and recorded, still equal to the file it was taken
-    # from (the install never got to replace it): the one to keep, not to make again.
-    recorded_copy = None
+    # from (the install never got to replace it): the one to keep, not to make again. A name
+    # the installer never writes, or a symlink or folder at the name (a link to CLAUDE.md
+    # reads as equal to it), is no copy: it is named when a fresh copy is made.
+    recorded_copy, odd_md_copy = None, None
     if isinstance(old_md, dict) and current_md is not None:
-        candidate = _backup_of(paths["claude_md"], old_md.get("backup"))
-        if (candidate is not None and candidate.is_file()
-                and _read_bytes(candidate) == _read_bytes(paths["claude_md"])):
+        named_md = old_md.get("backup")
+        candidate = _backup_of(paths["claude_md"], named_md)
+        if candidate is None:
+            if named_md is not None:
+                odd_md_copy = ("the record names a CLAUDE.md backup that is not a name the installer "
+                               f"writes ({named_md!r})")
+        elif _not_a_copy(candidate):
+            odd_md_copy = (f"the CLAUDE.md backup the record names ({candidate.name}) is "
+                           f"{_not_a_copy(candidate)}, not a copy the installer writes")
+        elif candidate.is_file() and _read_bytes(candidate) == _read_bytes(paths["claude_md"]):
             recorded_copy = candidate
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
-    settings_before = copy.deepcopy(existing)   # merge_settings fills the containers in place
+    # What the run compares later (the pre-write values of the keys it lists, and whether the
+    # file shows anything of an interrupted write): the top-level values as they are now, and
+    # the permissions.deny list as it is, since merge_settings fills the containers in place
+    # and replaces the rest. Not a deep copy of the file: a value of yours nested a few
+    # hundred levels deep made that copy hit the recursion limit, where json does not.
+    settings_before = dict(existing)
+    permissions = existing.get("permissions")
+    if isinstance(permissions, dict):
+        settings_before["permissions"] = dict(permissions)
+        if isinstance(permissions.get("deny"), list):
+            settings_before["permissions"]["deny"] = list(permissions["deny"])
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
@@ -580,7 +613,9 @@ def install(home, force=False, progress=None, config_dir=None):
         # moved to that value: the key then holds the template value as well, which the loop
         # below records as installed, and the claim is what tells the undo to put the user's
         # value back rather than remove the key (dropping it made the undo remove the user's
-        # value, and a later template change overwrite it without --force).
+        # value). The kept claim makes the key an installed one, so a later template change
+        # refreshes it without --force, as for any installed key; the undo then puts the
+        # user's value back.
         stale = [k for k, v in old_record.get("replaced", {}).items()
                  if k not in record["replaced"] and k not in record["installed"]
                  and existing.get(k) == v and existing.get(k) != template.get(k)]
@@ -638,14 +673,33 @@ def install(home, force=False, progress=None, config_dir=None):
         # differs while the file shows nothing of that install's write (edited since) is a
         # copy of a file never replaced: it is removed once the fresh copy is recorded. One
         # that differs after the write is the backup of the file that write replaced, and
-        # stays as a finished install's backups do; so does one the record names by a name
-        # the installer never writes (the file itself, a path), which is not a copy at all.
-        candidate = _backup_of(paths["settings"], old_record.get("settings_backup"))
-        if candidate is not None and candidate.is_file():
+        # stays as a finished install's backups do, named, since the completed record will not
+        # name it (nor can the write be told from the keys when an earlier install added them:
+        # the copy stays then too). The record as read is what the copy is judged by: a
+        # replaced claim this run drops as stale is still what the interrupted run set out to
+        # write, and the undo judges by the same record. One the record names by a name the
+        # installer never writes (the file itself, a path) is not a copy at all, nor is a
+        # symlink or folder at the name (a link to settings.json reads as equal to it): both
+        # are named, and a fresh copy is made.
+        named = old_record.get("settings_backup")
+        candidate = _backup_of(paths["settings"], named)
+        copy_notice = None
+        if candidate is None:
+            if named is not None:
+                copy_notice = ("the record names a copy of settings.json that is not a name the installer "
+                               f"writes ({named!r}); a fresh copy is made")
+        elif _not_a_copy(candidate):
+            copy_notice = (f"the copy of settings.json the record names ({candidate.name}) is "
+                           f"{_not_a_copy(candidate)}, not a copy the installer writes; a fresh copy is made")
+        elif candidate.is_file():
             if _read_bytes(candidate) == _read_bytes(paths["settings"]):
                 settings_backup = candidate
-            elif unfinished_old and _settings_write_pending(old_record, settings_before):
+            elif unfinished_old and _settings_write_pending(raw_record, settings_before):
                 stale_settings_copy = candidate
+            elif unfinished_old:
+                copy_notice = (f"the copy of settings.json the interrupted install made, {candidate.name}, "
+                               "differs from the file and is kept as a backup; the completed record does "
+                               "not name it")
         fresh_settings_backup = settings_backup is None
         if fresh_settings_backup:
             settings_backup = _backup(paths["settings"])
@@ -653,6 +707,8 @@ def install(home, force=False, progress=None, config_dir=None):
         else:
             setting_changes.append(f"settings backup: {settings_backup.name} (reused)")
         progress.append(setting_changes[-1])
+        if copy_notice is not None:
+            notices.append(copy_notice)
 
     backup = None
     if md_changed:
@@ -674,6 +730,8 @@ def install(home, force=False, progress=None, config_dir=None):
                 raise
             changes.append(f"CLAUDE.md backup: {backup.name}")
             progress.append(changes[-1])
+            if odd_md_copy is not None:
+                notices.append(f"{odd_md_copy}; a fresh copy is made")
         # Keep the first backup when the file is still what an earlier install wrote. If the
         # user edited it since, their edits are what an uninstall should put back.
         if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md or still_ours):

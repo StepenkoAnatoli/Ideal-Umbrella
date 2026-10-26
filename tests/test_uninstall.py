@@ -1275,6 +1275,7 @@ def test_the_undo_removes_the_copy_of_a_settings_json_you_edited_after_the_inter
 def test_the_copy_of_a_replaced_settings_json_is_kept_by_the_undo(install_module, uninstall_module, tmp_path):
     # The twin: with the interrupt at the final record the write happened, so the copy the
     # interim names is a backup of the replaced file, and it differs from it. It stays.
+    # A control: it passes on the modules from before the orphan copy was removed at all.
     home = tmp_path / "home"
     claude = home / ".claude"
     seed(home, {"model": "opus"})
@@ -1304,8 +1305,9 @@ def test_the_copy_of_a_replaced_settings_json_is_kept_by_the_undo(install_module
 def test_the_folder_check_covers_a_claude_md_deleted_beside_an_orphan_settings_copy(install_module, uninstall_module, tmp_path, monkeypatch):
     # The folders the undo deletes in are checked before the first write. The orphan settings
     # copy was added to that list in the middle of an if/elif chain, so with such a copy the
-    # CLAUDE.md the undo deletes dropped out of the check (both are in the same folder, so
-    # nothing showed; the chain was wrong all the same).
+    # CLAUDE.md the undo deletes dropped out of the check. Nothing observable hangs on it
+    # (layout() puts both files in the same folder, so the check made for the copy covers the
+    # file): this pins the chain's shape, so the list stays one entry per file removed.
     home = tmp_path / "home"
     claude = home / ".claude"
     seed(home, {"model": "opus"})
@@ -1325,7 +1327,8 @@ def test_the_folder_check_covers_a_claude_md_deleted_beside_an_orphan_settings_c
     assert paths["claude_md"] in checked and copy in checked, checked
 
 
-def test_an_unlisted_key_holding_your_own_value_under_an_unfinished_record_is_named_as_unlisted(install_module, uninstall_module, tmp_path):
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_an_unlisted_key_holding_your_own_value_under_an_unfinished_record_is_named_as_unlisted(install_module, uninstall_module, tmp_path, dry_run):
     # Under an unfinished record with the hook in place, a template key the record does not
     # list and that holds the user's own value got "not the installed value; left as is", as
     # if the install had listed it, and went into the marker as a key left as is, so the
@@ -1334,9 +1337,205 @@ def test_an_unlisted_key_holding_your_own_value_under_an_unfinished_record_is_na
     home = tmp_path / "home"
     seed(home, {"model": "opus", "autoCompactWindow": 100})
     _interrupt_write(install_module, home, "claude_md")
-    changes, notices = uninstall_module.uninstall(home)
+    changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
     assert [c for c in changes if not c.startswith("settings.json backup")] == ["hook deleted"], changes
     assert notices == ["autoCompactWindow is 100, not the template value, and the record of the install "
                        "that did not finish does not list it; left as is"], notices
     assert read_settings(home) == {"model": "opus", "autoCompactWindow": 100}
-    assert json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8")) == {"uninstalled": True}
+    if not dry_run:
+        assert json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def _interrupt_record(install_module, home, which, force=False):
+    """Run install(home) with the `which`-th _write_json of the record (1 = the interim one,
+    2 = the final one) failing like a full disk."""
+    record_path = install_module.layout(home)["record"]
+    real_write = install_module._write_json
+    calls = []
+
+    def failing(path, data):
+        calls.append(path)
+        if path == record_path and calls.count(record_path) == which:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    install_module._write_json = failing
+    try:
+        with pytest.raises(OSError):
+            install_module.install(home, force=force)
+    finally:
+        install_module._write_json = real_write
+
+
+def _move_template(install_module, uninstall_module, tmp_path, monkeypatch, key, value):
+    """Point both modules at a copy of the template with key set to value."""
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    template[key] = value
+    newer = tmp_path / "user-settings.json"
+    newer.write_text(json.dumps(template), encoding="utf-8")
+    monkeypatch.setattr(install_module, "USER_SETTINGS", newer)
+    monkeypatch.setattr(uninstall_module.install, "USER_SETTINGS", newer)
+
+
+def test_a_record_with_fifty_thousand_pre_write_keys_is_undone_in_bounded_time(uninstall_module, tmp_path):
+    # pre_write was read from the record as a list and looked up for every key the undo judges:
+    # a record with thousands of keys made the undo take seconds (a list scan per key, inside
+    # the per-key loop; 20000 keys took 1.6 s here, 50000 about ten). It is a set once
+    # _check_record has seen it is a list of strings.
+    import time
+    home = tmp_path / "home"
+    keys = [f"key{i}" for i in range(50000)]
+    seed(home, {k: 2 for k in keys})
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record_path.parent.mkdir()
+    record_path.write_text(json.dumps({"added_keys": keys, "replaced": {}, "deny_added": [],
+                                       "installed": {k: 1 for k in keys}, "created": [],
+                                       "pre_write": keys, "unfinished": True}), encoding="utf-8")
+    start = time.perf_counter()
+    changes, notices = uninstall_module.uninstall(home, dry_run=True)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2, elapsed
+    assert changes == [] and len(notices) == 50000, (changes, notices[:3])
+    assert all(n.endswith("not the installed value; left as is") for n in notices), notices[:3]
+
+
+def test_an_interim_record_from_before_pre_write_reads_the_template_value_as_the_runs_write(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The undo read a listed key holding the template value as the user's own unless the
+    # record named the key in pre_write. The interim record of an earlier installer has no such
+    # field at all: with the template value the interrupted run wrote in place, the undo kept
+    # it as "not the installed value". A record without the field is read as before the field
+    # existed (the template value in any listed key is that run's write) and the undo says so;
+    # one with an empty list keeps the rule (see the test of a value set by hand, above).
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    paths = install_module.layout(home)
+    _move_template(install_module, uninstall_module, tmp_path, monkeypatch, "autoCompactWindow", 300000)
+    _interrupt_record(install_module, home, 2)
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert record["pre_write"] == ["autoCompactWindow"] and read_settings(home)["autoCompactWindow"] == 300000, record
+    del record["pre_write"]
+    # The copy of settings.json was not named by that installer either.
+    (home / ".claude" / record.pop("settings_backup")).unlink()
+    paths["record"].write_text(json.dumps(record), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow: removed" in changes, (changes, notices)
+    assert notices == ["the install record predates pre_write (an earlier installer wrote it); the template "
+                       "value in autoCompactWindow is read as the interrupted install's write"], notices
+    assert read_settings(home) == {"model": "opus"}
+    assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def test_the_marker_of_an_undo_that_found_settings_json_missing_keeps_an_empty_pre_write(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The marker an undo leaves while settings.json is missing carried pre_write only when it
+    # named a kept key; an empty list was dropped. Once a record without the field is read as
+    # one from before the field existed, that marker would make the later run that finds
+    # settings.json back remove a value you set by hand to the template's as the interrupted
+    # run's write. The field stays, empty or not, as long as the record had it.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    install_module.install(home)
+    paths = install_module.layout(home)
+    _move_template(install_module, uninstall_module, tmp_path, monkeypatch, "autoCompactWindow", 300000)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 300000
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    paths["hook"].unlink()
+    _interrupt_write(install_module, home, "hook")
+    assert json.loads(paths["record"].read_text(encoding="utf-8"))["pre_write"] == []
+    full = settings_file(home).read_text(encoding="utf-8")
+    settings_file(home).unlink()
+    uninstall_module.uninstall(home)
+    marker = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert marker["unfinished"] is True and marker["pre_write"] == [], marker
+    settings_file(home).write_text(full, encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert read_settings(home)["autoCompactWindow"] == 300000, (changes, notices)
+    assert notices == ["autoCompactWindow is 300000, not the installed value; left as is"], notices
+
+
+def test_the_undo_goes_on_when_the_orphan_settings_copy_cannot_be_removed(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The removal of the copy an interrupted install made of settings.json was the undo's first
+    # write, with no handling of a failure: a copy that cannot be unlinked (owned by another
+    # user in a sticky folder, which the folder check does not see) stopped the whole undo with
+    # "the undo stopped part way", on every run, where the undo from before the copy was known
+    # finished. The copy is harmless: it is named for the user to remove, and the undo goes on,
+    # as the install does with such a copy.
+    import errno
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {"model": "opus"}, claude_md="mine\n")
+    _interrupt_write(install_module, home, "settings")
+    copy = next(claude.glob("settings.json.bak-*"))
+    real_unlink = Path.unlink
+
+    def failing(self, missing_ok=False):
+        if self == copy:
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(self))
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", failing)
+    changes, notices = uninstall_module.uninstall(home)
+    monkeypatch.undo()
+    assert "hook deleted" in changes and any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert not any("settings.json backup" in c for c in changes), changes
+    assert notices == [f"the copy of settings.json the interrupted install made, {copy.name}, could not be "
+                       "removed (Operation not permitted); remove it by hand"], notices
+    assert copy.exists() and (claude / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+    assert json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_settings_copy_that_is_not_a_regular_file_is_named_and_left_by_the_undo(install_module, uninstall_module, tmp_path, kind, dry_run):
+    # The name check let through whatever sits at the recorded copy name: a symlink to
+    # settings.json read as equal to it and was removed as the orphan copy, and a folder was
+    # called "missing" while it is there. Neither is a copy the installer writes (a regular
+    # file, never a link): each is named for what it is and left.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {"model": "opus"})
+    _interrupt_write(install_module, home, "settings")
+    copy = next(claude.glob("settings.json.bak-*"))
+    copy.unlink()
+    if kind == "symlink":
+        copy.symlink_to(settings_file(home))
+    else:
+        copy.mkdir()
+    changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
+    assert not any("settings.json backup" in c for c in changes), changes
+    why = "a symlink" if kind == "symlink" else "a directory"
+    assert notices == [f"the copy of settings.json the record names ({copy.name}) is {why}, not a copy "
+                       "the installer writes; nothing removed"], notices
+    assert copy.is_symlink() if kind == "symlink" else copy.is_dir()
+    assert read_settings(home) == {"model": "opus"}
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_claude_md_backup_that_is_not_a_regular_file_is_named_and_left_by_the_undo(install_module, uninstall_module, tmp_path, kind, dry_run):
+    # The backup the record names was checked by name and existence only: with a folder at the
+    # name the dry run promised "CLAUDE.md restored from" and the real run died at the read
+    # ("Is a directory") after the hook and the settings copy were gone; a symlink to CLAUDE.md
+    # restored the file from itself and removed the link. Both runs name it for what it is and
+    # leave CLAUDE.md and the record entry, as for a name the installer never writes.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {}, claude_md="mine\n")
+    install_module.install(home)
+    backup = next(claude.glob("CLAUDE.md.bak-*"))
+    backup.unlink()
+    if kind == "symlink":
+        backup.symlink_to(claude / "CLAUDE.md")
+    else:
+        backup.mkdir()
+    changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
+    assert not any("CLAUDE.md" in c for c in changes), (changes, notices)
+    why = "a symlink" if kind == "symlink" else "a directory"
+    assert notices == [f"CLAUDE.md left as is: the backup the record names ({backup.name}) is {why}, not a "
+                       "copy the installer writes; fix the record first"], notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert backup.is_symlink() if kind == "symlink" else backup.is_dir()
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["claude_md"]["backup"] == backup.name, record
+

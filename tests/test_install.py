@@ -1536,7 +1536,10 @@ def test_a_kept_replacement_guards_the_users_value_from_a_later_template_change(
     assert record["replaced"] == {"autoCompactWindow": 100} and "unfinished" not in record, record
     template["autoCompactWindow"] = 777
     newer.write_text(json.dumps(template), encoding="utf-8")
-    install_module.install(home)
+    changes, notices = install_module.install(home)
+    # The kept claim makes the key an installed one: the next template change refreshes it
+    # without --force, as for any installed key; what the claim guards is the undo.
+    assert "autoCompactWindow: 100 -> 777 (template changed)" in changes, (changes, notices)
     uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     monkeypatch.setattr(uninstall_module.install, "USER_SETTINGS", newer)
     changes, notices = uninstall_module.uninstall(home)
@@ -1575,7 +1578,8 @@ def test_a_copy_that_differs_after_the_settings_write_is_kept_by_the_re_run(inst
     # The twin: the interrupt came at the final record, after the settings write, so the copy
     # the interim names is the backup of the file the run replaced. It differs from the file
     # and is not a stale pre-write copy: the re-run keeps it, as it keeps any finished
-    # install's backup, and says nothing about it.
+    # install's backup (and names it: see test_a_re_run_names_the_copy_of_an_interrupted_install_it_keeps).
+    # A control: it passes on the modules from before the stale copy was removed at all.
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -1594,6 +1598,8 @@ def test_a_failed_copy_leaves_no_unrecorded_copy_of_the_other_file(install_modul
     # record that names both: a settings copy that failed (disk full) left the CLAUDE.md copy
     # on disk with nothing recording it, and the next run made a second copy of the same
     # file. A copy whose record is never written is removed again, whichever copy failed.
+    # The CLAUDE.md case is a control: that copy failed before any other was made, so it
+    # passes on the modules from before the settings copy moved ahead of the record.
     import shutil
     home = tmp_path / "home"
     claude = home / ".claude"
@@ -1637,6 +1643,10 @@ def test_a_claude_md_backup_name_the_installer_never_writes_is_not_reused(instal
     changes, notices = install_module.install(home)
     copies = [c for c in changes if c.startswith("CLAUDE.md backup: CLAUDE.md.bak-")]
     assert len(copies) == 1, changes
+    assert notices[0] == ("the record names a CLAUDE.md backup that is not a name the installer writes "
+                          "('CLAUDE.md'); a fresh copy is made"), notices
+    # The second notice is the usual one for an edited CLAUDE.md, naming the fresh copy.
+    assert len(notices) == 2 and notices[1].startswith("CLAUDE.md had edits made after the last install"), notices
     backup = claude / copies[0].split(": ", 1)[1]
     assert backup.read_text(encoding="utf-8") == "edited after the install\n"
     record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -1662,7 +1672,202 @@ def test_a_settings_copy_name_the_installer_never_writes_is_not_reused(install_m
     fresh = [c for c in changes if c.startswith("settings backup: settings.json.bak-")]
     assert len(fresh) == 1 and not fresh[0].endswith("(reused)"), changes
     assert f"settings backup: {name}" not in changes, changes
+    # Named, as the undo names it: a silent fresh copy left the record's claim unexplained.
+    assert notices == [f"the record names a copy of settings.json that is not a name the installer "
+                       f"writes ({name!r}); a fresh copy is made"], notices
     assert (claude / "settings.local.json").read_text(encoding="utf-8") == json.dumps({"model": "opus"})
     assert "autoCompactWindow" in json.loads(settings_file(home).read_text(encoding="utf-8"))
     record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "unfinished" not in record and "settings_backup" not in record, record
+
+
+def test_a_settings_json_nested_1500_levels_installs_re_runs_and_undoes(install_module, tmp_path):
+    # The snapshot of settings.json the run keeps for its pre-write comparisons was a deep copy
+    # of the whole file: a value of yours nested a few hundred levels deep (json reads and
+    # writes it without trouble) made the copy hit the interpreter's recursion limit, and the
+    # install died with a traceback before its first write. Only what the run compares later
+    # is kept: the top-level values, and the permissions.deny list as it was.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    deep = json.loads("[" * 1500 + "]" * 1500)
+    settings_file(home).write_text(json.dumps({"model": "opus", "deep": deep}), encoding="utf-8")
+    changes, notices = install_module.install(home)
+    assert any(c.startswith("autoCompactWindow: added") for c in changes), changes
+    assert install_module.install(home) == ([], [])
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow: removed" in changes, (changes, notices)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus", "deep": deep}
+
+
+def _move_template(install_module, tmp_path, monkeypatch, key, value):
+    """Point the installer at a copy of the template with key set to value; returns its path."""
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    template[key] = value
+    newer = tmp_path / "user-settings.json"
+    newer.write_text(json.dumps(template), encoding="utf-8")
+    monkeypatch.setattr(install_module, "USER_SETTINGS", newer)
+    return newer
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_a_settings_copy_that_is_not_a_regular_file_is_not_reused(install_module, tmp_path, kind):
+    # The copy an unfinished record names was reused when it was a file of equal content, both
+    # read through a link: a symlink to settings.json at the copy name was "(reused)" as the
+    # backup, and the run wrote settings.json with no copy of it at all (the backup was the
+    # live file). A copy the installer writes is a regular file, never a link: a symlink or a
+    # folder at the name is named for what it is, left, and a fresh copy is made.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    _interrupt_settings_write(install_module, home)
+    copy = next(claude.glob("settings.json.bak-*"))
+    copy.unlink()
+    if kind == "symlink":
+        copy.symlink_to(settings_file(home))
+    else:
+        copy.mkdir()
+    changes, notices = install_module.install(home)
+    fresh = [c for c in changes if c.startswith("settings backup: settings.json.bak-")]
+    assert len(fresh) == 1 and not fresh[0].endswith("(reused)"), changes
+    why = "a symlink" if kind == "symlink" else "a directory"
+    assert notices == [f"the copy of settings.json the record names ({copy.name}) is {why}, not a copy "
+                       "the installer writes; a fresh copy is made"], notices
+    assert copy.is_symlink() if kind == "symlink" else copy.is_dir()
+    backup = claude / fresh[0].split(": ", 1)[1]
+    assert backup.is_file() and not backup.is_symlink()
+    assert backup.read_text(encoding="utf-8") == json.dumps({"model": "opus"})
+    assert "autoCompactWindow" in json.loads(settings_file(home).read_text(encoding="utf-8"))
+    record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
+    assert "unfinished" not in record and "settings_backup" not in record, record
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_a_claude_md_backup_that_is_not_a_regular_file_is_not_reused(install_module, tmp_path, kind):
+    # The same for the CLAUDE.md backup the record names: a symlink to CLAUDE.md at the name
+    # read as equal to the file and was kept as "the" backup of your edits, which the run then
+    # wrote over, so the undo would have restored the template from itself. A folder at the
+    # name is no copy either. Both are named and left, and a fresh copy is made and recorded.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("mine\n", encoding="utf-8")
+    install_module.install(home)
+    record_path = install_module.layout(home)["record"]
+    backup = next(claude.glob("CLAUDE.md.bak-*"))
+    backup.unlink()
+    (claude / "CLAUDE.md").write_text("edited after the install\n", encoding="utf-8")
+    if kind == "symlink":
+        backup.symlink_to(claude / "CLAUDE.md")
+    else:
+        backup.mkdir()
+    changes, notices = install_module.install(home)
+    copies = [c for c in changes if c.startswith("CLAUDE.md backup: CLAUDE.md.bak-")]
+    assert len(copies) == 1, changes
+    fresh = claude / copies[0].split(": ", 1)[1]
+    assert fresh != backup and fresh.is_file() and not fresh.is_symlink()
+    assert fresh.read_text(encoding="utf-8") == "edited after the install\n"
+    why = "a symlink" if kind == "symlink" else "a directory"
+    assert notices[0] == (f"the CLAUDE.md backup the record names ({backup.name}) is {why}, not a copy the "
+                          "installer writes; a fresh copy is made"), notices
+    assert len(notices) == 2 and notices[1].startswith("CLAUDE.md had edits made after the last install"), notices
+    assert backup.is_symlink() if kind == "symlink" else backup.is_dir()
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["claude_md"]["backup"] == fresh.name, record
+
+
+def test_a_re_run_judges_the_copy_by_the_record_as_read_before_a_stale_claim_is_dropped(install_module, tmp_path):
+    # A --force install interrupted before the settings write, with only the replacement
+    # pending; you edit settings.json; a plain re-run drops the replaced claim (it makes no
+    # replacement) and then judged the copy against the record without it: nothing left to
+    # check, so the copy was kept and forgotten, while the undo of the same state (which reads
+    # the record as written) removed it. The copy is judged against the record as read, so the
+    # two agree: the file shows nothing of the write, and the copy is removed.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    settings = {k: v for k, v in template.items() if k != "hooks"}     # all there but the hook
+    settings["autoCompactWindow"] = 100
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    _interrupt_settings_write(install_module, home, force=True)
+    record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
+    assert record["added_keys"] == [] and record["replaced"] == {"autoCompactWindow": 100}, record
+    copies = sorted(claude.glob("settings.json.bak-*"))
+    assert len(copies) == 1, copies
+    settings["customKey"] = "mine"
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = install_module.install(home)
+    assert f"settings.json backup {copies[0].name} removed (the interrupted install never replaced " \
+           "settings.json)" in changes, changes
+    after = sorted(claude.glob("settings.json.bak-*"))
+    assert len(after) == 1 and after != copies, (copies, after)
+    assert "autoCompactWindow is 100, template has 250000; left unchanged (use --force)" in notices, notices
+    assert not [n for n in notices if "copy of settings.json" in n], notices
+    record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
+    assert "unfinished" not in record and record["replaced"] == {}, record
+
+
+def test_a_re_run_names_the_copy_of_an_interrupted_install_it_keeps(install_module, tmp_path, monkeypatch):
+    # Whether the file shows anything of the interrupted write is told from the record's keys;
+    # after a finished install the keys it added are there either way, so the copy a later
+    # interrupted run made (a template change stopped before the settings write) was kept once
+    # you edited settings.json, in silence, and the completed record did not name it. It is
+    # kept as a backup, and named.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    install_module.install(home)
+    paths = install_module.layout(home)
+    first = set(claude.glob("settings.json.bak-*"))      # the finished install's own backup
+    _move_template(install_module, tmp_path, monkeypatch, "autoCompactWindow", 300000)
+    paths["hook"].unlink()
+    _interrupt_write(install_module, home, "hook")
+    copies = sorted(set(claude.glob("settings.json.bak-*")) - first)
+    assert len(copies) == 1, copies
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["customKey"] = "mine"
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = install_module.install(home)
+    assert "autoCompactWindow: 250000 -> 300000 (template changed)" in changes, changes
+    assert not any("removed" in c for c in changes), changes
+    assert notices == [f"the copy of settings.json the interrupted install made, {copies[0].name}, differs "
+                       "from the file and is kept as a backup; the completed record does not name it"], notices
+    assert copies[0].exists() and len(list(claude.glob("settings.json.bak-*"))) == 3
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert "unfinished" not in record and "settings_backup" not in record, record
+
+
+def test_a_re_run_goes_on_when_the_stale_settings_copy_cannot_be_removed(install_module, tmp_path, monkeypatch):
+    # The copy an interrupted run made of a settings.json you edited since is removed by the
+    # re-run; one that cannot be unlinked (owned by someone else in a sticky folder) is named
+    # for you to remove, and the run goes on. Pinned here: until now only a probe run as
+    # another user reached this branch.
+    import errno
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    _interrupt_write(install_module, home, "hook")
+    copy = next(claude.glob("settings.json.bak-*"))
+    settings_file(home).write_text(json.dumps({"model": "opus", "customKey": "mine"}), encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def failing(self, missing_ok=False):
+        if self == copy:
+            raise PermissionError(errno.EPERM, "Operation not permitted", str(self))
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", failing)
+    changes, notices = install_module.install(home)
+    monkeypatch.undo()
+    assert not any("removed" in c for c in changes), changes
+    assert notices == [f"the copy of settings.json the interrupted install made, {copy.name}, no longer "
+                       "matches the file and could not be removed (Operation not permitted); remove it by hand"], notices
+    assert copy.exists() and len(list(claude.glob("settings.json.bak-*"))) == 2
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    assert settings["customKey"] == "mine" and "autoCompactWindow" in settings, settings
+    record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
     assert "unfinished" not in record and "settings_backup" not in record, record
