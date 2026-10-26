@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -74,3 +75,41 @@ def test_a_description_with_a_special_token_or_a_bom_is_counted(plugin_cost, tmp
     assert plugin_cost.desc_of(plugin / "skills" / "bom" / "SKILL.md") == "Reads files with a byte order mark"
     assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path)]) == 0
     assert "1 plugins, 2 skills/commands" in capsys.readouterr().out
+
+
+def test_missing_output_folder_is_an_error(plugin_cost, tmp_path, capsys, monkeypatch):
+    # The output write and tiktoken.get_encoding were unguarded: an output path in a missing
+    # folder, and the first offline run, were tracebacks; the input folder had the check.
+    tiktoken = pytest.importorskip("tiktoken")
+    make_plugin(tmp_path / "app", "alpha")
+    assert plugin_cost.main([str(tmp_path / "nosuch" / "out.json"), str(tmp_path / "app")]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("\n") == 1 and "out.json" in err
+
+    def offline(name):
+        raise ConnectionError("no route to host")
+    monkeypatch.setattr(tiktoken, "get_encoding", offline)
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path / "app")]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and err.count("\n") == 1 and "o200k_base" in err and "no route" in err
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_plugin_under_a_hidden_folder_is_counted(plugin_cost, tmp_path):
+    # glob("**", recursive=True) does not descend into hidden folders, so a plugin under one
+    # (a .cache or .plugins folder in the app dir) was not counted.
+    make_plugin(tmp_path / "app" / ".plugins" / "cache", "hidden")
+    make_plugin(tmp_path / "app" / "plain", "shown")
+    roots = plugin_cost.plugin_roots(tmp_path / "app")
+    assert sorted(Path(r).name for r in roots) == ["hidden", "shown"]
+
+
+def test_a_folded_description_drops_the_indicator(plugin_cost, tmp_path):
+    # A YAML folded or literal description kept the indicator as its first word.
+    skill = tmp_path / "SKILL.md"
+    for indicator in (">", "|", ">-", "|+", ">2", "|-2"):
+        skill.write_text(f"---\nname: fold\ndescription: {indicator}\n  Folded text here\n  second line\n---\n",
+                         encoding="utf-8")
+        assert plugin_cost.desc_of(skill) == "Folded text here second line", indicator
+    skill.write_text("---\nname: plain\ndescription: Plain text >= here\n---\n", encoding="utf-8")
+    assert plugin_cost.desc_of(skill) == "Plain text >= here"

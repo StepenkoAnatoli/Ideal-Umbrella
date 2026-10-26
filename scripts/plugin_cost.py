@@ -41,19 +41,26 @@ def desc_of(md):
         return ""
     fm = m.group(1)
     d = re.search(r"^description:\s*(.*?)(?=^\w[\w-]*:|\Z)", fm, re.S | re.M)
-    return re.sub(r"\s+", " ", d.group(1)).strip().strip("'\"") if d else ""
+    if not d:
+        return ""
+    # A folded or literal block (`description: >`, `|-`, `>2`) keeps the text, not the indicator.
+    text = re.sub(r"\A[>|](?:[-+]?\d?|\d?[-+]?)(?=\s|\Z)", "", d.group(1).lstrip())
+    return re.sub(r"\s+", " ", text).strip().strip("'\"")
 
 
 def plugin_roots(app_dir):
     pattern = os.path.join(glob.escape(str(app_dir)), "**", ".claude-plugin", "plugin.json")
-    return sorted({os.path.dirname(os.path.dirname(p)) for p in glob.glob(pattern, recursive=True)})
+    # include_hidden: `**` alone does not enter a hidden folder, and the plugin's own
+    # .claude-plugin/ is one; a plugin under .plugins/ or a cache folder is still a plugin.
+    found = glob.glob(pattern, recursive=True, include_hidden=True)
+    return sorted({os.path.dirname(os.path.dirname(p)) for p in found})
 
 
 def plugin_rows(app_dir, enc):
     rows = []
     for r in plugin_roots(app_dir):
         try:
-            man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8"))
+            man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8-sig"))
         except (OSError, ValueError):
             man = {}
         if not isinstance(man, dict):
@@ -72,7 +79,7 @@ def plugin_rows(app_dir, enc):
         mf = os.path.join(r, ".mcp.json")
         if os.path.isfile(mf):
             try:
-                mcp = len(json.load(open(mf, encoding="utf-8")).get("mcpServers") or {})
+                mcp = len(json.load(open(mf, encoding="utf-8-sig")).get("mcpServers") or {})
             except (OSError, ValueError, AttributeError):
                 pass
         hooks = os.path.isfile(os.path.join(r, "hooks", "hooks.json")) or bool(man.get("hooks"))
@@ -84,7 +91,7 @@ def plugin_rows(app_dir, enc):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # -I ignores PYTHONUTF8: set UTF-8 output here
     if not 1 <= len(argv) <= 2:
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -100,11 +107,21 @@ def main(argv=None):
     except ImportError:
         print("tiktoken is not installed; run: pip install tiktoken", file=sys.stderr)
         return 1
-    enc = tiktoken.get_encoding("o200k_base")
+    try:
+        enc = tiktoken.get_encoding("o200k_base")
+    except Exception as e:
+        # tiktoken installed but its data not loadable: offline on first use, a proxy, a
+        # corrupt TIKTOKEN_CACHE_DIR entry.
+        print(f"Error: tiktoken could not load o200k_base: {e}", file=sys.stderr)
+        return 1
 
     rows = plugin_rows(app_dir, enc)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(rows, f)
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+    except OSError as e:
+        print(f"Error: cannot write {out}: {e.strerror or e}", file=sys.stderr)
+        return 1
     tot = sum(x[2] for x in rows)
     print(f"{len(rows)} plugins, {sum(x[1] for x in rows)} skills/commands, "
           f"full listing would be {tot} tokens (o200k proxy)")

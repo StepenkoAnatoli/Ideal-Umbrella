@@ -22,6 +22,10 @@
    folder on `sys.path`. A module run (`-m`) is not a script of this repository and is not
    checked; `-c code` is. `tests/test_utf8_output.py` is the exception: it sets
    `PYTHONIOENCODING` on purpose, which `-I` would discard.
+6. A `reconfigure(encoding="utf-8")` call also passes `errors=`: reconfigure with an encoding
+   alone resets the handler to strict (stderr's default is backslashreplace), so a path or
+   file name that is not UTF-8 (a surrogate escape from a listing or a hook event) used to
+   turn every message into a UnicodeEncodeError traceback.
 """
 import ast
 
@@ -138,6 +142,15 @@ def test_scripts_that_print_set_utf8_stdout():
         if prints and not any(_sets_utf8_stdout(node) for node in nodes):
             bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
     assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8"):\n' + "\n".join(bad)
+
+
+def test_utf8_reconfigure_keeps_an_errors_handler():
+    bad = []
+    for path, tree in sources():
+        for node, _, _ in _walk(tree):
+            if _sets_utf8_stdout(node) and not any(k.arg == "errors" for k in node.keywords):
+                bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+    assert not bad, 'reconfigure(encoding="utf-8") without errors=:\n' + "\n".join(bad)
 
 
 def _glob_call(node, names):

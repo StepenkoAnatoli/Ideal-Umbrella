@@ -145,6 +145,22 @@ def _is_link(path):
     return bool(isjunction and isjunction(path))
 
 
+def _refuse_read_only(path):
+    """A target that exists but cannot be written, or a folder its write needs that cannot be
+    (its own, where the temp file and the rename happen, or the nearest one that exists when
+    the target is new), is a ValueError, raised before anything is written: refusing it at its
+    own write left the hook copied and settings.json untouched. os.access sees a POSIX mode or
+    the Windows read-only attribute, not a Windows ACL that denies the write (that write fails
+    at its own turn, as before), and never a folder on Windows."""
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        raise ValueError(f"{path} is read-only; make it writable first")
+    for folder in {os.path.dirname(os.path.abspath(path)), os.path.dirname(os.path.realpath(path))}:
+        while not os.path.exists(folder) and os.path.dirname(folder) != folder:
+            folder = os.path.dirname(folder)
+        if os.path.isdir(folder) and not os.access(folder, os.W_OK):
+            raise ValueError(f"{folder} is read-only; make it writable first")
+
+
 def _write_bytes(path, data):
     """Write whole or not at all (temp file beside the target, then rename), through a
     symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
@@ -176,7 +192,9 @@ def _write_json(path, data):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # the repo path may not fit the ANSI code page
+        # The repo path may not fit the ANSI code page, or hold a byte that is no UTF-8 (a
+        # surrogate escape); reconfigure(encoding=...) alone resets errors= to strict.
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
@@ -232,6 +250,10 @@ def _add(repo, force, progress=None):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     hook_changed = source != old
+    if hook_changed:
+        _refuse_read_only(target)
+    if changes:
+        _refuse_read_only(path)
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py written")

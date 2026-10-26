@@ -40,6 +40,11 @@ def _int(value):
         return 0
 
 
+def _len(value):
+    """Length of a text field; a field that is null or not a string counts 0."""
+    return len(value) if isinstance(value, str) else 0
+
+
 def _cache_writes(usage):
     """Return (5m, 1h) cache-write tokens, including any unpriced remainder."""
     total = _int(usage.get("cache_creation_input_tokens"))
@@ -63,7 +68,14 @@ def summarize(files):
     seen = set()
     turns = 0
     for path in files:
-        with open(path, encoding="utf-8", errors="ignore") as f:
+        try:
+            # utf-8-sig: a transcript saved with a BOM would otherwise lose its first line.
+            f = open(path, encoding="utf-8-sig", errors="ignore")
+        except OSError as e:
+            # Unreadable between the glob and the read: one line, the others are still summed.
+            print(f"error: cannot read {path}: {e.strerror or e}", file=sys.stderr)
+            continue
+        with f:
             for line in f:
                 try:
                     event = json.loads(line)
@@ -75,8 +87,10 @@ def summarize(files):
                 if not isinstance(message, dict):
                     continue
                 message_id = message.get("id")
-                usage = message.get("usage") or {}
-                if message_id and message_id not in seen and usage:
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                if isinstance(message_id, str) and message_id and message_id not in seen and usage:
                     seen.add(message_id)
                     turns += 1
                     five, one = _cache_writes(usage)
@@ -85,18 +99,19 @@ def summarize(files):
                     tot["cache_creation_input_tokens"] += five + one
                     for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"):
                         tot[key] += _int(usage.get(key))
-                for block in message.get("content") or []:
+                content = message.get("content")
+                for block in content if isinstance(content, list) else []:
                     if not isinstance(block, dict):
                         continue
                     kind = block.get("type")
                     if kind == "text":
-                        out_chars["visible text"] += len(block.get("text", ""))
+                        out_chars["visible text"] += _len(block.get("text"))
                     elif kind == "tool_use":
                         out_chars["tool calls (incl. file contents written)"] += len(
                             json.dumps(block.get("input", {}))
                         )
                     elif kind == "thinking":
-                        out_chars["thinking (visible part)"] += len(block.get("thinking", ""))
+                        out_chars["thinking (visible part)"] += _len(block.get("thinking"))
     return tot, out_chars, turns
 
 
@@ -131,7 +146,7 @@ def print_report(files, tot, out_chars, turns):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # -I ignores PYTHONUTF8: set UTF-8 output here
     if len(argv) not in (1, 2):
         sys.exit("usage: python -I scripts/usage_breakdown.py <transcript folder> [count]")
     folder = argv[0]

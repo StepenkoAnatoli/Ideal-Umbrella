@@ -15,8 +15,8 @@ Identifiers, paths and capitalised names are skipped.
 The single-token word list is built once with tiktoken and cached in cache/.
 
 Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
-keyline-allow.txt, one word per line; every keyline-allow.txt in the file's folder or any parent
-folder is read.
+keyline-allow.txt, one word per line (several words on a line are each allowed; '#' starts a
+comment); every keyline-allow.txt in the file's folder or any parent folder is read.
 
 Usage:
   python keyline_lint.py FILE [FILE ...]
@@ -38,7 +38,7 @@ ALLOW_NAME = "keyline-allow.txt"
 
 FURNITURE = [
     (re.compile(r"^\s*[-*+]\s"), "bullet"),
-    (re.compile(r"^\s*\d+[.)]\s"), "numbered item"),
+    (re.compile(r"^\s*\d{1,3}[.)]\s"), "numbered item"),    # "2024. done" starts with a year
     (re.compile(r"^\s*#{1,6}\s"), "header"),
     (re.compile(r"\*\*"), "bold '**'"),
     (re.compile(r"`"), "backtick"),
@@ -150,9 +150,9 @@ def load_allow(path, extra, use_files=True):
                 files.append(f)
     for f in files:
         for line in read(f).splitlines():
-            w = line.split("#", 1)[0].strip().lower()
-            if w:
-                allow.add(w)
+            # One word per line is the rule; a line holding several ("mgmt srvc") allows each,
+            # since an entry with a space in it could never match a word.
+            allow.update(line.split("#", 1)[0].lower().split())
     return allow
 
 
@@ -229,7 +229,7 @@ def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     extra, use_files, files = [], True, []
     it = iter(argv)
     for a in it:

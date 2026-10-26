@@ -1,8 +1,8 @@
 """keyline_check.py - deterministic fact check between a source note and a rendering of it.
 
-Extracts every date, timestamp, time, version, number, percentage, UPPER_CASE identifier, file path,
-CamelCase name, proper noun, file name, snake_case token, git hash and lowercase identifier with
-digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
+Extracts every date, timestamp, time, version, URL, number, percentage, UPPER_CASE identifier,
+file path, CamelCase name, proper noun, file name, snake_case token, hex hash and lowercase
+identifier with digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
 Hebrew, JSON, markdown...). A month or weekday name may appear in its Hebrew form. Also fails if
 the rendering drops a hedge class (could/may, likely, should, can; English or Hebrew words) or
 has fewer negation words than the source. A source with no extractable invariant and no hedge
@@ -16,20 +16,65 @@ Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage o
 import re
 import sys
 from dataclasses import dataclass
+from itertools import islice
 
-# A token boundary on ASCII word characters only, so a Hebrew prefix glued to an identifier
-# ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5".
-L = r"(?<![A-Za-z0-9_])"
-R = r"(?![A-Za-z0-9_]|\.\d)"
-# A number is looked up by extraction, not by a boundary: "10" is present when the rendering's
-# own invariants hold "10" as a token, so it is not found inside "10:00", "2,500", "10%",
-# "10/25" or the date "2026-10-25" (each one token to the extractor), while both ends of the
-# range "5-10", the year range "2020-2024" and "10" in "ב-10" are (each a token of its own).
-# Whatever the extractor takes from a source line it takes from the same line in a rendering,
-# so a rendering holding the source verbatim always passes. A number glued to a path
-# separator ("10/", "/10", "10\\") is a path, as "notes/" is: the source's "10" is not in it.
+# Latin letters with diacritics (Zürich, Léa, Øyvind, São, Łukasz): part of a name, and a
+# token does not end before one ("Caf" is not in "Café").
+LATIN = "".join(c for c in map(chr, [*range(0xC0, 0x250), *range(0x1E00, 0x1F00)]) if c.isalpha())
+LATIN_UPPER = "".join(c for c in LATIN if c.isupper())
+LATIN_LOWER = "".join(c for c in LATIN if c.islower())
+HEB = "א-ת"
+# A token boundary on ASCII word characters and those Latin letters, so a Hebrew prefix glued to
+# an identifier ("בv2.14.0") still counts as present, while "5" never matches inside "503" or
+# "2.5" and no token starts inside a word ("COLE" in "ÉCOLE"). L and R take the same letters: a
+# start that L lets through after a diacritic would rescan a run from every capital in it.
+L = rf"(?<![A-Za-z0-9_{LATIN}])"
+# A dotted numeric component that opens a date, a time or a percentage is not part of a name:
+# a token may end before ".2026-10-25", ".14:30", ".5%" or ".12.5%", and a dotted tail never
+# takes them. The percentage is the number rule's shape, whole or decimal ("5%", "12.5%",
+# "1,5%"), bounded to three dotted groups so a long dotted digit run is not rescanned from every
+# component (a longer one is split at the bound, "GPT4.1.2.3.4%" into "GPT4.1" and "2.3.4%",
+# each still held to the rendering); the number rule starts after a digit and a dot only for
+# such a percentage (PCT).
+PCT = r"\d+(?:[.,]\d+){0,2}%"
+NOT_DT = rf"(?!\d{{4}}-\d{{2}}-\d{{2}}(?!\d)|\d{{1,2}}:\d{{2}}|{PCT})"
+R = rf"(?![A-Za-z0-9_{LATIN}]|\.{NOT_DT}\d)"
+TAIL = rf"(?:(?<=\d)\.{NOT_DT}\d+)*"
+# A date, a timestamp or a time (DT; the clock may carry a fraction and a zone, "14:30:00.000Z",
+# "14:30+02:00") is an interior component of a file name or a path when another dotted
+# component follows it (FILE_DT: "backup.2026-10-25.sql", "app.log.2026-10-25.gz",
+# "db.sql.14:30.gz", "app.log.2026-10-25.1", "notes/db.sql.14:30.gz"); a trailing one is a
+# token of its own ("app.log.2026-10-25"). Where the extension that must follow is part of
+# the rule, DT alone serves (the lookahead would be implied).
+CLOCK = r"\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?"
+DT = rf"(?:\d{{4}}-\d{{2}}-\d{{2}}(?:T{CLOCK})?|{CLOCK})"
+FILE_DT = DT + r"(?=\.[A-Za-z0-9])"
+# A path or file name may also start at a Hebrew letter ("סיכום.md", "תיקיה/קובץ.txt"), but only
+# at the first letter of its word, so a long Hebrew run has one start and not one per letter,
+# and only when no Latin letter, digit or dash follows it, so the prefix of "בnotes/a.txt" and
+# "ב-__tests__/" stays out of the path. A Hebrew prefix glued to a Hebrew name ("בסיכום.md") is
+# one token to the extractor: the source's "סיכום.md" is not in it, and the check fails closed.
+HEB_START = rf"(?<![{HEB}])[{HEB}](?![A-Za-z0-9_{LATIN}-])"
+# Every kind but a date, a time and a timestamp is looked up by extraction, not by a boundary:
+# "10" is present when the rendering's own invariants hold "10" as a token, so it is not found
+# inside "10:00", "2,500", "10%", "10/25" or the date "2026-10-25" (each one token to the
+# extractor), while both ends of the range "5-10", the year range "2020-2024" and "10" in
+# "ב-10" are (each a token of its own); likewise "notes/a.txt" is not in "notes/a.txt.bak" or
+# "notes/a.txt/", "Jean-Luc" not in "Jean-Luc-Picard", "API" not in "API.md". Whatever the
+# extractor takes from a source line it takes from the same line in a rendering, so a
+# rendering holding the source verbatim always passes. A number glued to a path separator
+# ("10/", "/10", "10\\") is a path, as "notes/" is: the source's "10" is not in it. A path or
+# file name starts at a word character, "." or "~", never at a dash or at a Hebrew letter glued
+# to a Latin one, so "ב-__tests__/" and "בnotes/a.txt" hold the source's path. A date, a time
+# and a timestamp keep a boundary lookup because they have two spellings: "2026-10-25 14:30"
+# is the instant "2026-10-25T14:30", so a date may be followed by "T" and a digit, and a time
+# preceded by a date and "T", and followed by fractional seconds and "Z" the rendering adds.
 # For a time: "00:30" is not present at the end of "10:00:30".
 L_TIME = L + r"(?<!\d:)"
+# The parts of a timestamp or time token, for the lookup: date, clock, fractional seconds, zone.
+# Each has the shape of its INVARIANT group, so fullmatch on a token of that kind cannot fail.
+DATETIME = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z|[+-]\d{2}:?\d{2})?")
+TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 
 
 # The path and file alternatives look ahead for a "/" or "." through the dash-joined words that
@@ -37,27 +82,86 @@ L_TIME = L + r"(?<!\d:)"
 # from costing a rescan of the whole rest of the run from every word in it. A path component or
 # file name longer than that is not extracted as one token. A time does not start after "N:",
 # so "3:1:30" is the numbers 3, 1 and 30, not the time "1:30" (which the lookup, bounded the
-# same way, would never find).
+# same way, would never find). A URL keeps its scheme (at most 31 characters, so a dash-joined
+# run is not rescanned for "://" from every word) and runs to whitespace or a closing quote,
+# bracket or separator. A hash is 7 to 128 hex digits (git SHA-1 to sha512) with at
+# least one letter and one digit. A version or a number does not start right after a digit
+# and a ".", so a dotted digit run that ends at a letter or "_" ("1.1.1...1_") is scanned once
+# from its first digit, not once from every digit after a "."; a name that ends in a digit
+# takes a dotted tail ("Python3.12", "GPT4.5", "python3.12" are one token each, as "v2.14.0"
+# is), so the part after the dot is not lost to that rule, while a name that ends in a letter
+# takes none and is no token before the dotted number ("No.5", "Fig.3", "A.1" yield the number
+# 5, 3, 1 alone: the abbreviation is prose a rendering translates, "No. 5", "מס' 5", "איור 3",
+# and the number is what it must keep), except a file name, whose dotted components after the
+# stem may be numbers as well as letter extensions, in any order, with a letter extension among
+# them ("app.log.1", "backup.tar.gz.1", "app.log.1.gz", "syslog.2.gz" are one token each;
+# "syslog.1" has no extension and is the number alone), and whose stem is one character only
+# when it is a lowercase letter before a lowercase extension of two or more letters that no
+# period follows, after the dotted numbers and dates any stem takes ("a.out", "a.py",
+# "x.tar.gz.1", "a.1.out", "x.2026-10-25.tar.gz" are one token each; "e.g.", "i.e.", "x.y"
+# and the abbreviations of other languages, "p.ex.", "f.eks.", "z.Bsp.", "v.Chr.", are prose,
+# as are an initial, "J.Smith", an ordinal, "2.nd", and "a.out." at the end of a sentence); a
+# date or a time between a file name's components is inside it (FILE_DT:
+# "backup.2026-10-25.sql", "app.log.2026-10-25.gz", "db.sql.14:30.gz",
+# "app.log.2026-10-25T14:30:00.000Z.gz" are one token each, at most two such components
+# before the first extension and two after it, so a long run of them is not rescanned from
+# every start; a third ends the name, "notes.txt.2026-10-25.2026-10-26" before
+# ".2026-10-27.gz"), while a dotted component that opens a date, a time or a percentage at
+# the end of a name is not part of it ("app.log.2026-10-25T14:30Z" is the file "app.log" and
+# the timestamp, "db.sql.14:30" the file and the time, "GPT4.5%" the name "GPT4" and the
+# number "5%", "notes.txt.12.5%" the file and the number "12.5%"): NOT_DT in the file rule,
+# in every name's dotted tail, in the "v" version's tail, in a path's dotted tail (which
+# takes an interior date or time as the file rule does: "notes/db.sql.14:30.gz" is one path,
+# "notes/a.txt.5%" the path and the number "5%", "notes/app.log.2026-10-25" the path and the
+# date) and in R, so a token may end before such a component, and the number rule starts
+# after a digit and a dot only before such a percentage (PCT); the numeric version keeps its
+# tail, so that "10.0.0.1:8080" stays one address; a "v" version ends before a dotted
+# lowercase component ("v2.14.0.txt", "v2.pdf" are file names) and before an interior date
+# or time ("v2.2026-10-25.txt", "v2.14:30.txt" are file names; "v2.2026-10-25T14:30Z" is the
+# version and the timestamp), but not before a capitalised word ("v1.0.0.RELEASE" is the
+# version and the word "RELEASE", "v5.6.15.Final" the version and the name "Final": a period
+# glued to the next word after a digit or a capital does not end a sentence, see
+# _is_sentence_start), except a lone
+# capital letter, which stays on the version ("v2.A" is one token; a lone letter is no
+# identifier); the CamelCase rule tries one
+# split per letter run (leading capitals, one lowercase run, a capital), not one per
+# lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
+# identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
+# CamelCase rule, and "xZürichAirport" yields nothing ("richAirport" is not a start: L).
+# A file name's dotted components before its first extension: numbers, and at most two dates
+# or times (each followed by another component, so DT alone: the extension is the lookahead).
+PRE_EXT = rf"(?:\.{NOT_DT}\d+)*(?:\.{DT}(?:\.{NOT_DT}\d+)*){{0,2}}"
 INVARIANT = re.compile(
     L
     + r"""(?:
       (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
     | (?P<date>\d{4}-\d{2}-\d{2})
-    | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2})?Z?)
-    | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
-    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{0,200}[/\\][\w.~/\\-]*)
-    | (?P<file>[\w-]{2,200}(?:\.[A-Za-z][A-Za-z0-9]*)+)
-    | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*s?)
-    | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
-    | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
-    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})
-    | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
-    | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
+    | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)
+    | (?P<version>v\d+(?:\.""" + NOT_DT + r"""\d+)*(?:\.[A-Z""" + LATIN_UPPER + r"""](?![A-Za-z0-9_""" + LATIN + r"""]))?
+                   (?!\.[a-z]|\.""" + FILE_DT + r""")
+                 |(?<!\d\.)\d+\.\d+\.\d+(?:\.\d+)*)
+    | (?P<url>[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>"'`()\[\]{},;|*]+)
+    | (?P<path>(?:[A-Za-z]:)?(?:(?:[A-Za-z0-9_.~""" + LATIN + r"""]|""" + HEB_START + r""")[\w.~-]{0,199})?[/\\]
+                (?:[\w~/\\-]|\.(?:""" + FILE_DT + r"""|""" + NOT_DT + r"""))*)
+    | (?P<file>(?<!\d\.)(?:(?:[A-Za-z0-9_""" + LATIN + r"""]|""" + HEB_START + r""")[\w-]{1,199}
+                  |[a-z""" + LATIN_LOWER + r"""](?=""" + PRE_EXT + r"""\.[a-z]{2,}(?!\w|\.(?!\w))))
+                """ + PRE_EXT + r"""
+                \.[A-Za-z][A-Za-z0-9]*(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*
+                (?:\.""" + FILE_DT + r"""(?:\.(?:[A-Za-z][A-Za-z0-9]*|""" + NOT_DT + r"""\d+))*){0,2})
+    | (?P<upper>[A-Z""" + LATIN_UPPER + r"""][A-Z0-9""" + LATIN_UPPER + r"""]*(?:_[A-Z0-9""" + LATIN_UPPER + r"""]+)*s?""" + TAIL + r""")
+    | (?P<camel>[A-Z]*[a-z]+[A-Z][A-Za-z0-9]*""" + TAIL + r""")
+    | (?P<proper>[A-Z""" + LATIN_UPPER + r"""][a-z""" + LATIN_LOWER + r"""][A-Za-z0-9""" + LATIN + r"""]*
+                 (?:-[A-Za-z0-9""" + LATIN + r"""]+|'(?!s(?![A-Za-z0-9""" + LATIN + r"""]))[A-Za-z0-9""" + LATIN + r"""]+)*""" + TAIL + r""")
+    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*""" + TAIL + r"""|__[a-z0-9]+__)
+    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,128}""" + TAIL + r""")
+    | (?P<number>(?:(?<!\d\.)|(?=""" + PCT + r"""))(?:0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?))
+    | (?P<ident>[a-z]+\d[A-Za-z0-9]*""" + TAIL + r""")
 )"""
     + R,
     re.X,
 )
+# "A", "I", "As", "É", "Ó": a letter, not an identifier ("S3", "A1" are).
+LONE_LETTER = re.compile(rf"[A-Z{LATIN_UPPER}]s?")
 
 # Capitalized words that are sentence furniture or ordinary prose, not names. The proper-noun
 # rule deliberately skips the first word of a line/sentence and these words everywhere else.
@@ -77,7 +181,8 @@ PROPER_STOP = {
 
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
 # The marker's item follows on the same line: "10." alone on a line is the number 10, not a marker.
-LIST_MARKER = re.compile(r"^[ \t]*(?:\d+[.)]|[-*+])[ \t]+", re.M)
+# A marker has at most three digits: "2024. Migration done" starts with the year.
+LIST_MARKER = re.compile(r"^[ \t]*(?:\d{1,3}[.)]|[-*+])[ \t]+", re.M)
 
 # A month or weekday name is an invariant like any proper noun, and a Hebrew rendering may write
 # it in Hebrew: either the English token or one of these forms counts as present.
@@ -98,10 +203,11 @@ for _abbr, _full in (("jan", "january"), ("feb", "february"), ("mar", "march"), 
 
 # English: the specified list (no, not, never, without, none) plus "cannot" and n't contractions,
 # so a prose rendering that writes "doesn't" for "does not" is not reported as a lost negation.
-NEG_EN = re.compile(r"\b(?:no|not|never|without|none|cannot)\b|\b[A-Za-z]+n't\b", re.I)
+# "No. 5" is a number sign (מס' 5 in Hebrew), not a negation; "no 5xx errors" still is one, and
+# so is "no." at the end of a line, whatever number the next line starts with.
+NEG_EN = re.compile(r"\b(?:no(?!\.[ \t]*\d)|not|never|without|none|cannot)\b|\b[A-Za-z]+n't\b", re.I)
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
 # לא/אין/ללא and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו).
-HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא)"
@@ -133,78 +239,186 @@ HEDGE_HE = {
 }
 
 BOUNDARY = ".?!\n"
+# The character before a period that joins the next word to the one before it, see
+# _is_sentence_start.
+GLUE_BEFORE = re.compile(rf"[0-9A-Z{LATIN_UPPER}]")
+# Markdown markers a line may open with before its first word ("## ", "> ", "- ", "**"), and
+# the furniture a heading or label line may hold around its one word (bold, "_", a label
+# colon, a closing "#").
+LINE_MARKERS = re.compile(r"[-*+#> \t]*")
+FURNITURE_BEFORE = re.compile(r"[#>\-*+_ \t]*")
+FURNITURE_AFTER = re.compile(r"[*_:# \t]*")
 
 
-def _is_sentence_start(text, start):
+class _Line:
+    """The line around a token, with its leading markers and its all-caps words found once:
+    the next token on the same line reuses it, so a line of many tokens is scanned once, not
+    once per token (80000 bold "May" on one line took 6.9 s, 20000 "MAY" 12 s)."""
+
+    __slots__ = ("text", "start", "end", "_markers_end", "_furniture_end", "_caps")
+
+    def __init__(self, text, start, end):
+        self.text = text
+        self.start = text.rfind("\n", 0, start) + 1
+        line_end = text.find("\n", end)
+        self.end = line_end if line_end >= 0 else len(text)
+        self._markers_end = self._furniture_end = self._caps = None
+
+    @property
+    def markers_end(self):
+        if self._markers_end is None:
+            self._markers_end = LINE_MARKERS.match(self.text, self.start, self.end).end()
+        return self._markers_end
+
+    @property
+    def furniture_end(self):
+        if self._furniture_end is None:
+            self._furniture_end = FURNITURE_BEFORE.match(self.text, self.start, self.end).end()
+        return self._furniture_end
+
+    @property
+    def caps(self):
+        """(has a lowercase letter, spans of the first two all-caps words of two or more letters)."""
+        if self._caps is None:
+            lower = LOWER_LETTER.search(self.text, self.start, self.end) is not None
+            spans = [m.span() for m in islice(CAPS_WORD.finditer(self.text, self.start, self.end), 2)]
+            self._caps = (lower, spans)
+        return self._caps
+
+
+def _line(text, start, end, cache):
+    """The _Line holding text[start:end], from cache when it is the line found last."""
+    line = cache.get("line")
+    if line is None or not (line.start <= start and end <= line.end):
+        line = cache["line"] = _Line(text, start, end)
+    return line
+
+
+def _is_sentence_start(text, start, cache):
     """True when only whitespace, a sentence end or a line-leading marker ("## ", "> ", "**")
     separates this token from a line or sentence edge. A dash or ">" mid-line is a separator
-    ("Postgres - Prisma"), not a marker: the word after it is checked."""
+    ("Postgres - Prisma"), not a marker: the word after it is checked. A period glued to the
+    token after a digit or a capital ("v5.6.15.Final", "J.Smith") joins it to the word
+    before, it does not end a sentence: "Final" and "Smith" are checked. After a lowercase
+    letter it does ("z.Bsp.", "v.Chr.", "e.g.Foo": an abbreviation of another language, or a
+    missing space). cache holds the line found last, see _Line."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
     if i < 0:
         return True
     if text[i] in BOUNDARY:
-        return True
+        return not (text[i] == "." and i == start - 1 and i > 0 and GLUE_BEFORE.match(text, i - 1))
     if text[i] in "-*+#>":
-        line_start = text.rfind("\n", 0, i) + 1
-        return all(c in "-*+#> \t" for c in text[line_start:i])
+        return _line(text, start, start, cache).markers_end > i
     return False
 
 
+# A plain lowercase word in the letters a path may start with: ASCII, Latin with diacritics,
+# or Hebrew (which has no case).
+PROSE_WORD = re.compile(rf"[a-z{LATIN_LOWER}]+|[{HEB}]+")
+
+
 def _is_path(tok):
-    # "and/or", "initiated/completed": one slash between two plain lowercase words is prose.
+    # "and/or", "initiated/completed", "él/ella", "sim/não", "כן/לא": one slash between two
+    # plain lowercase words is prose (the caller strips the sentence period of "and/or."). A dot, a digit, an underscore, a dash, a capital or a
+    # second slash ("notes/a.txt", "a1/b", "a_b/c", "Yes/No", "a/b/c") keeps it a path.
     parts = re.split(r"[/\\]", tok)
-    if len(parts) == 2 and all(re.fullmatch(r"[a-z]+", p) for p in parts):
+    if len(parts) == 2 and all(PROSE_WORD.fullmatch(p) for p in parts):
         return False
     return True
 
 
-def invariants(text):
-    """Return {token: kind} for every fact-bearing token in text, in order of appearance."""
+def invariants(text, names_at_sentence_start=False):
+    """Return {token: kind} for every fact-bearing token in text, in order of appearance.
+    With names_at_sentence_start, a capitalised word that opens a line or sentence is kept
+    too: what a rendering is looked up in, not what a source is held to. A capitalised word
+    with a digit in it ("Python3.12 is required", "Node18 is required") is kept either way:
+    its capital is not the sentence's."""
     text = LIST_MARKER.sub("", text)
     found = {}
+    cache = {}
     for m in INVARIANT.finditer(text):
         kind = m.lastgroup
         tok = m.group(kind)
-        if kind == "path" and not _is_path(tok):
+        if kind == "path" and not _is_path(tok.rstrip(".")):
             continue
-        if kind == "upper" and re.fullmatch(r"[A-Z]s?", tok):
-            continue          # "A", "I", "As": a letter, not an identifier ("S3", "A1" are)
-        if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
+        if kind == "upper" and LONE_LETTER.fullmatch(tok):
             continue
         if kind == "proper":
-            if tok.lower() in PROPER_STOP or _is_sentence_start(text, m.start()):
+            if tok.lower() in PROPER_STOP:
                 continue
-        tok = tok.rstrip(".")
+            if (not names_at_sentence_start and _is_sentence_start(text, m.start(), cache)
+                    and not any(c.isdigit() for c in tok)):
+                continue
+        # Sentence punctuation after a token is not part of it: "notes/foo." and "https://x.y/z:".
+        tok = tok.rstrip(".:!?") if kind == "url" else tok.rstrip(".")
         if tok in found:
             continue
         found[tok] = kind
     return found
 
 
-def _all_caps_line(text, start, end):
+def _all_caps_line(text, start, end, cache):
     """True when the rest of the line has no lowercase letter and holds another all-caps word
-    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line."""
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    line = text[line_start:start] + " " + text[end:line_end if line_end >= 0 else len(text)]
-    return re.search(r"[a-z]", line) is None and re.search(r"\b[A-Z]{2,}\b", line) is not None
+    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line.
+    cache holds the line found last, see _Line."""
+    lower, spans = _line(text, start, end, cache).caps
+    return not lower and any(span != (start, end) for span in spans)
+
+
+LOWER_LETTER = re.compile(rf"[a-z{LATIN_LOWER}]")
+CAPS_WORD = re.compile(rf"\b[A-Z{LATIN_UPPER}]{{2,}}\b")
+# Where a sentence ends: a period, a question or exclamation mark, or a blank line.
+SENTENCE_END = re.compile(r"[.?!]|\n[ \t]*\n")
+# What follows "May" the month: a day ("May 5"), a label colon ("May:"), a comma and a year
+# ("May, 2026"), each after up to three closing stars ("**May** 5", "***May***:"). No
+# underscore: "_" is a word character, so "May_" is never a hedge match in the first place.
+MONTH_AFTER = re.compile(r"\*{0,3}(?:[ \t]+\d|:|,[ \t]*\d{4}\b)")
+
+
+def _is_month_line(text, start, end, cache):
+    """True when the token is the whole content of its line and so a heading or a label naming
+    the month: "## May", "## May ##", "**May**", "> May", "May:" or "May" alone, with only
+    Markdown heading, quote and list markers, bold or whitespace before it and bold, a colon,
+    a closing heading or whitespace after it (a numbered or bulleted list marker is already
+    stripped). A bare "May" line, with no
+    such furniture, still opens the modal question "May\n5 items be removed?": it is the modal
+    when the sentence it opens, up to the first ".", "?" or "!" or a blank line, ends in "?".
+    cache holds the line and the sentence end found last, so a text of many such lines, or a
+    line of many tokens, is scanned once."""
+    line = _line(text, start, end, cache)
+    if line.furniture_end < start or FURNITURE_AFTER.match(text, end, line.end).end() < line.end:
+        return False
+    if text[line.start:start].strip() or text[end:line.end].strip():
+        return True
+    if cache.get("at", -1) < end:
+        m = SENTENCE_END.search(text, end)
+        cache["at"], cache["mark"] = (m.start(), m.group(0)) if m else (len(text), "")
+    return cache["mark"] != "?"
 
 
 def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     text = LIST_MARKER.sub("", text)      # "2) May we proceed?": the marker is not a sentence
     found = {}
+    cache = {}
     for m in HEDGE.finditer(text):
-        if m.group(0) in ("May", "MAY") and (re.match(r"\s+\d", text[m.end():])
+        if m.group(0) in ("May", "MAY") and (MONTH_AFTER.match(text, m.end())
+                                             or _is_month_line(text, m.start(), m.end(), cache)
                                              or (m.group(0) == "May"
-                                                 and not _is_sentence_start(text, m.start()))
+                                                 and not _is_sentence_start(text, m.start(), cache))
                                              or (m.group(0) == "MAY"
-                                                 and not _all_caps_line(text, m.start(), m.end()))):
-            # "May 2026", "MAY 14", "in May because", "due: MAY": the month. The modal verb is
-            # capitalised only at a sentence start ("May I help?") or in an all-caps line
-            # ("WE MAY FAIL"), where another all-caps word stands beside it.
+                                                 and not _all_caps_line(text, m.start(), m.end(), cache))):
+            # "May 2026", "MAY 14", "May:", "in May because", "due: MAY": the month. The modal
+            # verb is capitalised only at a sentence start ("May I help?") or in an all-caps
+            # line ("WE MAY FAIL"), where another all-caps word stands beside it; a label
+            # colon right after it ("May: ship", "**May**: ship") names the month, as "מאי:"
+            # does, and so does a number after the closing bold ("**May** 5 PRs", "***May*** 5")
+            # or a comma and a year ("May, 2026"; "May, we proceed" is the modal). A number on
+            # the next line is not the day: the line break ends the sentence, as for "no.",
+            # unless "May" is the whole content of its line ("## May"), a heading naming the
+            # month, see _is_month_line().
             continue
         word = m.group(0).lower()
         for group, words in HEDGE_GROUPS.items():
@@ -219,24 +433,52 @@ def hedges(text):
 
 def present(tok, kind, text, tokens=None):
     """Whether the source token tok of kind is in the rendering text. tokens is
-    invariants(text) when the caller already has it."""
-    if kind == "number":
-        return tok in (invariants(text) if tokens is None else tokens)
-    tail = r"Z?" if kind == "time" else ""
+    invariants(text, names_at_sentence_start=True) when the caller already has it."""
+    if kind not in ("date", "time", "datetime"):
+        if tokens is None:
+            tokens = invariants(text, names_at_sentence_start=True)
+        if tok in tokens:
+            return True
+        # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix
+        # letters (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the
+        # day. A capitalised name or a full name in capitals (OCTOBER, MONDAY) is a month or
+        # weekday; "DEC" and "SAT" are acronyms, not דצמבר and שבת ("MAY" is the one all-caps
+        # short form that is the month, see hedges()).
+        if kind == "proper" or (kind == "upper" and (tok == "MAY" or len(tok) > 3)):
+            forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+                     for form in CALENDAR.get(tok.lower(), ())]
+            return bool(forms) and re.search("(?:" + "|".join(forms) + ")", text) is not None
+        return False
+    # "2026-10-25T10:00Z", "2026-10-25 10:00Z" and the date "2026-10-25" with the time "10:00Z"
+    # are the same instant, written as one token or two; so are "10:00:30" and "10:00:30.000Z"
+    # (JavaScript's toISOString) and "10:00Z" and "10:00:00.000Z": a rendering may add the
+    # seconds, the fraction or both before the zone the source has, or a zone to a token
+    # without one (R lets "Z", "+02:00" and ":00" follow). A zone suffix or a fraction the
+    # rendering drops is a lost fact.
+    left, right = L, R
     body = re.escape(tok)
     if kind == "datetime":
-        # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
-        body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
-    left, right = (L_TIME if kind == "time" else L), R
-    forms = [left + body + tail + right]
-    # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
-    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
-    # a capitalised name is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
-    # שבת ("MAY" is the one all-caps month, see hedges()).
-    if kind == "proper" or tok == "MAY":
-        forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-                  for form in CALENDAR.get(tok.lower(), ())]
-    return re.search("(?:" + "|".join(forms) + ")", text) is not None
+        date, clock, frac, zone = DATETIME.fullmatch(tok).groups()
+        body = re.escape(date) + r"[T ]" + _clock_lookup(clock, frac) + (re.escape(zone) if zone else r"Z?")
+    elif kind == "date":
+        right = r"(?:(?=T\d)|" + R + ")"
+    else:
+        clock, frac, zone = TIME.fullmatch(tok).groups()
+        body = _clock_lookup(clock, frac) + (re.escape(zone) if zone else r"Z?")
+        left = r"(?:(?<=\d{4}-\d{2}-\d{2}T)|" + L_TIME + ")"
+    return re.search(left + body + right, text) is not None
+
+
+def _clock_lookup(clock, frac):
+    """The lookup for the clock part of a time or timestamp: the fraction the source wrote
+    must be there; after whole seconds the rendering may add one ("14:30:00" is in
+    "14:30:00.000Z"), and after "HH:MM" it may add the seconds and then a fraction
+    ("14:30" is in "14:30:00.000Z")."""
+    if frac:
+        return re.escape(clock) + re.escape(frac)
+    if len(clock) > 5:
+        return re.escape(clock) + r"(?:\.\d+)?"
+    return re.escape(clock) + r"(?::\d{2}(?:\.\d+)?)?"
 
 
 def negations(text):
@@ -257,7 +499,7 @@ class CheckResult:
 def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
     inv = invariants(source)
-    rendered = invariants(rendering)
+    rendered = invariants(rendering, names_at_sentence_start=True)
     missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered)]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
@@ -308,7 +550,7 @@ def report(src_path, out_path, source, rendering):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if len(argv) == 2 and argv[0] == "--list":
         try:
             src = read(argv[1])
