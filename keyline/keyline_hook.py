@@ -8,7 +8,8 @@ Reads the hook event JSON on stdin. Acts only on .txt, .md, .keyline or extensio
 inside a notes/ or plans/ folder of the project (a file outside the project is ignored), or, when one or more --watch PATTERN arguments
 are given, only on files matching those patterns instead (fnmatch, case-insensitive; an absolute
 pattern is matched against the absolute path, a relative one against the path relative to the
-project dir). Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
+project dir; the suffix rule still applies, so a watched .py file is passed over).
+Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
   - a note (incident.txt, notes.md): run keyline_lint.py on it, and when a sibling rendering
     incident.he.txt exists, run keyline_check.py note -> rendering;
   - a rendering (incident.he.txt): run keyline_check.py against its note (incident.txt / .md /
@@ -141,29 +142,42 @@ def main():
         path = Path(event["tool_input"]["file_path"])
     except Exception:
         return 0                                   # not an event this hook understands
-    root = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd") or "."
+    cwd = event.get("cwd")
+    if not isinstance(cwd, str) or not cwd:       # a malformed event is not this hook's problem
+        cwd = "."
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or cwd
     if not path.is_absolute():
-        path = Path(event.get("cwd") or ".") / path
+        path = Path(cwd) / path
     if not path.is_file() or not watched(path, root, patterns):
         return 0
+    is_rendering = path.name.lower().endswith(HE)
+    is_note = not is_rendering and path.suffix.lower() in NOTE_SUFFIXES
+    if is_note:
+        # The lint's word list comes from keyline/cache/, not from the note: an error there
+        # (a folder in the way, tiktoken missing on a fresh clone) is reported as its own.
+        try:
+            words = keyline_lint.load_words()
+        except (OSError, keyline_lint.TiktokenMissing) as e:
+            print(f"keyline hook: {e}", file=sys.stderr)
+            return 1                               # non-blocking: the note cannot be linted yet
     problems = []
     try:
-        if path.name.lower().endswith(HE):
+        if is_rendering:
             note = note_for(path)
             if note:
                 run_check(note, path, problems, root)
-        elif path.suffix.lower() in NOTE_SUFFIXES:
-            for no, msg in keyline_lint.lint_file(path):
+        elif is_note:
+            for no, msg in keyline_lint.lint_file(path, words):
                 problems.append(f"{shown(path, root)}:{no}: {msg}")
             he = rendering_for(path)
             if he.is_file():
                 run_check(path, he, problems, root)
     except OSError as e:
-        print(f"keyline hook: cannot read {path}: {e}", file=sys.stderr)
+        # The note, its rendering or a keyline-allow.txt beside it; the error names the file
+        # when it is not the note.
+        where = "" if e.filename or str(path) in str(e) else f" {path}"
+        print(f"keyline hook: cannot read{where}: {e}", file=sys.stderr)
         return 1                                   # non-blocking error
-    except keyline_lint.TiktokenMissing as e:
-        print(f"keyline hook: {e}", file=sys.stderr)
-        return 1                                   # non-blocking: the note cannot be linted yet
     if problems:
         print("keyline: this machine note breaks the Keyline rules; fix the file.", file=sys.stderr)
         print("\n".join(problems), file=sys.stderr)

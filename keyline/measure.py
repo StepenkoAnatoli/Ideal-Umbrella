@@ -54,6 +54,18 @@ def main(argv):
             return 2
         for p in paths:
             try:
+                # A named pipe or socket in a walked folder would block the read; a symlink to
+                # a missing target would fail it. The stat itself fails in a folder that lists
+                # its names but cannot be searched (mode 0444).
+                regular = p.is_file()
+                why = None if regular else ("symlink to a missing target" if p.is_symlink()
+                                            else "not a regular file")
+            except OSError as e:
+                why = f"cannot read: {e.strerror or e}"
+            if why:
+                print(f"skip ({why}): {p}", file=sys.stderr)
+                continue
+            try:
                 text = p.read_bytes().decode("utf-8-sig")
             except UnicodeDecodeError:
                 print(f"skip (not UTF-8 text): {p}", file=sys.stderr)

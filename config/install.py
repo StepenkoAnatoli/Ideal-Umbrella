@@ -132,6 +132,7 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
     record.setdefault("replaced", {})
     record.setdefault("deny_added", [])
     record.setdefault("installed", {})
+    record.setdefault("created", [])    # containers this install made, for the undo to remove
     if not isinstance(existing, dict):
         raise ValueError("settings must be a JSON object")
     if not isinstance(template, dict):
@@ -163,10 +164,14 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
 
     template_permissions = template.get("permissions", {})
     if template_permissions:
+        if "permissions" not in existing:
+            record["created"].append("permissions")
         permissions = existing.setdefault("permissions", {})
         if not isinstance(permissions, dict):
             raise ValueError("permissions must be an object")
         wanted = template_permissions.get("deny", [])
+        if "deny" not in permissions:
+            record["created"].append("permissions.deny")
         deny = permissions.setdefault("deny", [])
         if not isinstance(deny, list):
             raise ValueError("permissions.deny must be a list")
@@ -178,12 +183,16 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
 
     template_hooks = template.get("hooks", {})
     if template_hooks:
+        if "hooks" not in existing:
+            record["created"].append("hooks")
         hooks = existing.setdefault("hooks", {})
         if not isinstance(hooks, dict):
             raise ValueError("hooks must be an object")
         for event, entries in template_hooks.items():
             if not isinstance(entries, list):
                 raise ValueError(f"hooks.{event} must be a list")
+            if event not in hooks:
+                record["created"].append(f"hooks.{event}")
             current = hooks.setdefault(event, [])
             if not isinstance(current, list):
                 raise ValueError(f"hooks.{event} must be a list")
@@ -358,9 +367,15 @@ def _merge_record(old, new):
     added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
     deny = list(old.get("deny_added", []))
     deny += [t for t in new.get("deny_added", []) if t not in deny]
+    created = list(old.get("created", []))
+    created += [c for c in new.get("created", []) if c not in created]
     installed = dict(old_installed) if isinstance(old_installed, dict) else {}
     installed.update(new.get("installed", {}))
     merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed}
+    if "created" in old or not old:
+        # A record from before "created" was written says nothing about who made the containers;
+        # an empty list would say "the install made none", and the uninstall would keep them.
+        merged["created"] = created
     if "claude_md" in new:
         merged["claude_md"] = new["claude_md"]
     elif "claude_md" in old:
@@ -404,16 +419,19 @@ def install(home, force=False, progress=None, config_dir=None):
 
     if current_md != claude_md:
         paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
+        old_md = old_record.get("claude_md")
+        # A file still holding what an earlier install wrote is the installer's own: no backup
+        # of it (nothing would restore one), and the first backup stays the one to restore.
+        still_ours = (isinstance(old_md, dict) and current_md is not None
+                      and old_md.get("sha256") == text_hash(current_md))
         backup = None
-        if claude_md_exists:
+        if claude_md_exists and not still_ours:
             backup = _backup(paths["claude_md"])
             changes.append(f"CLAUDE.md backup: {backup.name}")
             progress.append(changes[-1])
-        old_md = old_record.get("claude_md")
         # Keep the first backup when the file is still what an earlier install wrote. If the
         # user edited it since, their edits are what an uninstall should put back.
-        if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md
-                                         or old_md["sha256"] == text_hash(current_md)):
+        if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md or still_ours):
             record["claude_md"] = dict(old_md, sha256=text_hash(claude_md))
         else:
             record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
@@ -422,6 +440,11 @@ def install(home, force=False, progress=None, config_dir=None):
         _write_bytes(paths["claude_md"], claude_md.encode("utf-8"))
         changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
         progress.append(changes[-1])
+        # Record the CLAUDE.md change now, before settings.json: if that write fails, the next
+        # install would otherwise see a file that already matches, record nothing for it, and
+        # the undo would never restore the backup. The settings values are recorded only once
+        # settings.json holds them.
+        _write_json(paths["record"], _merge_record(old_record, {"claude_md": record["claude_md"]}))
 
     if setting_changes:
         if paths["settings"].exists():

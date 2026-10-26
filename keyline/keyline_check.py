@@ -52,7 +52,7 @@ INVARIANT = re.compile(
     | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
     | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
     | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})
-    | (?P<number>\d+(?:[.,]\d+)*(?:%|[A-Za-z]+)?)
+    | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
     | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
 )"""
     + R,
@@ -169,8 +169,8 @@ def invariants(text):
         tok = m.group(kind)
         if kind == "path" and not _is_path(tok):
             continue
-        if kind == "upper" and len(re.findall(r"[A-Z]", tok)) < 2:
-            continue          # "A", "I", "A1": not identifiers
+        if kind == "upper" and re.fullmatch(r"[A-Z]s?", tok):
+            continue          # "A", "I", "As": a letter, not an identifier ("S3", "A1" are)
         if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
             continue
         if kind == "proper":

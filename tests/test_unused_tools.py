@@ -35,3 +35,11 @@ def test_tool_use_without_a_name_is_not_counted(unused_tools, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "1 tool calls, 1 distinct tools" in out
     assert "None" not in out
+
+
+def test_a_folder_named_like_a_transcript_is_skipped(unused_tools, tmp_path, capsys):
+    # rglob matched a folder named x.jsonl and open() raised IsADirectoryError.
+    (tmp_path / "x.jsonl").mkdir()
+    write_jsonl(tmp_path / "t.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Read"}]}}])
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert "Read" in capsys.readouterr().out

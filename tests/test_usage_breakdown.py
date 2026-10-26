@@ -122,3 +122,14 @@ def test_folder_with_glob_characters_is_found(usage_breakdown, tmp_path, capsys)
     }])
     assert usage_breakdown.main([str(folder)]) == 0
     assert "1 transcripts" in capsys.readouterr().out
+
+
+def test_a_folder_named_like_a_transcript_is_skipped(usage_breakdown, tmp_path, capsys):
+    # The glob matched a folder named x.jsonl and open() raised IsADirectoryError.
+    (tmp_path / "x.jsonl").mkdir()
+    write_jsonl(tmp_path / "t.jsonl", [{
+        "type": "assistant",
+        "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": []},
+    }])
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert "1 transcripts" in capsys.readouterr().out

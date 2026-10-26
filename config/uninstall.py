@@ -66,6 +66,14 @@ def undo_settings(settings, template, record, evidence=None):
     replaced = record.get("replaced", {})
     added = record.get("added_keys", [])
     installed = record.get("installed", {})
+    # Containers (permissions, permissions.deny, hooks, hooks.<event>) are removed when the
+    # undo empties them only if the install created them; one the user had stays, empty. A
+    # record from before "created" was written, or no record, says nothing, so those are removed
+    # as before.
+    created = record.get("created")
+
+    def made(container):
+        return not isinstance(created, list) or container in created
     if evidence is None:
         evidence = has_our_hook(settings)
 
@@ -102,12 +110,11 @@ def undo_settings(settings, template, record, evidence=None):
         deny = [tool for tool in permissions["deny"] if tool not in ours]
         if deny != permissions["deny"]:
             changes.append("permissions.deny: removed " + ", ".join(t for t in permissions["deny"] if t in ours))
-            if deny:
-                permissions["deny"] = deny
-            else:
+            permissions["deny"] = deny
+            if not deny and made("permissions.deny"):
                 del permissions["deny"]
-                if not permissions:
-                    del settings["permissions"]
+            if not permissions and made("permissions"):
+                del settings["permissions"]
     elif isinstance(permissions, dict) and "deny" in permissions and record.get("deny_added"):
         # A deny that is not a list (a hand edit, a sync tool) holds nothing of ours we can
         # take out; say so and keep deny_added so a later run can still remove the tools.
@@ -125,11 +132,10 @@ def undo_settings(settings, template, record, evidence=None):
             kept = _without_our_hooks(entries)
             if kept != entries:
                 changes.append(f"hooks.{event}: Ideal-Umbrella hook removed")
-                if kept:
-                    hooks[event] = kept
-                else:
+                hooks[event] = kept
+                if not kept and made(f"hooks.{event}"):
                     del hooks[event]
-        if not hooks:
+        if not hooks and made("hooks"):
             del settings["hooks"]
     return changes, notices, left
 
@@ -144,6 +150,9 @@ def _leftover_record(record, left, claude_md_left):
         leftover["installed"] = {k: v for k, v in record.get("installed", {}).items() if k in left}
         if "permissions.deny" in left and record.get("deny_added"):
             leftover["deny_added"] = record["deny_added"]
+        if isinstance(record.get("created"), list):
+            # Whatever a later run still empties, it must know who made the container.
+            leftover["created"] = record["created"]
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
     return leftover
