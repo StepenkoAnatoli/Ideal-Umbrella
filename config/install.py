@@ -11,8 +11,9 @@ Usage:
   python -I config/install.py [--home PATH] [--force] [--verify-only]
 
 What it does, in write order (everything is read and checked first):
-  1. Writes an interim install record to <home>/.claude/ballast/install-record.json: the old
-     record (or the leftovers of the marker an uninstall left) marked "unfinished", plus the
+  1. Writes an interim install record to <home>/.claude/ballast/install-record.json: the
+     record step 5 will write (the old record, or the leftovers of the marker an uninstall
+     left, merged with what this run adds, replaces or creates) marked "unfinished", with the
      CLAUDE.md change and its backup when step 3 writes one (a backup whose record could not
      be written is removed again; one an interrupted install recorded is reused when it still
      equals the file)
@@ -23,11 +24,11 @@ What it does, in write order (everything is read and checked first):
   6. Verifies the files and prints a command to run in a new session.
 
 What it changed is recorded in <home>/.claude/ballast/install-record.json, so
-config/uninstall.py can put back the values that were there before. The interim record
-holds no settings data of this run, so an install interrupted before step 5 leaves an
-unfinished record: the uninstall restores what the record lists and judges the rest from
-the evidence (our hook entry), and the next install completes the record from the template
-values it finds in settings.json.
+config/uninstall.py can put back the values that were there before. An install interrupted
+after step 1 and before step 5 leaves the interim record, marked unfinished: the uninstall
+restores what it lists (a replaced value the run never got to write is left as it is), judges
+the keys it does not list from the evidence (our hook entry), and the next install completes
+the record from the template values it finds in settings.json.
 """
 import argparse
 import datetime
@@ -39,6 +40,10 @@ import shlex
 import shutil
 import sys
 from pathlib import Path
+
+# The fields of an install record that hold settings.json data; a record with none of them is
+# an uninstall's marker or the interim record of an install from before it carried data.
+INSTALL_DATA = ("added_keys", "replaced", "deny_added", "installed")
 
 HERE = Path(__file__).resolve().parent
 USER_SETTINGS = HERE / "user-settings.json"
@@ -443,8 +448,7 @@ def _merge_record(old, new):
     installed = dict(old_installed) if isinstance(old_installed, dict) else {}
     installed.update(new.get("installed", {}))
     merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed}
-    install_data = ("added_keys", "replaced", "deny_added", "installed")
-    if "created" in old or not any(k in old for k in install_data):
+    if "created" in old or not any(k in old for k in INSTALL_DATA):
         # A record from before "created" was written says nothing about who made the containers;
         # an empty list would say "the install made none", and the uninstall would keep them. A
         # marker record from a clean uninstall ({"uninstalled": true}) holds no install data, so
@@ -501,32 +505,47 @@ def install(home, force=False, progress=None, config_dir=None):
     # A record that says the install did not finish (an interrupt before its last write), or
     # that holds no install data without being a marker: the template values settings.json
     # holds are this install's as far as anyone can tell, so they are recorded as installed
-    # (the values the uninstall removed "as without a record" until now) and the record is
-    # completed. The deny tools are not claimed: a tool the user denied on their own would be
-    # removed by the uninstall, so they are named for the user to check.
-    install_data = ("added_keys", "replaced", "deny_added", "installed")
+    # (the values the uninstall removed "as without a record" until now; a key the record
+    # already lists gets its installed value refreshed, since the interrupted run may have
+    # written a changed template value over the one recorded) and the record is completed.
+    # Template deny tools the record does not list are not claimed: a tool the user denied on
+    # their own would be removed by the uninstall, so they are named for the user to check.
     unfinished_old = raw_record is not None and (
         bool(raw_record.get("unfinished"))
-        or (not raw_record.get("uninstalled") and not any(k in raw_record for k in install_data)))
+        or (not raw_record.get("uninstalled") and not any(k in raw_record for k in INSTALL_DATA)))
     if unfinished_old:
         known = set(record["added_keys"]) | set(record["replaced"]) | set(record["installed"])
-        for field in install_data[:2] + install_data[3:]:
+        for field in ("added_keys", "replaced", "installed"):
             known.update(old_record.get(field, ()))
+        old_installed = old_record.get("installed")
+        old_installed = old_installed if isinstance(old_installed, dict) else {}
+        recorded = []
         for key, value in template.items():
-            if key in ("hooks", "permissions") or key in known or existing.get(key) != value:
+            if key in ("hooks", "permissions") or existing.get(key) != value:
                 continue
-            record["added_keys"].append(key)
+            if key not in known:
+                record["added_keys"].append(key)
+            if record["installed"].get(key, old_installed.get(key, object())) != value:
+                recorded.append(key)
             record["installed"][key] = value
         if not (hook_changed or md_changed or setting_changes):
             changes.append("install record completed")
         permissions = existing.get("permissions")
         deny = permissions.get("deny") if isinstance(permissions, dict) else None
+        wanted = template.get("permissions", {}).get("deny", [])
         claimed = set(record["deny_added"]) | set(old_record.get("deny_added", ()))
-        unclaimed = [t for t in deny if t not in claimed] if isinstance(deny, list) else []
-        notices.append("the install record did not finish (an earlier install stopped before its "
-                       "last write); the template values in settings.json are recorded as "
-                       "installed; permissions.deny tools are not recorded, remove any that are "
-                       "not yours by hand" + (": " + ", ".join(unclaimed) if unclaimed else ""))
+        unclaimed = ([t for t in deny if t in wanted and t not in claimed]
+                     if isinstance(deny, list) else [])
+        if recorded or unclaimed:
+            what = []
+            if recorded:
+                what.append("the template values in settings.json are recorded as installed: "
+                            + ", ".join(recorded))
+            if unclaimed:
+                what.append("permissions.deny tools it does not list are not claimed, remove any "
+                            "that are not yours by hand: " + ", ".join(unclaimed))
+            notices.append("the install record did not finish (an earlier install stopped before "
+                           "its last write); " + "; ".join(what))
     writes_record = hook_changed or md_changed or bool(setting_changes) or unfinished_old
     # A read-only target is refused now, while nothing is written yet, not when its turn comes
     # after its backup and the files before it; only the files this run will write are checked,
@@ -535,18 +554,6 @@ def install(home, force=False, progress=None, config_dir=None):
                              ("settings", bool(setting_changes)), ("record", writes_record)):
         if will_write:
             _refuse_read_only(paths[name])
-
-    # The interim record: the old record (the leftovers of the marker an uninstall leaves, or
-    # the data of an earlier, finished install; the marker key itself is not an install's
-    # record) marked unfinished, plus the CLAUDE.md change when there is one. It is the run's
-    # first write whenever the run writes a file, so an interrupt at any later point leaves a
-    # record the uninstall reads as unfinished: it restores what the record lists and judges
-    # the rest from the hook evidence, and says so. It carries no settings data of this run:
-    # one that said "added nothing" was believed by the uninstall after an interrupt at the
-    # final record. Dropping the old record's data lost a value a --force install replaced
-    # and the uninstall had kept, or a CLAUDE.md backup still pending.
-    interim = {k: v for k, v in old_record.items() if k != "uninstalled"}
-    interim["unfinished"] = True
 
     backup = None
     if md_changed:
@@ -578,7 +585,24 @@ def install(home, force=False, progress=None, config_dir=None):
             record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
             if isinstance(old_md, dict) and backup is not None and backup is not recorded_copy:
                 notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
-        interim["claude_md"] = record["claude_md"]
+
+    # The record this run writes last: the old one (the data of an earlier, finished install,
+    # or the leftovers of the marker an uninstall leaves; the marker key itself is not an
+    # install's record) merged with what this run adds, replaces and creates.
+    final = _merge_record(old_record, record)
+    if unfinished_old and "created" not in old_record and not record["created"]:
+        # Who made the containers the interrupted install filled is not known; without the
+        # field the uninstall removes the ones it empties, as for a record from before it.
+        # The containers this run makes are its own and stay listed.
+        final.pop("created", None)
+    # The interim record: the same, marked unfinished. It is the run's first write whenever the
+    # run writes a file, so an interrupt at any later point leaves a record the uninstall reads
+    # as unfinished: it restores what the record lists (a replaced value the run never got to
+    # write is left as it is), judges the keys it does not list from the hook evidence, and
+    # says so. An interim record without the flag that said "added nothing" was believed by the
+    # uninstall after an interrupt at the final record; one without this run's data lost a
+    # value --force replaced, or a container this run made, to that interrupt.
+    interim = dict(final, unfinished=True)
 
     if hook_changed or md_changed or setting_changes:
         # Record the CLAUDE.md change before the file is replaced, and before the hook and
@@ -624,11 +648,6 @@ def install(home, force=False, progress=None, config_dir=None):
     # install that failed would make uninstall report values it never installed. Without a
     # record, uninstall still works from the hook entry as evidence.
     if writes_record:
-        final = _merge_record(old_record, record)
-        if unfinished_old and "created" not in old_record:
-            # Who made the containers the interrupted install filled is not known; without the
-            # field the uninstall removes the ones it empties, as for a record from before it.
-            final.pop("created", None)
         _write_json(paths["record"], final)
     return setting_changes + changes, notices
 

@@ -57,6 +57,13 @@ def has_our_hook(settings):
                for entry in entries)
 
 
+def _is_unfinished(record):
+    """Whether the record is of an install interrupted before its last write: marked so, or
+    one with no settings data that is not the marker an uninstall leaves."""
+    return record is not None and (bool(record.get("unfinished")) or (
+        not record.get("uninstalled") and not any(k in record for k in install.INSTALL_DATA)))
+
+
 def undo_settings(settings, template, record, evidence=None):
     """Undo the install in settings (in place); return (changes, notices, keys left as is).
 
@@ -65,14 +72,13 @@ def undo_settings(settings, template, record, evidence=None):
     is evidence of an install (evidence; by default, our hook entry in settings).
     """
     changes, notices, left = [], [], []
-    # An unfinished record (an install interrupted before its last write: marked so, or one
-    # with no settings data that is not the marker an uninstall leaves) says nothing about the
-    # keys it does not list: those are judged as without a record, from the evidence, instead
-    # of being trusted as "nothing added". What it lists (the leftovers of an earlier run) is
-    # restored as from a full record.
-    has_record = record is not None and any(k in record for k in ("added_keys", "replaced", "installed"))
-    unfinished = record is not None and (bool(record.get("unfinished"))
-                                         or (not has_record and not record.get("uninstalled")))
+    # An unfinished record says nothing about the keys it does not list: those are judged as
+    # without a record, from the evidence, instead of being trusted as "nothing added". What
+    # it lists (this run's data, the leftovers of an earlier run) is restored as from a full
+    # record, except a replaced key still holding the value to put back: the interrupted
+    # install never got to write it, or the user put it back, and nothing is left to undo.
+    has_record = record is not None and any(k in record for k in install.INSTALL_DATA)
+    unfinished = _is_unfinished(record)
     no_record = record is None
     record = record or {}
     replaced = record.get("replaced", {})
@@ -90,24 +96,23 @@ def undo_settings(settings, template, record, evidence=None):
         evidence = has_our_hook(settings)
 
     recorded = list(dict.fromkeys([*added, *replaced]))
+    unlisted = [k for k in template if k not in recorded and k not in ("hooks", "permissions")]
+    judged = []     # unlisted keys removed from the evidence under an unfinished record
     if has_record and not unfinished:
         keys = recorded
     elif evidence:
-        keys = recorded + [k for k in template if k not in recorded]
-        if unfinished:
-            notices.append("the install record holds no settings data for the install that did not "
-                           "finish; the template values are removed as without a record, except the keys it lists")
+        keys = recorded + unlisted
     else:
         keys = recorded
         if unfinished:
-            notices.append("the install record holds no settings data for the install that did not "
-                           "finish, and there is no Ideal-Umbrella hook; settings values it does not "
-                           "list are left as is")
+            held = [k for k in unlisted if k in settings and settings[k] == template[k]]
+            if held:
+                notices.append("the install record is of an install that did not finish, and there "
+                               "is no Ideal-Umbrella hook; settings values it does not list are "
+                               "left as is: " + ", ".join(held))
         elif no_record:
             notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
-        if key in ("hooks", "permissions"):
-            continue
         if key not in settings:
             if key in replaced:
                 notices.append(f"{key} was removed after the install; its earlier value "
@@ -120,6 +125,8 @@ def undo_settings(settings, template, record, evidence=None):
         else:
             continue
         if settings[key] != expected:
+            if unfinished and key in replaced and settings[key] == replaced[key]:
+                continue    # the value to put back is in place: the write never happened
             notices.append(f"{key} is {settings[key]!r}, not the installed value; left as is")
             left.append(key)
             continue
@@ -129,6 +136,11 @@ def undo_settings(settings, template, record, evidence=None):
         else:
             del settings[key]
             changes.append(f"{key}: removed")
+            if unfinished and key in unlisted:
+                judged.append(key)
+    if judged:
+        notices.append("the install record is of an install that did not finish; template values "
+                       "it does not list are removed as without a record: " + ", ".join(judged))
 
     permissions = settings.get("permissions")
     if isinstance(permissions, dict) and isinstance(permissions.get("deny"), list):
@@ -149,8 +161,14 @@ def undo_settings(settings, template, record, evidence=None):
     if no_record:
         notices.append("no install record; permissions.deny left as is")
     elif unfinished:
-        notices.append("the install record holds no settings data for the install that did not "
-                       "finish; permissions.deny tools it does not list are left as is")
+        # Only template tools can be the interrupted install's; the user's own are theirs.
+        wanted = template.get("permissions", {}).get("deny", [])
+        deny = permissions.get("deny") if isinstance(permissions, dict) else None
+        unclaimed = ([t for t in deny if t in wanted and t not in record.get("deny_added", [])]
+                     if isinstance(deny, list) else [])
+        if unclaimed:
+            notices.append("the install record is of an install that did not finish; permissions.deny "
+                           "tools it does not list are left as is: " + ", ".join(unclaimed))
 
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
@@ -169,10 +187,14 @@ def undo_settings(settings, template, record, evidence=None):
     return changes, notices, left
 
 
-def _leftover_record(record, left, claude_md_left):
+def _leftover_record(record, left, claude_md_left, unfinished=False):
     """What an uninstall keeps of the record: a marker that it ran, plus anything left as is,
-    so a second run neither falls back to no-record mode nor forgets a pending backup."""
+    so a second run neither falls back to no-record mode nor forgets a pending backup. With
+    `unfinished` (an unfinished record whose settings.json was not there to undo) the flag
+    stays, so the run that finds the file back still judges the keys it does not list."""
     leftover = {"uninstalled": True}
+    if unfinished:
+        leftover["unfinished"] = True
     if record and left:
         # Only the fields the record holds: a record with no settings data (an interrupted
         # install) keeps none, since empty ones would read as a full record on the next run.
@@ -296,6 +318,14 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     # A backup is restored over the install's own text, or where the file was when the user
     # has deleted it since: the install's write is gone, the backup is what remains to undo.
     restore = backup is not None and backup.exists() and (ours or current_md is None)
+    # The copy an install made of the user's file before it was interrupted, with the file
+    # never replaced: the file is the user's own and the copy has nothing to restore.
+    orphan_copy = False
+    if backup is not None and current_md is not None and not ours and backup.exists():
+        try:
+            orphan_copy = backup.read_bytes() == claude_md.read_bytes()
+        except OSError as e:
+            raise ValueError(f"cannot read {backup} ({e.strerror or e})") from e
 
     left = []
     setting_changes = []
@@ -328,7 +358,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             removals.append(paths["state"])
         if paths["log"].is_file():
             removals.append(paths["log"])
-        if restore:
+        if restore or orphan_copy:
             removals.append(backup)
         elif (current_md is not None and ours and named is None
               and (entry is not None if record is not None else evidence)):
@@ -396,6 +426,14 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             notices.append(f"{where}: the backup {backup.name} it should be restored from is missing")
     elif current_md is None:
         pass    # deleted by the user, and the install made it: nothing left to undo
+    elif orphan_copy:
+        if dry_run:
+            changes.append(f"CLAUDE.md backup {backup.name} removed (CLAUDE.md is still your own file)")
+        else:
+            _remove(backup)
+            done(f"CLAUDE.md backup {backup.name} removed (CLAUDE.md is still your own file)")
+    elif not ours and record is not None and entry is None:
+        pass    # the record says the install never wrote CLAUDE.md: the file is the user's own
     elif not ours:
         claude_md_left = True
         notices.append("CLAUDE.md differs from what was installed; left as is"
@@ -421,7 +459,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 done(f"CLAUDE.md deleted (copy kept as {copy.name})")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
-        install._write_json(paths["record"], _leftover_record(record, left, claude_md_left))
+        install._write_json(paths["record"], _leftover_record(
+            record, left, claude_md_left, unfinished=settings is None and _is_unfinished(record)))
     return changes, notices
 
 

@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; pass 5: 0 high, 1 medium, 4 low in its keyline part (config part follows).
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1559,7 +1559,7 @@ and pinning the behaviour, see its block).
 Two reviewers who had not seen the findings above read only the pass 4 fix commit ab4b786: R1
 its keyline_check part, R2 its config/hook part. Every medium was re-reproduced here with
 `python3 -I` before being accepted. Counts: R1 findings 80-84: 0 high, 1 medium, 4 low (84 is a
-dead branch R1 noted in passing, outside the commit); R2 findings from 85: see below.
+dead branch R1 noted in passing, outside the commit); R2 findings 85-94: 0 high, 3 medium, 6 low and a docstring nit (94); 95 was found while fixing 90: low.
 
 80. (R1) keyline/keyline_check.py:73-76, keyline/README.md:57, CHANGELOG.md:19 (before this fix):
     the pass-4 wording "a name that ends in a letter is no token before the dotted number: the
@@ -1632,6 +1632,177 @@ dead branch R1 noted in passing, outside the commit); R2 findings from 85: see b
    removal that changes nothing).
    Other hits: none found by reading the other `kind` filters.
    Prevention: a post-filter on a regex group is checked against what the group can match.
+
+85. (R2) config/install.py:626-632 (before this fix) `if unfinished_old and "created" not in
+    old_record: final.pop("created", None)`: a completing re-run dropped the containers this run
+    made, so the undo removed the user's own empty container: `settings.json` =
+    `{"model": "opus", "permissions": {}}`, a first install interrupted at the `settings.json`
+    write, re-run, uninstall ends with `{"model": "opus"}`, where ab4b786^ kept `permissions: {}`
+    (as `test_empty_containers_the_user_had_before_are_kept` pins for an uninterrupted install).
+    The pop was meant for a record whose interrupted run may have filled the containers, but when
+    `settings.json` was never written this run's `created` is exact, and the two cases are
+    disjoint. Regression of ab4b786. Reproduced with `python3 -I` (selfcheck7e/r2/
+    p1_created_regression.py). Medium. Class: regression inside a fix.
+   Fixed: config/install.py:593 pops only when this run made nothing (`and not
+   record["created"]`); a container this run found present was there before it, the user's or the
+   interrupted run's, and an empty one left behind is the lesser harm. Test:
+   tests/test_install.py:1111 `test_a_completing_re_run_keeps_the_containers_it_made` (failed
+   before the fix).
+   Other hits: 88 (the interim side of the same `created` rule).
+   Prevention: a rule that discards data on a condition is tested on the input where the data is
+   exact.
+
+86. (R2) config/install.py:548-549 and :511-519 (before this fix): the interim record carried no
+    `settings.json` data of the run, so a `--force` install over `autoCompactWindow: 100`
+    interrupted at the final record (write 5, `settings.json` already holding 250000) lost the
+    replaced value: the uninstall removed the key (the 100 survived only in `settings.json.bak-*`,
+    which nothing names), and a re-run first said "install record completed" and recorded the key
+    as added, so the undo then removed it from a finished record with no notice. Pre-existing
+    (ab4b786^ lost it as "removed as without a record"), but the completion turned the halfway
+    state into a confident wrong record. Reproduced with `python3 -I` (p4_force_interrupt_loses_
+    value.py). Medium. Class: neighbour of the fixed input (`--force`).
+   Fixed: the interim record is now the final record marked unfinished (config/install.py:592-605:
+   `final = _merge_record(old_record, record)`, `interim = dict(final, unfinished=True)`), so it
+   lists the run's `replaced`, `installed`, `added_keys` and `deny_added` from the first write;
+   the flag, not absent data, is what the uninstall trusts. Before the `settings.json` write the
+   key still holds the user's value: config/uninstall.py:129 leaves a replaced key that still holds
+   its replaced value without the "not the installed value" notice. Tests: tests/test_install.py:
+   1146 `test_a_force_install_interrupted_at_the_final_record_keeps_the_replaced_value`
+   (re-run False and True) and :1170 `..._interrupted_before_the_settings_write_leaves_the_users_
+   value_alone` (failed before the fix); the rewritten interrupt tests at :749-912 pin the interim
+   fields (`INTERIM_FIELDS`, :727).
+   Other hits: with the run's `deny_added` in the interim, the undo of an interrupt at the final
+   record now removes the deny tools this run added (:749); docs README.md:66, :113 and
+   CHANGELOG.md:24 describe the new contract; the completion loop (:513-547) stays for records
+   from the earlier interim design (no settings data).
+   Prevention: a record written before the data it describes carries the data and a flag, never a
+   subset the reader has to infer from.
+
+87. (R2) config/install.py:511-519 (before this fix): the completion loop skipped every key the
+    record already listed and never refreshed `installed`, so after a template change
+    (`autoCompactWindow` 250000 -> 300000), a re-install interrupted at the final record (write 5,
+    `settings.json` holding 300000) and a re-run, the record said completed while `installed`
+    kept 250000; the undo left `autoCompactWindow: 300000` as "not the installed value". The
+    commit's claim "completes it from the template values it finds in settings.json" did not hold
+    for a listed key. Pre-existing end state. Reproduced with `python3 -I`
+    (p3_template_change_stale_installed.py). Medium. Class: neighbour of the fixed input (a key
+    the record lists).
+   Fixed: config/install.py:520-528: every template key whose current value equals the template
+   value gets `record["installed"][key] = value` (added to `added_keys` only when unknown), and
+   `_merge_record` overwrites the stale entry; the keys whose recorded value changed are the ones
+   the notice names. Test: tests/test_install.py:1190 `test_completing_a_record_refreshes_the_
+   installed_value_of_a_listed_key` (failed before the fix).
+   Other hits: none: the finished path records `installed` from the write itself.
+   Prevention: a "complete from what is there" step is tested against a record that already lists
+   the key with another value.
+
+88. (R2) config/install.py:548 (before this fix) `interim = {k: v for k, v in old_record.items()
+    if k != "uninstalled"}` copied the marker's `created` list, which `_merge_record` (:436-439)
+    discards on purpose for a finished re-install (the list may name a container the uninstall
+    deleted and the user then re-made by hand): a marker with `created: [... "hooks" ...]`, the
+    user re-makes `hooks: {}`, a re-install interrupted at the final record, then uninstall (or a
+    re-run and uninstall) removed the user's `hooks`, where the finished re-install keeps it
+    (`test_a_container_the_user_adds_between_uninstall_and_reinstall_is_kept`). Pre-existing
+    (ab4b786^ had no list at all). Reproduced with `python3 -I` (p2_marker_created_carried.py).
+    Low. Class: neighbour of the fixed input (a marker's leftovers) / absent is not empty.
+   Fixed: the interim is now built by `_merge_record` (86), which applies the same `created` rule
+   as the final record, so an interrupted and a finished re-install over one marker end with the
+   same list. Test: tests/test_install.py:1251 `test_an_interrupted_re_install_over_a_marker_
+   lists_only_the_containers_it_made` (failed before the fix).
+   Other hits: none.
+   Prevention: the interim and the final record are built by one function, not two copies of the
+   rules.
+
+89. (R2) config/install.py:526-529 (before this fix): the "did not finish" notice said "the
+    template values in settings.json are recorded as installed; permissions.deny tools are not
+    recorded, remove any that are not yours by hand" for every completing run, also when the run
+    itself added both keys and all deny tools (interrupt at the `CLAUDE.md` write, re-run), or
+    when the old record already claimed the tools (hook-only change interrupted at the hook
+    write). Reproduced with `python3 -I` (p5_notice_wording.py). Low. Class: message vs code.
+   Fixed: config/install.py:536-547: the notice is emitted only when the loop recorded a value or a
+   wanted deny tool is unclaimed, and names them ("recorded as installed: a, b"; "permissions.deny
+   tools it does not list are not claimed, remove any that are not yours by hand: ..."); a tool
+   outside the template (the user's own) is not named. Test: tests/test_install.py:1224
+   `test_completing_a_record_names_what_it_claims_and_what_it_cannot` (failed before the fix);
+   :1082 pins the silent completion.
+   Other hits: the uninstall's two "did not finish" notices had the same shape (one sentence for
+   every case) and now name the keys and tools too (config/uninstall.py:107-111, :141-143,
+   :167-171; tests/test_uninstall.py:910).
+   Prevention: a notice about "what was recorded" is built from the list it recorded.
+
+90. (R2) config/uninstall.py:399-402 (before this fix) and `_leftover_record` keeping `claude_md`:
+    the undo of an install interrupted at the hook write (a window ab4b786 opened by moving the
+    interim record before the hook; the `CLAUDE.md`-write window existed before) left the backup
+    `CLAUDE.md.bak-*`, byte-equal to the user's file the install never replaced, the record's
+    `claude_md` entry, and said "CLAUDE.md differs from what was installed; left as is (your
+    earlier file is in ...)" on every later run. Reproduced with `python3 -I`
+    (p6_orphan_backup_after_uninstall.py). Low. Class: halfway state.
+   Fixed: config/uninstall.py:323-326 reads the backup up front (`orphan_copy` when it equals
+   `CLAUDE.md` byte for byte; an unreadable backup is refused before any write, :327), :361 lists it
+   among the removals, :429-434 removes it with "CLAUDE.md backup <name> removed (CLAUDE.md is
+   still your own file)" and the entry is dropped. Test: tests/test_uninstall.py:963
+   `test_the_undo_of_an_install_interrupted_at_the_hook_write_removes_the_orphan_copy` (dry-run
+   and real; failed before the fix).
+   Other hits: 95.
+   Prevention: every file a run creates before an interrupt has an undo path tested at that
+   interrupt.
+
+91. (R2) config/install.py:507 `install_data` (with `deny_added`) vs config/uninstall.py:73
+    `has_record` (without): a record `{"deny_added": [...], "created": []}` was finished to the
+    install (nothing to do) and unfinished to the uninstall (both keys and the hook removed from the
+    evidence, with the notices). Reproduced with `python3 -I` (p9_deny_added_only_record.py). Low.
+    Class: absent is not empty (two readers, two definitions).
+   Fixed: config/install.py:46 `INSTALL_DATA` is the one tuple; `_merge_record` (:451), the
+   completion test (:515) and config/uninstall.py:60 `_is_unfinished` (used by `undo_settings` and
+   the leftover) read it. Test: tests/test_install.py:1271 `test_a_record_with_only_deny_tools_is_
+   finished_to_the_install_and_the_uninstall` (failed before the fix).
+   Other hits: none: no other script reads the record.
+   Prevention: a field list two scripts agree on lives in one place and is imported.
+
+92. (R2) config/uninstall.py:305-313 and `_leftover_record` :172-192 (before this fix): an
+    uninstall over an unfinished record while `settings.json` was missing wrote the marker without
+    `unfinished`, so the next run, with `settings.json` back, removed the keys on the hook evidence
+    without the notice and left the deny tools in silence. Reproduced with `python3 -I`
+    (p10_unfinished_missing_settings_and_dry_run.py, part a). Low. Class: halfway state.
+   Fixed: config/uninstall.py:190 `_leftover_record(..., unfinished=False)` keeps the flag, and the
+   call at :463 passes `settings is None and _is_unfinished(record)`. Test:
+   tests/test_uninstall.py:937 `test_an_unfinished_record_stays_unfinished_while_settings_json_
+   is_missing` (failed before the fix).
+   Other hits: none.
+   Prevention: a leftover record is diffed against the record it came from in the test.
+
+93. (R2) tests/test_install.py:981 (before this fix) `assert "uninstalled" not in record and
+    "added_keys" not in record.get("replaced", {})`: the second conjunct asks whether the string
+    `"added_keys"` is a key of the `replaced` dict, true for every record. Low. Class: fix without
+    a test (a vacuous assertion).
+   Fixed: tests/test_install.py:989 `test_an_interrupted_re_install_over_a_marker_keeps_the_
+   markers_leftovers` asserts `record["added_keys"] == ["skillListingBudgetFraction"]`, the
+   `replaced` value and the settings after the undo.
+   Other hits: the other interrupt tests were rewritten to assert the interim fields by name
+   (`INTERIM_FIELDS`).
+   Prevention: an assertion with `in` on a dict names the key it expects, not a field name.
+
+94. (R2, nit) config/install.py:27 (before this fix): the docstring said "an install interrupted
+    before step 5 leaves an unfinished record"; an interrupt at step 1 (the interim write itself)
+    leaves the old record untouched. Low. Class: doc mismatch.
+   Fixed: config/install.py:20-31 says "after step 1 and before step 5" and describes the interim
+   as the record step 5 will write, marked unfinished.
+   Other hits: README.md:66, :113 and CHANGELOG.md:24 updated with 86.
+   Prevention: a docstring that names steps is re-read against the except branch of the first one.
+
+95. (found while fixing 90) config/uninstall.py:436 (the branch before `elif not ours:`): a second
+    uninstall over a clean marker (one whose record has no `claude_md` entry, because the install
+    found the user's `CLAUDE.md` already matching or never wrote it) said "CLAUDE.md differs from
+    what was installed; left as is" about the user's own file, on every run. Reproduced with the
+    orphan-copy test's final `uninstall(home) == ([], [])`, which failed on the stashed pre-fix
+    code for this reason alone. Low. Class: message vs code.
+   Fixed: config/uninstall.py:436 passes silently when the record exists and has no `claude_md`
+   entry (the install never wrote the file). Test: tests/test_uninstall.py:1000
+   `test_a_second_uninstall_says_nothing_about_a_claude_md_the_install_never_wrote` (failed before
+   the fix).
+   Other hits: none.
+   Prevention: a "differs from what was installed" notice is emitted only where the record says
+   something was installed.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

@@ -908,10 +908,11 @@ def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_
 
 
 def test_an_unfinished_record_restores_what_it_lists_and_judges_the_rest_from_the_evidence(uninstall_module):
-    # The record of an interrupted re-install carries the marker's leftovers (a --force
-    # replaced value the earlier undo kept) and says it is unfinished: the listed key is
-    # restored from the record, the other template keys are removed from the evidence with a
-    # notice, and the deny tools it does not list are left with a notice.
+    # The record of an interrupted re-install from before it carried the run's data holds the
+    # marker's leftovers (a --force replaced value the earlier undo kept) and says it is
+    # unfinished: the listed key is restored from the record, the other template keys are
+    # removed from the evidence with a notice naming them, and the deny tools it does not
+    # list are left with a notice naming them.
     template = uninstall_module.install._read_json(uninstall_module.install.USER_SETTINGS)
     keys = [k for k in template if k not in ("hooks", "permissions")]
     settings = {"model": "opus", "permissions": {"deny": list(template["permissions"]["deny"])},
@@ -922,9 +923,98 @@ def test_an_unfinished_record_restores_what_it_lists_and_judges_the_rest_from_th
     assert settings[keys[0]] == 100 and all(k not in settings for k in keys[1:]), (settings, changes)
     assert settings["permissions"]["deny"] == template["permissions"]["deny"]
     assert left == []
-    assert any("no settings data" in n and "template values are removed" in n for n in notices), notices
-    assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
+    assert any("did not finish" in n and n.endswith("removed as without a record: " + ", ".join(keys[1:]))
+               for n in notices), notices
+    assert any("did not finish" in n and "permissions.deny" in n
+               and n.endswith("left as is: " + ", ".join(template["permissions"]["deny"]))
+               for n in notices), notices
     # Without evidence only the listed key is touched.
     settings = {"model": "opus", **{k: template[k] for k in keys}}
     changes, notices, left = uninstall_module.undo_settings(settings, template, dict(record), evidence=False)
     assert settings[keys[0]] == 100 and all(k in settings for k in keys[1:]), (settings, changes)
+
+
+def test_an_unfinished_record_stays_unfinished_while_settings_json_is_missing(install_module, uninstall_module, tmp_path):
+    # With settings.json missing the uninstall kept the recorded keys in the marker for a
+    # later run, but not the unfinished flag: the run that found the file back read the
+    # marker as finished, so the template values and deny tools it did not list were handled
+    # as a full record's, with no notice. The flag stays with the marker.
+    home = tmp_path / "home"
+    paths = install_module.layout(home)
+    install_module.install(home)
+    full = settings_file(home).read_text(encoding="utf-8")
+    paths["record"].write_text(json.dumps({"unfinished": True}), encoding="utf-8")
+    settings_file(home).unlink()
+    changes, notices = uninstall_module.uninstall(home)
+    assert "hook deleted" in changes, changes
+    assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True, "unfinished": True}
+    settings_file(home).write_text(full, encoding="utf-8")
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    changes, notices = uninstall_module.uninstall(home)
+    assert any("did not finish" in n and "permissions.deny" in n
+               and n.endswith("left as is: " + ", ".join(template["permissions"]["deny"]))
+               for n in notices), notices
+    assert any("did not finish" in n and "removed as without a record: autoCompactWindow, "
+               "skillListingBudgetFraction" in n for n in notices), notices
+    assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_the_undo_of_an_install_interrupted_at_the_hook_write_removes_the_orphan_copy(install_module, uninstall_module, tmp_path, dry_run):
+    # An install over the user's CLAUDE.md copies it, records the copy, and was interrupted at
+    # the hook write, so the file was never replaced: the undo found a CLAUDE.md that is not
+    # the installer's, left it with "differs from what was installed (your earlier file is in
+    # ...)" on every run, and kept the identical copy for good. A copy equal to the file has
+    # nothing to restore: it is removed and the file is left as the user's own, in silence.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    paths = install_module.layout(home)
+    real_write = install_module._write_bytes
+
+    def failing(path, data):
+        if path == paths["hook"]:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    install_module._write_bytes = failing
+    try:
+        with pytest.raises(OSError):
+            install_module.install(home)
+    finally:
+        install_module._write_bytes = real_write
+    copies = sorted(claude.glob("CLAUDE.md.bak-*"))
+    assert len(copies) == 1 and copies[0].read_text(encoding="utf-8") == "my own rules\n"
+    changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
+    assert changes == [f"CLAUDE.md backup {copies[0].name} removed (CLAUDE.md is still your own file)"], changes
+    assert notices == [], notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert copies[0].exists() is dry_run
+    if not dry_run:
+        assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True}
+        assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_second_uninstall_says_nothing_about_a_claude_md_the_install_never_wrote(install_module, uninstall_module, tmp_path):
+    # After a round trip the marker has no CLAUDE.md entry and the file is the user's own,
+    # restored from its backup; the next uninstall still said it "differs from what was
+    # installed; left as is". A record without the entry says the install never wrote the
+    # file, so there is nothing to say about it.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home)
+    changes, notices = uninstall_module.uninstall(home)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert uninstall_module.uninstall(home) == ([], [])
+    # An install that found the template text in place never wrote it either; the user's
+    # later edits to their own file are theirs.
+    (claude / "CLAUDE.md").write_text(install_module._read_text(install_module.CLAUDE_MD), encoding="utf-8")
+    install_module.install(home)
+    (claude / "CLAUDE.md").write_text("my own rules again\n", encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert not any("CLAUDE.md" in n for n in notices), notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules again\n"
