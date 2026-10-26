@@ -724,7 +724,8 @@ def _interrupt(install_module, home, which, calls_before, force=False):
     return calls
 
 
-INTERIM_FIELDS = ["added_keys", "created", "deny_added", "installed", "replaced", "unfinished"]
+INTERIM_FIELDS = ["added_keys", "created", "deny_added", "installed", "replaced", "settings_backup",
+                  "unfinished"]
 
 
 def _interrupt_settings_write(install_module, home, force=False):
@@ -1290,3 +1291,136 @@ def test_a_record_with_only_deny_tools_is_finished_to_the_install_and_the_uninst
     settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     assert settings["autoCompactWindow"] == template["autoCompactWindow"], (settings, changes)
     assert not any("did not finish" in n for n in notices), notices
+
+
+@pytest.mark.parametrize("re_run", [False, True])
+def test_a_template_change_interrupted_before_the_settings_write_keeps_the_earlier_value_as_installed(install_module, tmp_path, monkeypatch, re_run):
+    # The interim record is the final record marked unfinished, so it listed the new template
+    # value as installed before the settings write happened. An interrupt in between left
+    # settings.json at the earlier install's value: the undo said "not the installed value;
+    # left as is" and kept the key, and a plain re-run said "use --force" about a value the
+    # installer itself had written. The interim lists the value the key holds until the run
+    # writes it; the write the run got to is told from the template value.
+    home = tmp_path / "home"
+    install_module.install(home)
+    paths = install_module.layout(home)
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    template["autoCompactWindow"] = 300000
+    newer = tmp_path / "user-settings.json"
+    newer.write_text(json.dumps(template), encoding="utf-8")
+    monkeypatch.setattr(install_module, "USER_SETTINGS", newer)
+    _interrupt_settings_write(install_module, home)
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert record["unfinished"] is True and record["installed"]["autoCompactWindow"] != 300000, record
+    assert json.loads(settings_file(home).read_text(encoding="utf-8"))["autoCompactWindow"] != 300000
+    if re_run:
+        changes, notices = install_module.install(home)
+        assert notices == [] and "(template changed)" in " ".join(changes), (changes, notices)
+        assert json.loads(settings_file(home).read_text(encoding="utf-8"))["autoCompactWindow"] == 300000
+        record = json.loads(paths["record"].read_text(encoding="utf-8"))
+        assert "unfinished" not in record and record["installed"]["autoCompactWindow"] == 300000, record
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    monkeypatch.setattr(uninstall_module.install, "USER_SETTINGS", newer)
+    changes, notices = uninstall_module.uninstall(home)
+    assert notices == [] and "autoCompactWindow: removed" in changes, (changes, notices)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {}, changes
+    assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def test_a_template_change_interrupted_at_the_final_record_is_undone_from_the_template_value(install_module, tmp_path, monkeypatch):
+    # The twin of the case above: the run wrote the new template value and was interrupted at
+    # the final record, so settings.json holds a value the interim record does not list as
+    # installed. A listed key holding the template value under an unfinished record was
+    # written by the interrupted run: it is removed, not left as "not the installed value".
+    home = tmp_path / "home"
+    install_module.install(home)
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    template["autoCompactWindow"] = 300000
+    newer = tmp_path / "user-settings.json"
+    newer.write_text(json.dumps(template), encoding="utf-8")
+    monkeypatch.setattr(install_module, "USER_SETTINGS", newer)
+    _interrupt(install_module, home, 2, [])
+    assert json.loads(settings_file(home).read_text(encoding="utf-8"))["autoCompactWindow"] == 300000
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    monkeypatch.setattr(uninstall_module.install, "USER_SETTINGS", newer)
+    changes, notices = uninstall_module.uninstall(home)
+    assert notices == [] and "autoCompactWindow: removed" in changes, (changes, notices)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {}, changes
+
+
+def test_completing_a_record_drops_a_replacement_the_interrupted_run_never_wrote(install_module, tmp_path):
+    # A --force install interrupted before the settings write lists the user's value as
+    # replaced; a plain re-run cannot replace it (no --force), but the completed record kept
+    # the claim and the new value as installed, so the undo said "not the installed value;
+    # left as is" about the user's own value and the marker carried the claim for good. A
+    # listed replacement whose key still holds the replaced value, and which this run does not
+    # make, never happened: it is dropped.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus", "autoCompactWindow": 100}), encoding="utf-8")
+    _interrupt_settings_write(install_module, home, force=True)
+    record_path = install_module.layout(home)["record"]
+    changes, notices = install_module.install(home)
+    assert notices == ["autoCompactWindow is 100, template has 250000; left unchanged (use --force)"], notices
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert "unfinished" not in record and record["replaced"] == {}, record
+    assert "autoCompactWindow" not in record["installed"] and "autoCompactWindow" not in record["added_keys"], record
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert not any("autoCompactWindow" in n for n in notices), notices
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus", "autoCompactWindow": 100}
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+    # A --force re-run replaces it afresh, and the undo puts it back.
+    install_module.install(home, force=True)
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["replaced"] == {"autoCompactWindow": 100}, record
+    uninstall_module.uninstall(home)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus", "autoCompactWindow": 100}
+
+
+def test_a_re_install_over_a_marker_that_stayed_unfinished_keeps_the_containers_it_lists(install_module, tmp_path):
+    # An uninstall that found settings.json missing keeps the record unfinished with the
+    # containers the interrupted install made. The re-install over that marker took its own
+    # list of containers (none: they exist), as over a clean marker, so the later undo left
+    # the emptied containers behind. A marker that never undid settings.json keeps its list.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus", "autoCompactWindow": 100}), encoding="utf-8")
+    _interrupt(install_module, home, 2, [], force=True)
+    paths = install_module.layout(home)
+    full = settings_file(home).read_text(encoding="utf-8")
+    settings_file(home).unlink()
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    uninstall_module.uninstall(home)
+    marker = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert marker["uninstalled"] is True and marker["unfinished"] is True and marker["created"], marker
+    settings_file(home).write_text(full, encoding="utf-8")
+    install_module.install(home)
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert record["created"] == marker["created"], record
+    changes, notices = uninstall_module.uninstall(home)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {
+        "model": "opus", "autoCompactWindow": 100}, (changes, notices)
+
+
+def test_a_re_install_after_an_interrupted_settings_write_reuses_the_recorded_settings_backup(install_module, tmp_path):
+    # The copy an install makes of settings.json before replacing it was made after the
+    # interim record, so an interrupt at the settings write left a copy nothing recorded and
+    # nothing removed. The copy is made first and named in the interim record; the run that
+    # completes the install reuses it while it still equals the file, rather than making a
+    # second copy of the same file.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    _interrupt_settings_write(install_module, home)
+    paths = install_module.layout(home)
+    copies = sorted(claude.glob("settings.json.bak-*"))
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert len(copies) == 1 and record["settings_backup"] == copies[0].name, (copies, record)
+    changes, notices = install_module.install(home)
+    assert f"settings backup: {copies[0].name}" in changes, changes
+    assert sorted(claude.glob("settings.json.bak-*")) == copies
+    assert copies[0].read_text(encoding="utf-8") == json.dumps({"model": "opus"})
+    record = json.loads(paths["record"].read_text(encoding="utf-8"))
+    assert "unfinished" not in record and "settings_backup" not in record, record

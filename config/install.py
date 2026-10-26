@@ -14,9 +14,11 @@ What it does, in write order (everything is read and checked first):
   1. Writes an interim install record to <home>/.claude/ballast/install-record.json: the
      record step 5 will write (the old record, or the leftovers of the marker an uninstall
      left, merged with what this run adds, replaces or creates) marked "unfinished", with the
-     CLAUDE.md change and its backup when step 3 writes one (a backup whose record could not
-     be written is removed again; one an interrupted install recorded is reused when it still
-     equals the file)
+     CLAUDE.md change and its backup when step 3 writes one, and the name of the copy of
+     settings.json made for step 4 (a backup or copy whose record could not be written is
+     removed again; one an interrupted install recorded is reused when it still equals the
+     file); a key the run changes without replacing it is listed with the value it holds
+     until step 4
   2. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
   3. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change)
   4. Merges config/user-settings.json into <home>/.claude/settings.json
@@ -26,9 +28,11 @@ What it does, in write order (everything is read and checked first):
 What it changed is recorded in <home>/.claude/ballast/install-record.json, so
 config/uninstall.py can put back the values that were there before. An install interrupted
 after step 1 and before step 5 leaves the interim record, marked unfinished: the uninstall
-restores what it lists (a replaced value the run never got to write is left as it is), judges
-the keys it does not list from the evidence (our hook entry), and the next install completes
-the record from the template values it finds in settings.json.
+restores what it lists (a replaced value the run never got to write is left as it is; a listed
+key holding the template value was written by the run), removes the copy of settings.json the
+run never replaced, judges the keys it does not list from the evidence (our hook entry), and
+the next install completes the record (the template values it finds in settings.json are
+recorded as installed, a replacement the run never wrote is dropped).
 """
 import argparse
 import datetime
@@ -412,6 +416,8 @@ def _check_record(path, data):
     for field in ("uninstalled", "unfinished"):
         if field in data and not isinstance(data[field], bool):
             refuse(field, "true or false", data[field])
+    if "settings_backup" in data and not isinstance(data["settings_backup"], str):
+        refuse("settings_backup", "a string", data["settings_backup"])
     claude_md = data.get("claude_md", {})
     if "sha256" in claude_md and not isinstance(claude_md["sha256"], str):
         refuse("claude_md.sha256", "a string", claude_md["sha256"])
@@ -438,9 +444,11 @@ def _merge_record(old, new):
     added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
     deny = list(old.get("deny_added", []))
     deny += [t for t in new.get("deny_added", []) if t not in deny]
-    if old.get("uninstalled"):
+    if old.get("uninstalled") and not old.get("unfinished"):
         # After an uninstall only the containers this install sees are ours to delete; the
-        # leftover list may name one the uninstall deleted and the user then made by hand.
+        # leftover list may name one the uninstall deleted and the user then made by hand. A
+        # marker that stayed unfinished never undid settings.json (the file was missing), so
+        # the containers it lists are still the interrupted install's.
         created = list(new.get("created", []))
     else:
         created = list(old.get("created", []))
@@ -497,6 +505,7 @@ def install(home, force=False, progress=None, config_dir=None):
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
+    settings_before = dict(existing)
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
@@ -514,6 +523,17 @@ def install(home, force=False, progress=None, config_dir=None):
         bool(raw_record.get("unfinished"))
         or (not raw_record.get("uninstalled") and not any(k in raw_record for k in INSTALL_DATA)))
     if unfinished_old:
+        # A replacement the interrupted run recorded for a key that still holds the replaced
+        # value, and that this run does not make (no --force): the write never happened, and
+        # keeping the claim would make the undo call the user's own value "not the installed
+        # value" and the marker carry the claim for good.
+        stale = [k for k, v in old_record.get("replaced", {}).items()
+                 if k not in record["replaced"] and existing.get(k) == v]
+        if stale:
+            old_record = dict(
+                old_record,
+                replaced={k: v for k, v in old_record["replaced"].items() if k not in stale},
+                installed={k: v for k, v in old_record.get("installed", {}).items() if k not in stale})
         known = set(record["added_keys"]) | set(record["replaced"]) | set(record["installed"])
         for field in ("added_keys", "replaced", "installed"):
             known.update(old_record.get(field, ()))
@@ -602,7 +622,30 @@ def install(home, force=False, progress=None, config_dir=None):
     # says so. An interim record without the flag that said "added nothing" was believed by the
     # uninstall after an interrupt at the final record; one without this run's data lost a
     # value --force replaced, or a container this run made, to that interrupt.
-    interim = dict(final, unfinished=True)
+    # A key this run changes without replacing it (a changed template value over the one an
+    # earlier install wrote) is listed with the value it holds until the settings write: the
+    # undo of an interrupt before that write removes the key as it finds it, and one after it
+    # tells the write from the template value.
+    pre_write = {k: settings_before[k] for k in record["installed"]
+                 if k in settings_before and settings_before[k] != existing[k]
+                 and k not in record["replaced"]}
+    interim = dict(final, installed={**final["installed"], **pre_write}, unfinished=True)
+    settings_backup, fresh_settings_backup = None, False
+    if setting_changes and paths["settings"].exists():
+        # The copy of settings.json is made before the interim record and named in it, so an
+        # interrupt before the settings write leaves a copy the undo knows to remove; the copy
+        # an interrupted install recorded is reused while it still equals the file.
+        name = old_record.get("settings_backup")
+        if isinstance(name, str) and name and Path(name).name == name:
+            candidate = paths["settings"].with_name(name)
+            if candidate.is_file() and _read_bytes(candidate) == _read_bytes(paths["settings"]):
+                settings_backup = candidate
+        fresh_settings_backup = settings_backup is None
+        if fresh_settings_backup:
+            settings_backup = _backup(paths["settings"])
+        setting_changes.append(f"settings backup: {settings_backup.name}")
+        progress.append(setting_changes[-1])
+        interim["settings_backup"] = settings_backup.name
 
     if hook_changed or md_changed or setting_changes:
         # Record the CLAUDE.md change before the file is replaced, and before the hook and
@@ -623,6 +666,14 @@ def install(home, force=False, progress=None, config_dir=None):
                 else:
                     changes.remove(f"CLAUDE.md backup: {backup.name}")
                     progress.remove(f"CLAUDE.md backup: {backup.name}")
+            if settings_backup is not None and fresh_settings_backup:
+                try:
+                    settings_backup.unlink()
+                except OSError:
+                    pass
+                else:
+                    setting_changes.remove(f"settings backup: {settings_backup.name}")
+                    progress.remove(f"settings backup: {settings_backup.name}")
             raise
 
     if hook_changed:
@@ -637,10 +688,6 @@ def install(home, force=False, progress=None, config_dir=None):
         progress.append(changes[-1])
 
     if setting_changes:
-        if paths["settings"].exists():
-            backup = _backup(paths["settings"])
-            setting_changes.append(f"settings backup: {backup.name}")
-            progress.append(setting_changes[-1])
         _write_json(paths["settings"], existing)
         progress.append("settings.json written")
 

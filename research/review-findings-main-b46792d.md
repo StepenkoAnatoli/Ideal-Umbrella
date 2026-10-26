@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) PENDING.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4; 0 high, 4 medium, 12 low in pass 5 (keyline 1 medium, 4 low; config 3 medium, 8 low, a docstring nit and a finding made while fixing among the lows); pass 6: keyline (R1) 2 high, 0 medium, 2 low, config (R2) 0 high, 2 medium, 7 low (2 regressions of baff9d3, 2 pre-existing neighbours, 3 fixes without a test, a doc mismatch and a notice wording).
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1869,6 +1869,118 @@ the fix and failing closed after it. R2's findings follow.
    stem is kept, named in keyline/README.md "Honest limits" with the `e.g.` reason.
    Other hits: none.
    Prevention: the Honest limits section names the stem rule.
+
+100. (R2) config/install.py (baff9d3) interim record, with merge_settings' template-changed path:
+    a re-install after a template change (the key holds the value an earlier install wrote)
+    interrupted before the settings write listed the new template value as installed, while the
+    key still held the old one; the undo said "not the installed value; left as is" and kept it,
+    and a plain re-run left "use --force" about a value the installer itself wrote. Reproduced
+    (`selfcheck7f/r2/p1_template_change_interrupt_before_settings.py`). Medium (an interrupt
+    strands an installed value; strict regression of baff9d3, whose interim used to carry no
+    settings data and so fell through to the hook evidence). Class: regression inside the fix.
+   Fixed: config/install.py, the interim's `installed` carries the value the key holds until the
+   settings write for every key the run changes without replacing (`pre_write`); the final
+   record carries the written value. config/uninstall.py `undo_settings`: under an unfinished
+   record a listed key holding the template value instead of the listed one was written by the
+   interrupted run and is removed, so the twin interrupt (at the final record) is undone too.
+   Tests: tests/test_install.py
+   `test_a_template_change_interrupted_before_the_settings_write_keeps_the_earlier_value_as_installed`
+   (both re-run rows) and `test_a_template_change_interrupted_at_the_final_record_is_undone_from_the_template_value`
+   (all failed before the fix).
+   Other hits: none (the `--force` path records the replaced value, which the existing skip
+   handles; added keys are not in settings before the write).
+   Prevention: the interim record's docstring line names the pre-write value; README.md:66 and
+   :113 say what the record lists.
+
+101. (R2) config/install.py (baff9d3) completion loop: a `--force` install interrupted before the
+    settings write listed the user's value as replaced; a plain re-run cannot replace it, but
+    `_merge_record` kept the claim and the template value as installed, so the undo said "not
+    the installed value; left as is" about the user's own value and the marker carried the
+    claim for good. Reproduced (`p2_force_interrupt_then_plain_rerun.py`). Medium (the user's
+    value is never put back and the record stays wrong; regression of baff9d3, which made the
+    interim carry the replacement). Class: regression inside the fix.
+   Fixed: config/install.py under `unfinished_old`, a listed replacement whose key still holds
+   the replaced value and that this run does not make is dropped from the old record's
+   `replaced` and `installed` before the merge (a `--force` re-run makes it afresh). Test:
+   tests/test_install.py `test_completing_a_record_drops_a_replacement_the_interrupted_run_never_wrote`
+   (failed before the fix).
+   Other hits: none.
+   Prevention: CHANGELOG.md names the rule; README.md:113 says the re-run drops it.
+
+102. (R2) config/install.py `_merge_record` with config/uninstall.py `_leftover_record`: a
+    re-install over the marker an uninstall leaves unfinished (settings.json was missing) took
+    its own container list (none: the containers exist), as over a clean marker, so the later
+    undo left the emptied containers the interrupted install made. Reproduced. Low (an empty
+    `permissions: {}` is left; pre-existing on main, where the old code was worse). Class:
+    neighbour, pre-existing.
+   Fixed: config/install.py `_merge_record` keeps the union when the marker is still unfinished
+   (it never undid settings.json, so its containers are the interrupted install's). Test:
+   tests/test_install.py `test_a_re_install_over_a_marker_that_stayed_unfinished_keeps_the_containers_it_lists`
+   (failed before the fix).
+   Other hits: none.
+   Prevention: the comment at the branch names the case.
+
+103. (R2) config/uninstall.py `undo_settings`, the `held` notice (an unfinished record without
+    the hook evidence: template values it does not list are left) had no test. Low. Class: fix
+    without test.
+   Fixed: tests/test_uninstall.py `test_an_unfinished_record_without_the_hook_names_the_values_it_leaves`
+   (exact notice).
+   Other hits: none.
+   Prevention: none beyond the test.
+
+104. (R2) config/uninstall.py `undo_settings`, the `t in wanted` filter of the unclaimed
+    `permissions.deny` notice (only template tools are named) had no test. Low. Class: fix
+    without test.
+   Fixed: tests/test_uninstall.py `test_an_unfinished_record_names_only_template_deny_tools_it_does_not_list`.
+   Other hits: none.
+   Prevention: none beyond the test.
+
+105. (R2) config/uninstall.py orphan-copy check: the `OSError -> ValueError("cannot read ...")`
+    for a CLAUDE.md copy that cannot be read had no test. Low. Class: fix without test.
+   Fixed: tests/test_uninstall.py `test_an_unreadable_claude_md_copy_is_refused_before_anything_is_written`
+   (the ValueError is raised before any write; the files are unchanged).
+   Other hits: none.
+   Prevention: none beyond the test.
+
+106. (R2) README.md:66 and :113 said the next install completes "a record from before this rule
+    (one with no settings data)", while the code completes every unfinished record. Low. Class:
+    doc mismatch.
+   Fixed: both sentences say the re-run completes any unfinished record and what it does
+   (records unlisted template values, refreshes listed ones, drops a replacement the run never
+   wrote, names unclaimed deny tools); the install.py docstring and CHANGELOG.md say the same.
+   Other hits: none.
+   Prevention: none.
+
+107. (R2) config/install.py settings write with config/uninstall.py: the copy of settings.json
+    was made after the interim record, so an install interrupted at the settings write left a
+    `settings.json.bak-*` nothing recorded and nothing removed, named only in the error message
+    (the CLAUDE.md copy was recorded and removed since pass 5). Reproduced
+    (`p6_settings_backup_orphan.py`). Low (an orphan file per interrupt; pre-existing on main).
+    Class: neighbour, pre-existing.
+   Fixed: config/install.py makes the copy before the interim record and names it in it
+   (`settings_backup`; `_check_record` wants a string), reuses the copy an interrupted install
+   recorded while it still equals the file, and removes a fresh copy when the interim record
+   cannot be written; the final record does not carry the name. config/uninstall.py removes the
+   copy an unfinished record names when it still equals settings.json (the file was never
+   replaced; an unreadable copy is refused before any write), lists it in the folder checks,
+   and `_leftover_record` keeps the name while the record stays unfinished. Tests:
+   tests/test_install.py `test_a_re_install_after_an_interrupted_settings_write_reuses_the_recorded_settings_backup`,
+   tests/test_uninstall.py `test_the_undo_of_an_install_interrupted_at_the_settings_write_removes_the_orphan_settings_copy`
+   (both dry-run rows; all failed before the fix); `INTERIM_FIELDS` and the hook-write
+   orphan-copy test now list the settings copy.
+   Other hits: none.
+   Prevention: the install.py docstring's write order names the copy; README.md:66 and :113.
+
+108. (R2) config/uninstall.py `undo_settings`: "was removed after the install; its earlier value
+    is not put back" for a replaced key that is gone read as if the replacement had happened,
+    while under an unfinished record the install may never have written the key. Low. Class:
+    notice wording.
+   Fixed: under an unfinished record the notice is "<key> is not there; the value <v> an install
+   that did not finish listed as replaced is not put back". Test: tests/test_uninstall.py
+   `test_a_removed_key_an_unfinished_record_lists_as_replaced_is_named_as_such` (failed before
+   the fix).
+   Other hits: none.
+   Prevention: none.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

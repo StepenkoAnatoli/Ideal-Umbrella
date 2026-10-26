@@ -114,7 +114,10 @@ def undo_settings(settings, template, record, evidence=None):
             notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
         if key not in settings:
-            if key in replaced:
+            if key in replaced and unfinished:
+                notices.append(f"{key} is not there; the value {replaced[key]!r} an install that "
+                               "did not finish listed as replaced is not put back")
+            elif key in replaced:
                 notices.append(f"{key} was removed after the install; its earlier value "
                                f"{replaced[key]!r} is not put back")
             continue
@@ -127,9 +130,13 @@ def undo_settings(settings, template, record, evidence=None):
         if settings[key] != expected:
             if unfinished and key in replaced and settings[key] == replaced[key]:
                 continue    # the value to put back is in place: the write never happened
-            notices.append(f"{key} is {settings[key]!r}, not the installed value; left as is")
-            left.append(key)
-            continue
+            if not (unfinished and key in installed and key in template
+                    and settings[key] == template[key]):
+                notices.append(f"{key} is {settings[key]!r}, not the installed value; left as is")
+                left.append(key)
+                continue
+            # An unfinished record lists a key it changes with the value it held before the
+            # settings write; the template value in its place is the interrupted run's write.
         if key in replaced:
             settings[key] = replaced[key]
             changes.append(f"{key}: restored {replaced[key]!r}")
@@ -211,6 +218,8 @@ def _leftover_record(record, left, claude_md_left, unfinished=False):
             leftover["created"] = record["created"]
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
+    if unfinished and isinstance(record.get("settings_backup"), str):
+        leftover["settings_backup"] = record["settings_backup"]
     return leftover
 
 
@@ -327,6 +336,21 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         except OSError as e:
             raise ValueError(f"cannot read {backup} ({e.strerror or e})") from e
 
+    # The copy an interrupted install made of settings.json before a write it never got to,
+    # still equal to the file: nothing to restore, and the copy is removed. One that differs
+    # is a backup of the file the run did replace, and stays.
+    orphan_settings_copy = None
+    named_settings_copy = (record or {}).get("settings_backup")
+    if (settings is not None and _is_unfinished(record) and isinstance(named_settings_copy, str)
+            and named_settings_copy and Path(named_settings_copy).name == named_settings_copy):
+        candidate = paths["settings"].with_name(named_settings_copy)
+        if candidate.is_file():
+            try:
+                if candidate.read_bytes() == paths["settings"].read_bytes():
+                    orphan_settings_copy = candidate
+            except OSError as e:
+                raise ValueError(f"cannot read {candidate} ({e.strerror or e})") from e
+
     left = []
     setting_changes = []
     if settings is not None:
@@ -360,6 +384,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             removals.append(paths["log"])
         if restore or orphan_copy:
             removals.append(backup)
+        if orphan_settings_copy is not None:
+            removals.append(orphan_settings_copy)
         elif (current_md is not None and ours and named is None
               and (entry is not None if record is not None else evidence)):
             removals.append(claude_md)             # the delete branches below
@@ -369,6 +395,14 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         # inside the ones that hold entries.
         if paths["state"] in removals and not install._is_link(paths["state"]):
             _refuse_unremovable_tree(paths["state"])
+    if orphan_settings_copy is not None:
+        change = (f"settings.json backup {orphan_settings_copy.name} removed (settings.json was "
+                  "never replaced)")
+        if dry_run:
+            changes.append(change)
+        else:
+            _remove(orphan_settings_copy)
+            done(change)
     if setting_changes and not dry_run:
         backup_settings = install._backup(paths["settings"])
         done(f"settings backup: {backup_settings.name}")

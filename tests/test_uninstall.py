@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -986,12 +987,16 @@ def test_the_undo_of_an_install_interrupted_at_the_hook_write_removes_the_orphan
     finally:
         install_module._write_bytes = real_write
     copies = sorted(claude.glob("CLAUDE.md.bak-*"))
+    settings_copies = sorted(claude.glob("settings.json.bak-*"))
     assert len(copies) == 1 and copies[0].read_text(encoding="utf-8") == "my own rules\n"
+    assert len(settings_copies) == 1
     changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
-    assert changes == [f"CLAUDE.md backup {copies[0].name} removed (CLAUDE.md is still your own file)"], changes
+    assert changes == [
+        f"settings.json backup {settings_copies[0].name} removed (settings.json was never replaced)",
+        f"CLAUDE.md backup {copies[0].name} removed (CLAUDE.md is still your own file)"], changes
     assert notices == [], notices
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
-    assert copies[0].exists() is dry_run
+    assert copies[0].exists() is dry_run and settings_copies[0].exists() is dry_run
     if not dry_run:
         assert json.loads(paths["record"].read_text(encoding="utf-8")) == {"uninstalled": True}
         assert uninstall_module.uninstall(home) == ([], [])
@@ -1018,3 +1023,122 @@ def test_a_second_uninstall_says_nothing_about_a_claude_md_the_install_never_wro
     changes, notices = uninstall_module.uninstall(home)
     assert not any("CLAUDE.md" in n for n in notices), notices
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules again\n"
+
+
+def test_an_unfinished_record_without_the_hook_names_the_values_it_leaves(uninstall_module):
+    # Without the hook evidence the template values an unfinished record does not list are
+    # the user's own as far as the undo can tell: they are left, and named, so the user can
+    # remove one the interrupted install wrote by hand.
+    template = uninstall_module.install._read_json(uninstall_module.install.USER_SETTINGS)
+    keys = [k for k in template if k not in ("hooks", "permissions")]
+    settings = {"model": "opus", keys[1]: template[keys[1]]}
+    record = {"unfinished": True, "added_keys": [keys[0]], "replaced": {},
+              "installed": {keys[0]: template[keys[0]]}, "created": [], "deny_added": []}
+    changes, notices, left = uninstall_module.undo_settings(settings, template, record, evidence=False)
+    assert settings == {"model": "opus", keys[1]: template[keys[1]]} and changes == [] and left == []
+    assert notices == ["the install record is of an install that did not finish, and there is no "
+                       "Ideal-Umbrella hook; settings values it does not list are left as is: " + keys[1]], notices
+
+
+def test_an_unfinished_record_names_only_template_deny_tools_it_does_not_list(uninstall_module):
+    # The deny tools an unfinished record does not list are named for the user to check, but
+    # only the template's: a tool the user denied on their own is theirs and not in question.
+    template = uninstall_module.install._read_json(uninstall_module.install.USER_SETTINGS)
+    wanted = template["permissions"]["deny"]
+    settings = {"model": "opus", "permissions": {"deny": ["MyOwnTool", wanted[0], "Another"]}}
+    record = {"unfinished": True, "added_keys": [], "replaced": {}, "installed": {}, "created": [],
+              "deny_added": []}
+    changes, notices, left = uninstall_module.undo_settings(settings, template, record, evidence=True)
+    assert settings["permissions"]["deny"] == ["MyOwnTool", wanted[0], "Another"]
+    assert [n for n in notices if "permissions.deny" in n] == [
+        "the install record is of an install that did not finish; permissions.deny tools it does "
+        "not list are left as is: " + wanted[0]], notices
+
+
+def test_an_unreadable_claude_md_copy_is_refused_before_anything_is_written(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The copy an interrupted install recorded is compared with CLAUDE.md to tell an orphan
+    # copy from a backup to restore; a copy that cannot be read is reported as such before
+    # any write, not raised as a bare OSError part way through the undo.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    paths = install_module.layout(home)
+    real_write = install_module._write_bytes
+
+    def failing(path, data):
+        if path == paths["hook"]:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    install_module._write_bytes = failing
+    try:
+        with pytest.raises(OSError):
+            install_module.install(home)
+    finally:
+        install_module._write_bytes = real_write
+    copy = next(claude.glob("CLAUDE.md.bak-*"))
+    before = {p.name: p.read_bytes() for p in claude.rglob("*") if p.is_file()}
+    real_read = Path.read_bytes
+
+    def unreadable(self):
+        if self == copy:
+            raise OSError(13, "Permission denied")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(ValueError, match="cannot read .*CLAUDE.md.bak-"):
+        uninstall_module.uninstall(home)
+    monkeypatch.undo()
+    assert {p.name: p.read_bytes() for p in claude.rglob("*") if p.is_file()} == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_the_undo_of_an_install_interrupted_at_the_settings_write_removes_the_orphan_settings_copy(install_module, uninstall_module, tmp_path, dry_run):
+    # The copy an install made of settings.json before a write that never happened stayed
+    # beside the file for good, named only in the install's error message. The interim record
+    # names it; a copy still equal to the file has nothing to restore and is removed.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    settings_path = install_module.layout(home)["settings"]
+    real_write = install_module._write_json
+
+    def failing(path, data):
+        if path == settings_path:
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+
+    install_module._write_json = failing
+    try:
+        with pytest.raises(OSError):
+            install_module.install(home)
+    finally:
+        install_module._write_json = real_write
+    copies = sorted(claude.glob("settings.json.bak-*"))
+    assert len(copies) == 1
+    changes, notices = uninstall_module.uninstall(home, dry_run=dry_run)
+    assert f"settings.json backup {copies[0].name} removed (settings.json was never replaced)" in changes, changes
+    assert notices == [], notices
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus"}
+    assert copies[0].exists() is dry_run
+    if not dry_run:
+        assert not list(claude.glob("settings.json.bak-*"))
+        assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_removed_key_an_unfinished_record_lists_as_replaced_is_named_as_such(uninstall_module):
+    # "was removed after the install; its earlier value is not put back" read as if the
+    # replacement had happened; under an unfinished record the install may never have
+    # written the key. The notice says what the record claims and what the undo does.
+    template = uninstall_module.install._read_json(uninstall_module.install.USER_SETTINGS)
+    keys = [k for k in template if k not in ("hooks", "permissions")]
+    settings = {"model": "opus"}
+    record = {"unfinished": True, "added_keys": [], "replaced": {keys[0]: 100},
+              "installed": {keys[0]: template[keys[0]]}, "created": [], "deny_added": []}
+    changes, notices, left = uninstall_module.undo_settings(settings, template, record, evidence=True)
+    assert settings == {"model": "opus"} and changes == [] and left == []
+    assert notices == [f"{keys[0]} is not there; the value 100 an install that did not finish "
+                       "listed as replaced is not put back"], notices
