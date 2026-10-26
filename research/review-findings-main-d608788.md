@@ -11,8 +11,9 @@ as user `nobody`, since root ignores file modes); the lows are quoted from the r
 probe output. The fixes landed in the same PR (#20); each finding below ends with what was
 changed, the other hits of its class, and the prevention.
 
-Status: all 11 fixed class-wide in PR #20, plus 3 findings of the self-review of the diff
-(pytest 238 passed, 3 skipped; keyline suite 35/35).
+Status: all 11 fixed class-wide in PR #20 (merged as main 02e57bb), plus 3 findings of the
+self-review of the diff; a check of those fixes found 3 more, fixed in PR #22
+(pytest 241 passed, 4 skipped; keyline suite 35/35).
 Counts: 0 high, 3 medium, 8 low. Every finding was CONFIRMED by
 a run or is visible in the code as quoted. Line numbers are the reviewed tree's (main d608788).
 
@@ -454,13 +455,52 @@ docs and the "Fixed:" claims were checked and found sound.
    the same `except OSError` skip. Reproduced as uid 65534 before and after the fix; test:
    `tests/test_measure.py::test_a_file_that_cannot_be_stated_is_skipped_not_a_traceback`
    (skipped as root and on Windows). Other hits: `files_in()`'s `is_file()` on the argument
-   itself is pre-existing and reports "no such file or folder" for it; `keyline_hook.py`'s
-   `path.is_file()` is inside its catch-all. Prevention: the test runs as the CI user, which
-   is not root.
+   itself and `keyline_hook.py`'s `path.is_file()` were claimed handled here and were not
+   (both raised `PermissionError` as a traceback; see the check below, finding 3). Prevention:
+   the test runs as the CI user, which is not root.
 
 Not a finding, noted: the `where` suffix in the hook's `cannot read{where}` message is
 unreachable (every `OSError` the block raises names the file), harmless; the measure
 "symlink to a missing target" wording has no test asserting the string.
+
+## Check of the self-review fixes
+
+A fresh-context pass over b5b03eb (the only commit of PR #20 no reviewer had read) found
+three defects, fixed in PR #22 the same way; everything else in that commit (the interim
+record path, every measure.py entry kind, the new test as root, as CI's user and on Windows,
+the docs) was checked and found sound.
+
+1. Medium, config/install.py `_merge_record`: the self-review fix wrote `created` only when
+   the old record had it or there was no old record, and a clean uninstall leaves the marker
+   record `{"uninstalled": true}`, which is neither; so install, uninstall, install, uninstall
+   (the normal cycle) dropped the list on the re-install and the second uninstall deleted the
+   user's empty container. Class: "absent is not empty", second instance; the first fix tested
+   emptiness of the record instead of the presence of install data. Fixed: the list is written
+   unless the old record holds install data (`added_keys`, `replaced`, `deny_added`,
+   `installed`) without `created`. Test:
+   `tests/test_uninstall.py::test_reinstall_after_a_clean_uninstall_still_knows_what_it_created`.
+2. Low, config/install.py `_merge_record` with config/uninstall.py `_leftover_record`: the
+   leftover record carries the whole `created` list, including containers the uninstall just
+   deleted; a re-install unioned it, so a container the user made by hand in between was
+   recorded as the install's and deleted by the next uninstall. Fixed: over a record with
+   `uninstalled` set, the re-install's own list replaces the old one (after an uninstall only
+   the containers this install creates are its own; keeping an emptied one it did not create
+   is harmless, deleting the user's is not). Test:
+   `test_a_container_the_user_adds_between_uninstall_and_reinstall_is_kept`.
+3. Low, keyline/measure.py `files_in()` and keyline/keyline_hook.py `main()`: the self-review
+   section claimed both `is_file()` calls on the argument were handled; they were not, and a
+   file named directly inside a folder that cannot be searched was a traceback from each
+   (reproduced as uid 65534). Fixed: measure's main catches `OSError` next to
+   `FileNotFoundError` ("error: cannot read <arg>: Permission denied", exit 2); the hook wraps
+   the stat in the same "cannot read" handler, exit 1. Tests:
+   `tests/test_measure.py::test_an_argument_that_cannot_be_stated_is_one_line_not_a_traceback`
+   (skipped as root and on Windows) and
+   `tests/test_keyline_hook.py::test_a_file_that_cannot_be_stated_is_one_line_not_a_traceback`
+   (`Path.is_file` patched to raise, so it runs everywhere). Other hits: `keyline_lint.py`'s
+   `load_allow` `is_file()` on parent folders is inside the lint's `OSError` handler in both
+   entry points; `keyline_check.py` reads its arguments through `read()`, whose `OSError` is
+   caught in `main`. Prevention: the report sentence that claimed the hits were handled is
+   corrected above; a claim of "inside the handler" now needs the line of the `try`.
 
 ## Outside this task
 
