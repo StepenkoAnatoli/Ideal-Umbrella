@@ -737,8 +737,7 @@ def test_interrupt_at_the_final_record_is_undone_by_the_uninstall(install_module
     _interrupt(install_module, home, 2, progress)
     assert "settings.json written" in progress
     record = json.loads(install_module.layout(home)["record"].read_text(encoding="utf-8"))
-    assert list(record) == ["claude_md"], record          # no settings data invented
-    assert install_module.install(home) == ([], [])       # everything is already on disk
+    assert sorted(record) == ["claude_md", "unfinished"], record    # no settings data invented
     uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     changes, notices = uninstall_module.uninstall(home)
     deny = install_module._read_json(install_module.USER_SETTINGS)["permissions"]["deny"]
@@ -766,7 +765,7 @@ def test_interrupt_at_the_final_record_over_a_marker_is_an_unfinished_record(ins
     assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
     _interrupt(install_module, home, 2, [])
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert list(record) == ["claude_md"], record
+    assert sorted(record) == ["claude_md", "unfinished"], record
     changes, notices = uninstall_module.uninstall(home)
     assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
     deny = install_module._read_json(install_module.USER_SETTINGS)["permissions"]["deny"]
@@ -780,7 +779,8 @@ def test_interrupt_at_the_final_record_over_a_marker_with_a_leftover_key_is_an_u
     # replaced, installed and created for that one key; carried into the interim record, they
     # made the record of an interrupted re-install read as a full one: the next uninstall undid
     # only the leftover key, and left the key the interrupted install added and the deny tools
-    # in settings.json with no notice. Over a marker the interim record holds nothing of it.
+    # in settings.json with no notice. The interim record keeps the leftovers (they are what a
+    # later run has to put back) and says the install is unfinished.
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -798,7 +798,8 @@ def test_interrupt_at_the_final_record_over_a_marker_with_a_leftover_key_is_an_u
     assert marker["uninstalled"] is True and marker["added_keys"] == ["autoCompactWindow"], marker
     _interrupt(install_module, home, 2, [])
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert list(record) == ["claude_md"], record
+    assert record["unfinished"] is True and record["added_keys"] == ["autoCompactWindow"], record
+    assert "uninstalled" not in record and "claude_md" in record
     changes, notices = uninstall_module.uninstall(home)
     settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     assert "skillListingBudgetFraction" not in settings, (settings, changes)
@@ -809,15 +810,17 @@ def test_interrupt_at_the_final_record_over_a_marker_with_a_leftover_key_is_an_u
     assert settings["permissions"]["deny"] == deny
     assert "hooks" not in settings and not install_module.layout(home)["hook"].exists()
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
-    # The marker this uninstall leaves holds no settings fields either (it had none to keep for
-    # the key left as is), so a third run does not read it as a full record.
-    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+    # The marker this uninstall leaves keeps the fields of the key still left as is, and not
+    # the unfinished flag, so a third run reads it as a marker.
+    marker = json.loads(record_path.read_text(encoding="utf-8"))
+    assert marker["uninstalled"] is True and marker["added_keys"] == ["autoCompactWindow"], marker
+    assert "unfinished" not in marker
 
 
 def test_interrupt_at_the_final_record_over_a_marker_with_only_the_hook_to_write_is_an_unfinished_record(install_module, tmp_path):
     # With CLAUDE.md equal to the template and settings.json already holding every value, the
     # run writes the hook and the final record only: the interim record is still written first,
-    # so an interrupt at the final record leaves {} and not the marker, and the uninstall says
+    # so an interrupt at the final record leaves an unfinished record, and the uninstall says
     # the record holds no settings data instead of removing the template values in silence.
     home = tmp_path / "home"
     claude = home / ".claude"
@@ -835,7 +838,7 @@ def test_interrupt_at_the_final_record_over_a_marker_with_only_the_hook_to_write
     progress = []
     _interrupt(install_module, home, 2, progress)
     assert progress == ["hook written"], progress
-    assert json.loads(record_path.read_text(encoding="utf-8")) == {}
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"unfinished": True}
     changes, notices = uninstall_module.uninstall(home)
     assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
     assert any("no settings data" in n and "template values are removed" in n for n in notices), notices
@@ -845,8 +848,8 @@ def test_interrupt_at_the_final_record_over_a_marker_without_a_claude_md_write_i
     # With CLAUDE.md already equal to the template no interim record was written at all, so an
     # interrupt at the final record left the marker itself while settings.json held the keys,
     # the deny tools and the hook entry: the next uninstall read the marker as neither
-    # unfinished nor absent and left the deny tools with no notice. Over a marker the interim
-    # record ({} here) is written before settings.json whenever the run writes anything.
+    # unfinished nor absent and left the deny tools with no notice. The interim record (the
+    # unfinished flag alone here) is written before the first file whenever the run writes one.
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -863,7 +866,7 @@ def test_interrupt_at_the_final_record_over_a_marker_without_a_claude_md_write_i
     _interrupt(install_module, home, 2, progress)
     assert "settings.json written" in progress, progress
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    assert record == {}, record
+    assert record == {"unfinished": True}, record
     changes, notices = uninstall_module.uninstall(home)
     assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
     deny = install_module._read_json(install_module.USER_SETTINGS)["permissions"]["deny"]
@@ -948,3 +951,131 @@ def test_a_read_only_folder_is_refused_before_any_write(install_module, tmp_path
         assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus"}
     finally:
         target.chmod(0o755)
+
+
+def test_an_interrupted_re_install_over_a_marker_keeps_the_markers_leftovers(install_module, tmp_path):
+    # The interim record written over a marker held nothing of it, so an interrupt at the
+    # final record dropped the value a --force install had replaced and the uninstall had kept
+    # for a later run: once the user put the installed value back, the undo removed the key
+    # instead of restoring their own value. The interim record keeps the leftovers and says
+    # the install is unfinished, so the undo restores what it lists and judges the rest from
+    # the evidence.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus", "autoCompactWindow": 100}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home, force=True)
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["autoCompactWindow"] = 123456
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    uninstall_module.uninstall(home)
+    record_path = install_module.layout(home)["record"]
+    marker = json.loads(record_path.read_text(encoding="utf-8"))
+    assert marker["uninstalled"] is True and marker["replaced"] == {"autoCompactWindow": 100}, marker
+    _interrupt(install_module, home, 2, [])
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["unfinished"] is True and record["replaced"] == {"autoCompactWindow": 100}, record
+    assert "uninstalled" not in record and "added_keys" not in record.get("replaced", {})
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["autoCompactWindow"] = template["autoCompactWindow"]   # the user put it back
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    assert settings["autoCompactWindow"] == 100, (settings, changes)
+    assert "skillListingBudgetFraction" not in settings, (settings, changes)
+    assert settings["permissions"]["deny"] == template["permissions"]["deny"]
+    assert any("no settings data" in n and "template values are removed" in n for n in notices), notices
+    assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def test_an_interrupted_re_install_over_a_marker_keeps_a_pending_claude_md_backup(install_module, tmp_path):
+    # A marker keeps the CLAUDE.md entry when its backup was missing at uninstall time, so a
+    # later run can still restore it; the interim record of a re-install dropped that entry,
+    # and after an interrupt at the final record the undo called the installer's own CLAUDE.md
+    # "not written by this install" and left it, with the backup back on disk.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home)
+    record_path = install_module.layout(home)["record"]
+    backup_name = json.loads(record_path.read_text(encoding="utf-8"))["claude_md"]["backup"]
+    stash = (claude / backup_name).read_bytes()
+    (claude / backup_name).unlink()
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    _, notices = uninstall_module.uninstall(home)
+    assert any("missing" in n for n in notices), notices
+    marker = json.loads(record_path.read_text(encoding="utf-8"))
+    assert marker["claude_md"]["backup"] == backup_name, marker
+    progress = []
+    _interrupt(install_module, home, 2, progress)
+    assert "settings.json written" in progress, progress
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record == {"claude_md": marker["claude_md"], "unfinished": True}, record
+    (claude / backup_name).write_bytes(stash)
+    changes, notices = uninstall_module.uninstall(home)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+    assert not any("not written by this install" in n for n in notices), notices
+
+
+def test_interrupt_at_the_interim_record_over_a_marker_writes_nothing_before_it(install_module, tmp_path):
+    # Over a marker with a CLAUDE.md write the hook was written before the interim record, so
+    # a failure at that record left the hook beside the untouched marker: the next uninstall
+    # took the hook as evidence, removed the keys and left the deny tools with no notice. The
+    # interim record is the run's first write in every case.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    install_module.install(home)
+    full = settings_file(home).read_text(encoding="utf-8")
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    uninstall_module.uninstall(home)
+    assert not (claude / "CLAUDE.md").exists()
+    record_path = install_module.layout(home)["record"]
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+    settings_file(home).write_text(full, encoding="utf-8")     # the user put every value back
+    progress = []
+    _interrupt(install_module, home, 1, progress)
+    assert progress == [], progress
+    assert not install_module.layout(home)["hook"].exists()
+    assert not (claude / "CLAUDE.md").exists()
+    assert json.loads(record_path.read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def test_a_re_install_over_an_unfinished_record_completes_it(install_module, tmp_path):
+    # After an interrupt at the final record, running the installer again found nothing to
+    # change and left the unfinished record as it was, so the undo could only ever remove the
+    # template values "as without a record". The re-run records the template values it finds
+    # as installed, says which deny tools it cannot claim, and writes the full record.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"model": "opus"}), encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    _interrupt(install_module, home, 2, [])
+    record_path = install_module.layout(home)["record"]
+    assert json.loads(record_path.read_text(encoding="utf-8"))["unfinished"] is True
+    template = install_module._read_json(install_module.USER_SETTINGS)
+    changes, notices = install_module.install(home)
+    assert changes == ["install record completed"], (changes, notices)
+    assert any("did not finish" in n and "permissions.deny" in n
+               and all(tool in n for tool in template["permissions"]["deny"]) for n in notices), notices
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    keys = [k for k in template if k not in ("hooks", "permissions")]
+    assert "unfinished" not in record and sorted(record["added_keys"]) == sorted(keys), record
+    assert record["installed"] == {k: template[k] for k in keys} and record["deny_added"] == []
+    assert install_module.install(home) == ([], [])
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {
+        "model": "opus", "permissions": {"deny": template["permissions"]["deny"]}}, changes
+    assert not any("no settings data" in n for n in notices), notices
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"

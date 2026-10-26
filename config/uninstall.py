@@ -12,9 +12,9 @@ compares against the values the install wrote (not the current templates). After
 record is kept as a marker, so running uninstall again changes nothing. Without a record
 (installs made before it existed) it removes the two keys only if they still hold the
 template values and the Ideal-Umbrella hook is installed, keeps a backup of CLAUDE.md
-before deleting it, removes the hook, and leaves permissions.deny alone. A record that holds
-no settings data (an install interrupted before its last write) is handled the same way for
-the settings, and the run says so.
+before deleting it, removes the hook, and leaves permissions.deny alone. An unfinished record
+(an install interrupted before its last write) restores the values it lists, is handled the
+same way for the other template keys and for permissions.deny, and the run says so.
 
 A value you changed after installing is left as it is and reported.
 
@@ -65,11 +65,14 @@ def undo_settings(settings, template, record, evidence=None):
     is evidence of an install (evidence; by default, our hook entry in settings).
     """
     changes, notices, left = [], [], []
-    # A record with no settings data (an install interrupted before its last write, or the
-    # marker an uninstall leaves) says nothing about settings.json: the keys are then judged
-    # as without a record, from the evidence, instead of being trusted as "nothing added".
+    # An unfinished record (an install interrupted before its last write: marked so, or one
+    # with no settings data that is not the marker an uninstall leaves) says nothing about the
+    # keys it does not list: those are judged as without a record, from the evidence, instead
+    # of being trusted as "nothing added". What it lists (the leftovers of an earlier run) is
+    # restored as from a full record.
     has_record = record is not None and any(k in record for k in ("added_keys", "replaced", "installed"))
-    unfinished = record is not None and not has_record and not record.get("uninstalled")
+    unfinished = record is not None and (bool(record.get("unfinished"))
+                                         or (not has_record and not record.get("uninstalled")))
     no_record = record is None
     record = record or {}
     replaced = record.get("replaced", {})
@@ -86,18 +89,20 @@ def undo_settings(settings, template, record, evidence=None):
     if evidence is None:
         evidence = has_our_hook(settings)
 
-    if has_record:
-        keys = list(dict.fromkeys([*added, *replaced]))
+    recorded = list(dict.fromkeys([*added, *replaced]))
+    if has_record and not unfinished:
+        keys = recorded
     elif evidence:
-        keys = list(template)
+        keys = recorded + [k for k in template if k not in recorded]
         if unfinished:
-            notices.append("the install record holds no settings data (the install did not finish); "
-                           "the template values are removed as without a record")
+            notices.append("the install record holds no settings data for the install that did not "
+                           "finish; the template values are removed as without a record, except the keys it lists")
     else:
-        keys = []
+        keys = recorded
         if unfinished:
-            notices.append("the install record holds no settings data (the install did not finish) "
-                           "and there is no Ideal-Umbrella hook; settings values left as is")
+            notices.append("the install record holds no settings data for the install that did not "
+                           "finish, and there is no Ideal-Umbrella hook; settings values it does not "
+                           "list are left as is")
         elif no_record:
             notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
@@ -144,8 +149,8 @@ def undo_settings(settings, template, record, evidence=None):
     if no_record:
         notices.append("no install record; permissions.deny left as is")
     elif unfinished:
-        notices.append("the install record holds no settings data (the install did not finish); "
-                       "permissions.deny left as is")
+        notices.append("the install record holds no settings data for the install that did not "
+                       "finish; permissions.deny tools it does not list are left as is")
 
     hooks = settings.get("hooks")
     if isinstance(hooks, dict):
@@ -223,8 +228,10 @@ def _refuse_unremovable_tree(root):
     each one; a folder with no read bit or no search bit is passed over by a plain os.walk
     without a word), and a folder that holds entries must be writable and searchable (each
     entry is unlinked or removed inside it; the write bit alone, mode 0o644, is not enough).
-    An empty folder needs nothing of its own: rmdir needs only its parent, which the caller
-    checks for root. The message names the missing bit (read, write or search), so a folder
+    An empty folder is refused without its read bit like any other (rmtree opens it before
+    it finds it empty); one that is read-only but listable needs nothing of its own, since
+    rmdir needs only its parent, which the caller checks for root. The state folder itself is
+    checked the same way. The message names the missing bit (read, write or search), so a folder
     that is writable but cannot be entered (0o644) is not called read-only. On Windows
     os.access sees no folder as read-only, so this checks nothing;
     _remove_tree clears the read-only attribute there. A symlinked sub-folder is unlinked, not

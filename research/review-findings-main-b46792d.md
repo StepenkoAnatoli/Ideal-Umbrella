@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; 0 high, 4 medium, 7 low in pass 3; 0 high, 3 medium, 4 low in pass 4.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1416,6 +1416,143 @@ fixed class-wide in this PR.
    shapes: `**May**`, `May `, `MAY `, `- May`, `**Foo**`, `- Foo`, 100 bullets before `May`, and
    `WE MAY FAIL` lines; each under 1.5 s at 2,000-40,000 units, where the pre-fix module took 3-12 s
    on the slow ones).
+
+## Self-check pass 4 (fresh-context pass over the fix commit 5701513)
+
+Two reviewers who had not seen the findings above read only the pass 3 fix commit 5701513: R2
+its config/hook part, R1 its keyline_check part. Every medium was re-reproduced here with
+`python -I` (the folder-mode case as uid 65534 in a copy under /var/tmp) before being accepted.
+Counts: R2 findings 73-76: 0 high, 2 medium, 2 low; R1 findings 77-79: 0 high, 1 medium, 2 low;
+pass 4 total 0 high, 3 medium, 4 low; all fixed class-wide in this PR (77 by correcting the docs
+and pinning the behaviour, see its block).
+
+73. (R2) config/install.py:515-522 (before this fix): over the marker an uninstall leaves, the
+    interim record was `{}`: it dropped the marker's leftovers (the `replaced` value of a `--force`
+    install the earlier undo had kept because the user changed the key, or a `claude_md` entry whose
+    backup was missing at undo time), so an interrupt at the final record of a re-install lost them
+    for good: once the user put the installed value back, the next undo removed their own key
+    instead of restoring the kept value, and with the backup back on disk it called the installer's
+    own CLAUDE.md "not written by this install" and left it. Reproduced with `python3 -I`
+    (install_probe.py, install_probe2.py: cases A, A', B, B'). Medium. Class: regression inside a
+    fix (the pass-3 fix for 62-67 emptied the interim record to drop the marker key, and dropped its
+    leftovers with it).
+   Fixed: config/install.py:548-549 the interim record is the old record (the marker's leftovers, or
+   a live record's data; the marker key alone is dropped) marked `"unfinished": true`;
+   config/uninstall.py:74 `unfinished` is the flag, or a record with no settings data that is not
+   the marker, and config/uninstall.py:92-101 an unfinished record restores the keys it lists and
+   judges the other template keys from the hook evidence (notice at :99, `permissions.deny` notice
+   at :153); `_leftover_record` never copies the flag, so the marker the undo then leaves is a
+   marker. `read_record` checks the flag's type like `uninstalled`. Tests: tests/test_install.py:956
+   (the `--force` leftover is restored after an interrupted re-install), :996 (the pending CLAUDE.md
+   backup is restored), tests/test_uninstall.py:910 (`undo_settings` on an unfinished record, with
+   and without evidence); the five earlier interrupt tests assert the new record shape. Docs:
+   config/install.py docstring, config/uninstall.py docstring, README.md:66 and :113,
+   CHANGELOG.md:24.
+   Other hits: none: the interim record is built in one place.
+   Prevention: a fix that drops data from a record must say which later run needs each field; a test
+   that interrupts a re-install over a marker with a leftover, and one over a marker with a pending
+   backup, now pin both.
+
+74. (R2) config/install.py:524-527 (before this fix) and its docstring, README.md:66,
+    CHANGELOG.md:24: over a marker with a CLAUDE.md write the hook was written before the interim
+    record (the pre-write at :517 ran only when CLAUDE.md was not written), while the docstring,
+    README and CHANGELOG said the interim record precedes the first file: a failure at the interim
+    record (disk full, a read-only record folder on Windows) left the hook beside the untouched
+    marker, and the next undo took the hook as evidence, removed the keys and left the deny tools
+    with no notice. Reproduced with `python3 -I` (interim_fail_probe.py, order_probe.py). Medium.
+    Class: halfway state; doc mismatch.
+   Fixed: config/install.py:590 the interim record is the run's first write whenever the run writes
+   a file (the CLAUDE.md decision and its backup move before it, the hook and CLAUDE.md writes after
+   it; the orphan-backup unlink on a failed interim write stays), so a failure at it leaves nothing
+   but the old record. Test: tests/test_install.py:1028 (an interrupt at the interim record over a
+   marker writes nothing: no hook, no CLAUDE.md, the marker untouched). Docs: config/install.py
+   docstring (write order 1-6), README.md:66, CHANGELOG.md:24.
+   Other hits: none: one write order.
+   Prevention: a doc that states a write order gets a test per interrupt point that asserts what is
+   on disk; `_interrupt(which=1)` now covers the first write in the marker case too.
+
+75. (R2) config/install.py:596 (before this fix): a re-run over an unfinished record found nothing
+    to change (every value already on disk) and wrote no record, so the record stayed unfinished for
+    good and the undo could only ever remove the template values "as without a record" and leave
+    `permissions.deny` with a notice; the user had no way to finish the install short of
+    uninstalling and installing again. Reproduced with `python3 -I` (install_probe.py case C). Low.
+    Class: halfway state (no way out of it).
+   Fixed: config/install.py:508-529 `unfinished_old` (the flag, or a record with no install data
+   that is not the marker): the template scalar keys that settings.json holds with the template
+   value, and that neither the run nor the old record lists, are recorded as added and installed;
+   the final record is written even when nothing else changed (`changes` gets "install record
+   completed"), and a notice says the record did not finish, what was recorded, and names the
+   `permissions.deny` tools it cannot claim; `created` is left out of a completed record that had
+   none, so the undo removes the containers it empties, as for a record from before the field. Test:
+   tests/test_install.py:1053 (the re-run completes the record, the next run changes nothing, the
+   undo then removes the keys with no "no settings data" notice and leaves the deny tools). Docs:
+   config/install.py docstring, README.md:113, CHANGELOG.md:24.
+   Other hits: none.
+   Prevention: every state a script can leave must have a documented way out; the halfway-state
+   check now asks "what does the next run do with it".
+
+76. (R2) config/uninstall.py:226-227 docstring (before this fix) and README.md:113: "an empty folder
+    needs nothing of its own: rmdir needs only its parent", "an empty read-only one is removed"; but
+    `shutil.rmtree` opens every folder before it finds it empty, so an empty folder with no read bit
+    is refused by the check (correctly: rmtree would fail on it), and the state folder itself is
+    checked the same way, which neither text said. Reproduced as uid 65534 (modes.sh). Low. Class:
+    doc mismatch.
+   Fixed: config/uninstall.py:231-234 docstring says an empty folder without its read bit is refused
+   like any other and the state folder is checked the same way; README.md:113 and CHANGELOG.md:25
+   say the same. No code change: the check was right.
+   Other hits: none.
+   Prevention: a docstring that explains why a case needs no check is checked against the library
+   call it reasons about.
+
+77. (R1) keyline/keyline_check.py:73-75 (comment), keyline/README.md:57, CHANGELOG.md:19 and the
+    5701513 commit message said a name that ends in a letter before a dotted number is "the
+    abbreviation and the number" (`Fig.3` is `Fig` and `3`); the code yields the number only: the
+    right boundary `R` refuses a token followed by `.<digit>`, so `Fig` is no token at all, and
+    README:209 said so for `Zürich.5`. The pre-commit module held `Fig.3` whole and so failed a
+    rendering that swapped the abbreviation (`Fig.3` to `Tab.3`); now it passes, and
+    tests/test_keyline_check.py:659 never asserted the abbreviation. Reproduced with `python3 -I
+    --list`. Medium. Class: doc mismatch (the README contradicted itself between :57 and :209); fix
+    without test; regression inside a fix as against the pre-commit module.
+   Fixed: the behaviour is kept, on purpose, and the docs now say what it is: the abbreviation is
+   prose a rendering translates (`No.5` is `מס' 5`, `Fig.3` is `איור 3`, which the pass-3 test
+   asserts must pass), so holding it to the rendering would fail every translated rendering; the
+   number is what the rendering must keep. keyline/keyline_check.py:73-76 comment,
+   keyline/README.md:57 and CHANGELOG.md:19 say "yield the number alone" (consistent with
+   README:209); tests/test_keyline_check.py:655-667 now asserts for every case that the abbreviation
+   (`No`, `Ch`, `Fig`, `Vol`, `A`, `Zürich`, `my_lib`) is not a token, and adds `Fig.3 and Vol.2`
+   against `איור 3 וכרך 2`.
+   Other hits: none: README:209 already described it.
+   Prevention: a fix's docs are written from the extractor's `--list` output, not from the intent; a
+   test for a token split asserts both halves (present or absent), not only the one the fix cared
+   about.
+
+78. (R1) tests/test_keyline_check.py:702-721 (before this fix)
+    `test_a_line_of_many_tokens_is_scanned_once`: six of its eight parameters passed on the pre-
+    commit (quadratic) module too, since at the counts used the old code stayed under the 1.5 s
+    bound (0.28-1.5 s; only `MAY ` failed reliably), so the guard for marker-led names, `May `, `-
+    May` and all-caps lines would not catch the quadratic path coming back. Reproduced by running
+    the test file against the pre-commit module. Low. Class: fix without test (the test passes on
+    the code before the fix).
+   Fixed: tests/test_keyline_check.py:728-752 counts the `_Line` constructions (a counting subclass
+   set on the module) and asserts at most one per line of the text, beside the time bound; all eight
+   parameters fail on the pre-commit module (no `_Line`, and the old code found the line once per
+   token).
+   Other hits: none: the other pass-3 tests fail on the pre-commit module.
+   Prevention: a performance test asserts the mechanism (a count of the work done) and not only a
+   time, which depends on the machine and the sizes chosen.
+
+79. (R1) keyline/keyline_check.py:311 (before this fix) `MONTH_AFTER = (?:\*{1,2}|_{1,2})?(?:[
+    \t]+\d|:)`: the `_{1,2}` alternative could never match, since it is applied at the end of a
+    `HEDGE` match and `HEDGE` ends in `\b` while `_` is a word character (`May_`, `_May_` are never
+    hedge matches), and the comment described only the bold half. Low. Class: unreachable
+    alternative.
+   Fixed: keyline/keyline_check.py:313 `MONTH_AFTER = \*{0,2}(?:[ \t]+\d|:)`, with the comment
+   saying why there is no underscore case. Test: tests/test_keyline_check.py:702 (`May_ 5`, `_May_:`
+   are no hedges, `MONTH_AFTER` does not match `_ 5` or `__:` and does match `** 5` and `*:`).
+   Other hits: `FURNITURE_BEFORE` and `FURNITURE_AFTER` keep `_`: reachable with a space between (`_
+   May _`), as the reviewer checked.
+   Prevention: an alternative added to a regex that runs after another regex is checked against what
+   that regex can end with.
 
 ## Checked and found clean (both reviewers and both verifiers)
 

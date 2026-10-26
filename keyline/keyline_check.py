@@ -71,8 +71,9 @@ TIME = re.compile(r"(\d{1,2}:\d{2}(?::\d{2})?)(\.\d+)?(Z?)")
 # from its first digit, not once from every digit after a "."; a name that ends in a digit
 # takes a dotted tail ("Python3.12", "GPT4.5", "python3.12" are one token each, as "v2.14.0"
 # is), so the part after the dot is not lost to that rule, while a name that ends in a letter
-# takes none ("No.5", "Fig.3", "A.1" are the abbreviation and the number, which a rendering
-# that writes "No. 5" keeps); the CamelCase rule tries one
+# takes none and is no token before the dotted number ("No.5", "Fig.3", "A.1" yield the number
+# 5, 3, 1 alone: the abbreviation is prose a rendering translates, "No. 5", "מס' 5", "איור 3",
+# and the number is what it must keep); the CamelCase rule tries one
 # split per letter run (leading capitals, one lowercase run, a capital), not one per
 # lower-upper pair, so "aAaA...aA_" is scanned once. The CamelCase, snake_case, hash and
 # identifier rules stay ASCII: "ZürichAirport" is taken by the proper rule, not by the
@@ -307,8 +308,9 @@ CAPS_WORD = re.compile(rf"\b[A-Z{LATIN_UPPER}]{{2,}}\b")
 # Where a sentence ends: a period, a question or exclamation mark, or a blank line.
 SENTENCE_END = re.compile(r"[.?!]|\n[ \t]*\n")
 # What follows "May" the month: a day ("May 5"), a label colon ("May:"), either after a
-# closing bold ("**May** 5", "**May**:").
-MONTH_AFTER = re.compile(r"(?:\*{1,2}|_{1,2})?(?:[ \t]+\d|:)")
+# closing bold ("**May** 5", "**May**:"). No underscore: "_" is a word character, so "May_" is
+# never a hedge match in the first place.
+MONTH_AFTER = re.compile(r"\*{0,2}(?:[ \t]+\d|:)")
 
 
 def _is_month_line(text, start, end, cache):

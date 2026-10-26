@@ -905,3 +905,26 @@ def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_
     assert any(c.startswith("CLAUDE.md restored from") for c in changes), changes
     assert not paths["hook"].exists() and not paths["log"].exists() and not backup.exists()
     assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_an_unfinished_record_restores_what_it_lists_and_judges_the_rest_from_the_evidence(uninstall_module):
+    # The record of an interrupted re-install carries the marker's leftovers (a --force
+    # replaced value the earlier undo kept) and says it is unfinished: the listed key is
+    # restored from the record, the other template keys are removed from the evidence with a
+    # notice, and the deny tools it does not list are left with a notice.
+    template = uninstall_module.install._read_json(uninstall_module.install.USER_SETTINGS)
+    keys = [k for k in template if k not in ("hooks", "permissions")]
+    settings = {"model": "opus", "permissions": {"deny": list(template["permissions"]["deny"])},
+                **{k: template[k] for k in keys}}
+    record = {"unfinished": True, "added_keys": [], "replaced": {keys[0]: 100},
+              "installed": {keys[0]: template[keys[0]]}, "created": [], "deny_added": []}
+    changes, notices, left = uninstall_module.undo_settings(settings, template, record, evidence=True)
+    assert settings[keys[0]] == 100 and all(k not in settings for k in keys[1:]), (settings, changes)
+    assert settings["permissions"]["deny"] == template["permissions"]["deny"]
+    assert left == []
+    assert any("no settings data" in n and "template values are removed" in n for n in notices), notices
+    assert any("no settings data" in n and "permissions.deny" in n for n in notices), notices
+    # Without evidence only the listed key is touched.
+    settings = {"model": "opus", **{k: template[k] for k in keys}}
+    changes, notices, left = uninstall_module.undo_settings(settings, template, dict(record), evidence=False)
+    assert settings[keys[0]] == 100 and all(k in settings for k in keys[1:]), (settings, changes)

@@ -643,20 +643,26 @@ def test_a_name_glued_to_a_dotted_number_is_one_token(keyline_check, tok, kind, 
     assert time.perf_counter() - start < 2.0
 
 
-@pytest.mark.parametrize("src, ren, kept", [
+@pytest.mark.parametrize("src, ren, kept, dropped", [
     ("Ticket No.5: see Ch.2 and Fig.3, Vol.3 p. 10, due 14:02.",
-     "כרטיס מס' 5: ראו פרק 2 ואיור 3, כרך 3 עמ' 10, עד 14:02.", {"5", "2", "3", "10"}),
-    ("ticket No.5 at 14:02", "ticket No. 5 at 14:02", {"5"}),
-    ("see A.1 at 14:02", "ראו נספח א.1 ב-14:02", {"1"}),
-    ("see Zürich.5 and my_lib.5 at 14:02", "ראו ציריך.5 ו-my_lib.5 ב-14:02", {"5"}),
+     "כרטיס מס' 5: ראו פרק 2 ואיור 3, כרך 3 עמ' 10, עד 14:02.", {"5", "2", "3", "10"},
+     {"No", "Ch", "Fig", "Vol"}),
+    ("ticket No.5 at 14:02", "ticket No. 5 at 14:02", {"5"}, {"No"}),
+    ("see A.1 at 14:02", "ראו נספח א.1 ב-14:02", {"1"}, {"A"}),
+    ("see Zürich.5 and my_lib.5 at 14:02", "ראו ציריך.5 ו-my_lib.5 ב-14:02", {"5"}, {"Zürich", "my_lib"}),
+    ("see Fig.3 and Vol.2 at 14:02", "ראו איור 3 וכרך 2 ב-14:02", {"3", "2"}, {"Fig", "Vol"}),
 ])
-def test_an_abbreviation_before_a_dotted_number_keeps_the_number(keyline_check, src, ren, kept):
+def test_an_abbreviation_before_a_dotted_number_keeps_the_number(keyline_check, src, ren, kept, dropped):
     # Only a name that ends in a digit takes a dotted tail ("Python3.12"); "No.5", "Ch.2",
-    # "Fig.3", "A.1" are the abbreviation and the number 5, 2, 3, 1, which a rendering that
-    # writes "No. 5" or "מס' 5" keeps. The tail after any name made these one token and failed
-    # the rendering.
+    # "Fig.3", "A.1" yield the number 5, 2, 3, 1 alone: the abbreviation is prose a rendering
+    # translates ("No. 5", "מס' 5", "איור 3"), so it is not held to the rendering (a swapped
+    # abbreviation before the number passes, as a translated one must), and the number is what
+    # the rendering must keep. The tail after any name made these one token and failed the
+    # rendering; the docs then promised "the abbreviation and the number", which no version
+    # ever extracted.
     found = keyline_check.invariants(src)
     assert kept <= set(found) and not any("." in tok for tok in found)
+    assert dropped.isdisjoint(found), found
     assert keyline_check.check(src, ren).ok
 
 
@@ -693,6 +699,16 @@ def test_a_closed_heading_or_a_bold_month_before_a_colon_or_a_number(keyline_che
     assert keyline_check.hedges("**May** we proceed?") == {"possibility": ["may"]}
 
 
+def test_an_underscore_after_may_is_no_hedge_and_no_month_rule(keyline_check):
+    # "_" is a word character, so "May_" and "_May_" are never hedge matches (no boundary after
+    # the "y"): the month rule's "after a closing underscore" alternative could never run, and
+    # is gone; the behaviour is the hedge regex's.
+    assert keyline_check.hedges("May_ 5 items") == {}
+    assert keyline_check.hedges("_May_: 3 fixed") == {}
+    assert keyline_check.MONTH_AFTER.match("_ 5") is None and keyline_check.MONTH_AFTER.match("__:") is None
+    assert keyline_check.MONTH_AFTER.match("** 5") and keyline_check.MONTH_AFTER.match("*:")
+
+
 @pytest.mark.parametrize("pair", ["and/or", "él/ella", "כן/לא"])
 def test_a_prose_pair_at_the_end_of_a_sentence_is_prose(keyline_check, pair):
     # The prose exception saw the extracted token with its sentence period ("and/or."), whose
@@ -709,13 +725,28 @@ def test_a_prose_pair_at_the_end_of_a_sentence_is_prose(keyline_check, pair):
     ("- May", 40000, "hedges"), ("**Foo**", 40000, "invariants"), ("- Foo", 40000, "invariants"),
     ("* " * 100 + "May ", 2000, "hedges"), ("WE MAY FAIL\n", 20000, "hedges"),
 ])
-def test_a_line_of_many_tokens_is_scanned_once(keyline_check, unit, count, fn):
+def test_a_line_of_many_tokens_is_scanned_once(keyline_check, unit, count, fn, monkeypatch):
     # Every "May", and every capitalised word after a Markdown marker, re-found its line and
     # rescanned the line's prefix (and the hedge test sliced the rest of the text), so a long
     # line of such tokens took time quadratic in its length (80000 bold "May": 6.9 s against
     # the hook's 30 s timeout). The line and its marker prefix are found once per line.
+    # The time bound alone let six of the eight units pass on the quadratic code (under 1.5 s at
+    # these counts), so the line lookups are counted too: one per line, whatever the tokens.
     import time
     text = unit * count + "x"
+    lines = text.count("\n") + 1
+    real_line = keyline_check._Line
+    made = []
+
+    class Counting(real_line):
+        __slots__ = ()
+
+        def __init__(self, *args):
+            made.append(args[1])
+            super().__init__(*args)
+
+    monkeypatch.setattr(keyline_check, "_Line", Counting)
     start = time.perf_counter()
     getattr(keyline_check, fn)(text)
     assert time.perf_counter() - start < 1.5
+    assert len(made) <= lines, (len(made), lines)
