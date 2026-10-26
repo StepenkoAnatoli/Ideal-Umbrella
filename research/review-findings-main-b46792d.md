@@ -21,8 +21,9 @@ read-only one as uid 65534, since root ignores file modes); the lows are quoted 
 reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d).
 
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
-finding, added as the fixes landed).
-Counts: 0 high, 7 medium, 28 low.
+finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
+11 low), listed at the end, all fixed in the same PR.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in the self-review.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -625,6 +626,87 @@ None.
    keyline/README.md:91 and the Honest limits (text below).
    Prevention: the test pins both words allowed, a tab-indented word and the absence of the old
    "mgmt srvc" entry; the README line says what a multi-word line does.
+
+## Self-review of the PR diff (fresh-context pass over the fix commits 18527a9..aa8b466)
+
+Two reviewers who had not seen the findings above read only the fix commits: S1 keyline_check,
+keyline_lint and scripts; S2 install, uninstall, add_to_repo, keyline_hook and measure. Every
+medium was re-reproduced here with `python -I` before being accepted. One regression never
+reached a commit: the first draft of the `url` alternative (finding 22) had an unbounded scheme
+class, and the existing linear-time test caught it (`"a-" * 16000` went from 0.2 s to 2 s); the
+scheme is now at most 31 characters. The findings below are numbered on from the main list.
+Counts: 0 high, 5 medium, 11 low; all fixed class-wide in this PR.
+
+36. (S1) keyline/keyline_check.py:27 vs 67-68: the fix for finding 4 widened `proper` and the
+    right boundary to LATIN letters but the left boundary `L` stayed ASCII, so a capital after a
+    diacritic is a fresh start: `"Zé" * 16000 + "_"` takes 24 s (the hook timeout is 30 s, the
+    same shape finding 22's draft had), `ÉCOLE` yields the token `COLE` and `école/notes.txt`
+    yields `cole/notes.txt`, so a rendering that writes `COLE` passes. Reproduced (5.8 s at
+    8000). Medium. Class: neighbour of a previous fix (same class as findings 2-4).
+
+37. (S1) keyline/keyline_check.py:63-64: the `path` and `file` first-character classes moved to
+    ASCII (finding 22's fix) and so dropped `סיכום.md`, `תיקיה/קובץ.txt` and `Übersicht.md`,
+    which the tree before the fix extracted; the swaps `סיכום.md` to `טיוטה.md` and
+    `Übersicht.md` to `Übersicht.txt` now pass. Reproduced. Medium. Class: regression inside a fix.
+
+38. (S1) keyline/keyline_check.py:119: `NEG_EN` `no(?!\.\s*\d)` (finding 27) crosses a line
+    break, so `Data lost: no.` followed by `1. Restart` on the next line is read as "No. 1" and
+    the negation is dropped; a rendering that flips it to "yes" passes. Reproduced. Medium.
+    Class: neighbour of a previous fix.
+
+39. (S1) keyline/keyline_check.py:201: a `url` token keeps a trailing `:`, `?` or `!`, so a
+    sentence-final URL before one of them always fails (closed). Low.
+
+40. (S1) keyline/README.md:58-59: "and the other way round" is false when the source has a
+    trailing `Z` or JS-style milliseconds (`2026-10-25T14:30:00.000Z`). Low.
+
+41. (S1) keyline/README.md:196-197: "a hex hash longer than 128 digits is not extracted" holds
+    only when it starts with a digit; letter-first it is an `ident`. Low (doc).
+
+42. (S1) keyline/keyline_check.py: `upper` is ASCII-only and `proper` needs a lowercase tail, so
+    an all-caps name with a diacritic (`ÉCOLE`, `NGUYỄN`) is not extracted at all once 36 is
+    fixed. Low.
+
+43. (S2) config/install.py:510 and config/uninstall.py:64: an interrupt at the fifth and last
+    write (the full record, after settings.json) leaves the interim record, which says
+    `added_keys: []`; the next install sees every value already present and records nothing, and
+    the uninstall trusts the record and leaves the three scalar keys, `permissions.deny` and an
+    empty hooks container behind while writing `{"uninstalled": true}`. Reproduced. Medium.
+    Class: halfway state (the boundary after the one finding 6's fix covered).
+
+44. (S2) keyline/keyline_hook.py:154: stderr is reconfigured to UTF-8 with strict errors, so a
+    file name that is not valid UTF-8 (`notes/\xff.txt`, a surrogate in the event JSON) turns
+    every message into a traceback: a blocking lint failure becomes exit 1 with the finding
+    lost, and the read-error path breaks the one-line contract. Reproduced. Medium. Class:
+    neighbour of a previous fix (finding 19 covered file content, not the name).
+
+45. (S2) config/install.py:243-250: `_refuse_read_only` checks files, not directories; with
+    `.claude` at 555 and CLAUDE.md absent the hook is written and the CLAUDE.md temp file then
+    fails (named halfway state). Low.
+
+46. (S2) config/uninstall.py:232-251: the hook folder is not checked either, so settings.json is
+    written and the hook unlink fails with "the undo stopped part way"; on Windows a read-only
+    hook file does the same because nothing clears the attribute before `unlink()`, unlike
+    add_to_repo's `_write_bytes`. Low.
+
+47. (S2) config/install.py:243 and config/add_to_repo.py:148: on Windows `os.access` sees the
+    read-only attribute only, so an ACL-denied target brings the old halfway state back; the
+    README line should say "read-only attribute or mode". Low (documented limit).
+
+48. (S2) keyline/keyline_hook.py:193-197: two notes beside one rendering is printed under "fix
+    the rendering" and then checked against both notes, so the first line points at the wrong
+    file. Low.
+
+49. (S2) keyline/keyline_hook.py:178-179: an explicit `--watch` pattern that names a dotfile is
+    silently ignored; the README says only that the suffix rule still applies. Low.
+
+50. (S2) config/install.py:482-510: an interrupt at the interim record or the CLAUDE.md write
+    leaves an orphan `CLAUDE.md.bak-*` and the next install makes a second backup of the same
+    user file (the orphan `settings.json.bak-*` of finding 5, one file earlier). Low.
+
+51. (S2) keyline/measure.py:36-39: a Windows junction is neither reported nor skipped as the
+    symlinked folder the docstring describes; install and add_to_repo already have `_is_link`
+    with `os.path.isjunction` for this. Low (code reading).
 
 ## Checked and found clean (both reviewers and both verifiers)
 
