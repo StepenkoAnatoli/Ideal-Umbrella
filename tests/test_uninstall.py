@@ -500,3 +500,40 @@ def test_containers_the_install_created_are_removed(install_module, uninstall_mo
     install_module.install(home)
     uninstall_module.uninstall(home)
     assert read_settings(home) == {"customKey": "keep-me"}
+
+
+def test_reinstall_over_a_record_without_created_still_removes_the_containers(uninstall_module, tmp_path, monkeypatch):
+    # A record from before "created" was written says nothing about who made the containers,
+    # and a re-install after a pull must not turn that into "the install created nothing".
+    home = tmp_path / "home"
+    seed(home, {})
+    inst = uninstall_module.install
+    inst.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    del record["created"]
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    changed_templates(uninstall_module, tmp_path, monkeypatch)
+    inst.install(home)
+    assert "created" not in json.loads(record_path.read_text(encoding="utf-8"))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {}
+
+
+def test_a_second_uninstall_run_still_keeps_the_users_empty_container(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    seed(home, {"hooks": {}})
+    install_module.install(home)
+    settings = read_settings(home)
+    installed_value = settings["autoCompactWindow"]
+    settings["autoCompactWindow"] = 1
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}, "autoCompactWindow": 1}
+
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = installed_value
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"hooks": {}}

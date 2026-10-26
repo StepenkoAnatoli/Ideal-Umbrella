@@ -11,7 +11,8 @@ as user `nobody`, since root ignores file modes); the lows are quoted from the r
 probe output. The fixes landed in the same PR (#20); each finding below ends with what was
 changed, the other hits of its class, and the prevention.
 
-Status: all 11 fixed class-wide in PR #20 (pytest 236 passed, 2 skipped; keyline suite 35/35).
+Status: all 11 fixed class-wide in PR #20, plus 3 findings of the self-review of the diff
+(pytest 238 passed, 3 skipped; keyline suite 35/35).
 Counts: 0 high, 3 medium, 8 low. Every finding was CONFIRMED by
 a run or is visible in the code as quoted. Line numbers are the reviewed tree's (main d608788).
 
@@ -300,8 +301,11 @@ None.
    (`permissions`, `permissions.deny`, `hooks`, `hooks.<event>`), `_merge_record` carries the
    list across installs, and `undo_settings` deletes an emptied container only when the record
    lists it. A record without the list (an install from before this change) and the no-record
-   mode keep the old behaviour and delete, since they say nothing either way; the leftover
-   record keeps the `permissions` entries when `permissions.deny` is left as is. Tests:
+   mode keep the old behaviour and delete, since they say nothing either way: `_merge_record`
+   writes the list only when the old record has one or there is no old record, so a re-install
+   after a pull does not turn "unknown" into "created nothing" (self-review finding 1); the
+   leftover record keeps the whole list whenever something is left as is, so a second run
+   still knows who made the containers (self-review finding 2). Tests:
    `tests/test_uninstall.py::test_empty_containers_the_user_had_before_are_kept` (seed
    `{"permissions": {"deny": []}, "hooks": {"UserPromptSubmit": []}}`, install, uninstall,
    settings equal the seed) and `test_containers_the_install_created_are_removed`. Other hits:
@@ -414,9 +418,52 @@ None.
 - Whether Claude Code accepts `"shell": "bash"` in hook entries, and whether
   `compactMetadata.postTokens` is always an integer in real transcripts.
 
+## Self-review of the PR diff
+
+A fresh-context pass over `git diff d608788..eea85ec` (the 11 fixes) found three defects in
+the fixes themselves, all reproduced and fixed in the same PR; the rest of the diff, the
+docs and the "Fixed:" claims were checked and found sound.
+
+1. Medium, config/install.py `_merge_record`: a record from before `created` existed
+   (`added_keys`, `deny_added`, `installed`, no `created`) was rewritten with `created: []`
+   by any re-install that changed something (a hook or template change after a pull), and
+   `uninstall.py` then read the empty list as "the install created nothing" and left
+   `{"permissions": {"deny": []}, "hooks": {"UserPromptSubmit": []}}` where the pre-PR
+   uninstall left `{}`; the finding 11 "Fixed:" claim above held only when the re-install
+   wrote nothing. Class: a merge that defaults an absent, meaningful key to its empty value.
+   Fixed: `created` is written only when the old record has it or there is no old record.
+   Test: `tests/test_uninstall.py::test_reinstall_over_a_record_without_created_still_removes_the_containers`
+   (install, delete `created` from the record, change the templates, install again, uninstall;
+   settings are `{}`). Other hits: `added_keys`, `deny_added` and `installed` default to empty
+   in the same function, but empty and absent mean the same for them (nothing to undo), so
+   they are left. Prevention: the test covers the upgrade path, which the two container tests
+   (fresh install only) did not.
+2. Low, config/uninstall.py `_leftover_record`: `created` was carried into the leftover record
+   only when `permissions.deny` was left as is, so after a first run that left a scalar value
+   (the user changed `autoCompactWindow`) and kept the user's empty `hooks: {}`, a second run
+   found no list, treated the container as unknown and deleted it. Fixed: the list is carried
+   whenever anything is left as is. Test:
+   `test_a_second_uninstall_run_still_keeps_the_users_empty_container` (seed `{"hooks": {}}`,
+   install, change the value, uninstall, restore the value, uninstall; `{"hooks": {}}` stays).
+   Other hits: none; `claude_md` is already carried on its own condition. Prevention: same test.
+3. Medium, keyline/measure.py: the new `p.is_file()` check raised `PermissionError` for an entry
+   in a folder that lists its names but cannot be searched (mode 0444 under a non-root user;
+   `pathlib` re-raises every `OSError` but ENOENT/ENOTDIR/EBADF/ELOOP), a traceback where the
+   pre-PR read gave `skip (cannot read: Permission denied)` and counted the rest. Class: a
+   guard added before a guarded operation that is not itself guarded. Fixed: the stat is inside
+   the same `except OSError` skip. Reproduced as uid 65534 before and after the fix; test:
+   `tests/test_measure.py::test_a_file_that_cannot_be_stated_is_skipped_not_a_traceback`
+   (skipped as root and on Windows). Other hits: `files_in()`'s `is_file()` on the argument
+   itself is pre-existing and reports "no such file or folder" for it; `keyline_hook.py`'s
+   `path.is_file()` is inside its catch-all. Prevention: the test runs as the CI user, which
+   is not root.
+
+Not a finding, noted: the `where` suffix in the hook's `cannot read{where}` message is
+unreachable (every `OSError` the block raises names the file), harmless; the measure
+"symlink to a missing target" wording has no test asserting the string.
+
 ## Outside this task
 
-- Nothing in the repo was changed by this pass; the findings above wait for a decision on
-  whether to fix them (the fix-the-class routine of the earlier passes applies: failing-first
-  test, name the class, search the whole repository, fix every hit, add a prevention, then a
-  fresh-context self-review of the diff before any merge).
+- The findings above were fixed in PR #20 with the fix-the-class routine (failing-first test,
+  name the class, search the whole repository, fix every hit, add a prevention) and a
+  fresh-context self-review of the diff before the merge.

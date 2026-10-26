@@ -150,8 +150,9 @@ def _leftover_record(record, left, claude_md_left):
         leftover["installed"] = {k: v for k, v in record.get("installed", {}).items() if k in left}
         if "permissions.deny" in left and record.get("deny_added"):
             leftover["deny_added"] = record["deny_added"]
-            if isinstance(record.get("created"), list):
-                leftover["created"] = [c for c in record["created"] if c in ("permissions", "permissions.deny")]
+        if isinstance(record.get("created"), list):
+            # Whatever a later run still empties, it must know who made the container.
+            leftover["created"] = record["created"]
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
     return leftover

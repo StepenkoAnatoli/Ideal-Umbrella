@@ -44,3 +44,24 @@ def test_a_named_pipe_in_a_folder_is_skipped_not_read(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Traceback" not in result.stderr and "skip" in result.stderr and "pipe.txt" in result.stderr
     assert "good.txt" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a user that file modes apply to")
+def test_a_file_that_cannot_be_stated_is_skipped_not_a_traceback(tmp_path):
+    # A readable but not searchable folder lists its names, and then every stat of a name in
+    # it fails; the walk must skip those files, as it skips a file it cannot read.
+    pytest.importorskip("tiktoken")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "hidden.txt").write_text("hello\n", encoding="utf-8")
+    sub.chmod(0o444)
+    try:
+        result = subprocess.run([sys.executable, "-I", str(ROOT / "keyline" / "measure.py"), str(tmp_path)],
+                                capture_output=True, text=True, encoding="utf-8", timeout=30)
+    finally:
+        sub.chmod(0o755)
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr and "skip" in result.stderr and "hidden.txt" in result.stderr
+    assert "good.txt" in result.stdout

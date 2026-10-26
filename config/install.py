@@ -371,8 +371,11 @@ def _merge_record(old, new):
     created += [c for c in new.get("created", []) if c not in created]
     installed = dict(old_installed) if isinstance(old_installed, dict) else {}
     installed.update(new.get("installed", {}))
-    merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed,
-              "created": created}
+    merged = {"added_keys": added, "replaced": replaced, "deny_added": deny, "installed": installed}
+    if "created" in old or not old:
+        # A record from before "created" was written says nothing about who made the containers;
+        # an empty list would say "the install made none", and the uninstall would keep them.
+        merged["created"] = created
     if "claude_md" in new:
         merged["claude_md"] = new["claude_md"]
     elif "claude_md" in old:
