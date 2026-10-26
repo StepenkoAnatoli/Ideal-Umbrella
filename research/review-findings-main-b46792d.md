@@ -23,7 +23,7 @@ reviewers' own probe output. Line numbers are the reviewed tree's (main b46792d)
 Status: all 35 fixed class-wide in this PR (see the Fixed/Other hits/Prevention lines under each
 finding, added as the fixes landed); the self-review of the fix commits found 16 more (5 medium,
 11 low), listed at the end, all fixed in the same PR.
-Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; pass 2 below.
+Counts: 0 high, 7 medium, 28 low in the main pass; 0 high, 5 medium, 11 low in self-check pass 1; 0 high, 6 medium, 4 low in pass 2; pass 3 below.
 
 Pattern across the pass: the same three classes as the sixth review, with one addition. "Neighbour
 of a previous fix" again dominates: numbers moved to lookup by extraction but path, file and
@@ -1182,6 +1182,56 @@ Counts: 0 high, 6 medium, 4 low (R2 findings 52-55: 2 medium, 2 low; R1 findings
    Other hits: none; the README and the test already said the right thing.
    Prevention: the existing test `test_a_token_does_not_start_after_a_diacritic` asserts the
    behaviour the comment now describes.
+
+## Self-check pass 3 (fresh-context pass over the fix commits e1ed25d and 014ca69)
+
+Two reviewers who had not seen the findings above read only the pass 2 fix commits: R2 the
+config/hook commit e1ed25d, R1 the keyline_check commit 014ca69. Every medium was
+re-reproduced here with `python -I` (the folder-mode cases as uid 65534 in a copy under
+/var/tmp, since root ignores file modes) before being accepted.
+Counts: R2 findings 62-67: 0 high, 2 medium, 4 low; R1 findings below (counts filled in when
+its pass is recorded); all fixed class-wide in this PR.
+
+62. (R2) config/uninstall.py:301-305: the pre-write state-tree check walked with `os.walk`, which
+    swallows the listing error of a folder it cannot read or search, and tested `os.access(W_OK)`
+    only, so a sub-folder (or `state/` itself) with mode 000, 333, 644 or 100 was never refused:
+    the undo rewrote settings.json (with a backup) and deleted the hook, then stopped at `state/`
+    on every run, the halfway shape the e1ed25d fix closed for mode 555 only. Reproduced as uid
+    65534 (all six modes). Medium. Class: neighbour of the fixed input (an unreadable or
+    unsearchable folder instead of a read-only one); halfway state.
+
+63. (R2) config/install.py:548 with config/uninstall.py:70: the interim record dropped the marker's
+    `uninstalled` key but carried the leftover fields a marker holds for a key the uninstall left
+    as is (`added_keys`, `replaced`, `installed`, `created`), so a re-install over such a marker
+    interrupted at its final write left a record that read as a full one: the next uninstall undid
+    only the leftover key and left `skillListingBudgetFraction` and the six deny tools in
+    settings.json with no notice. Reproduced. Medium. Class: neighbour of the fixed input (a marker
+    with leftovers instead of a clean marker); "absent is not empty".
+
+64. (R2) config/install.py:542-549: over a clean marker, when CLAUDE.md already equals the template
+    no interim record is written at all, so an interrupt at the final record leaves the marker
+    itself beside a settings.json holding the keys, the deny tools and the hook entry; the next
+    uninstall reads the marker as neither unfinished nor absent and removes the keys silently,
+    leaving the deny tools with no notice, the outcome finding 54 was meant to close. Reproduced.
+    Low. Class: neighbour of the fixed input (the interim write skipped instead of carrying the
+    marker); doc text not matching the code ("the run says so").
+
+65. (R2) config/uninstall.py:301-305: an empty read-only `state/` (or sub-folder) was refused with
+    "is read-only; make it writable first" although removing it needs only its parent to be
+    writable; the pre-fix code removed it. Reproduced as uid 65534. Low. Class: regression inside
+    a fix (over-refusal with a clear message).
+
+66. (R2) config/uninstall.py:202-208: `_remove_tree` cleared the Windows read-only attribute on
+    files only, so a read-only sub-folder inside `state/` would stop `rmtree` after settings.json
+    and the hook were written, as a read-only file did before e1ed25d. Not reproducible on Linux
+    (no such attribute). Low. Class: neighbour of the fixed input (a folder instead of a file,
+    Windows).
+
+67. (R2) keyline/keyline_hook.py:78-84: the dotfile rule looked at the file name only, so a note
+    under a dot-folder inside the watched tree (`notes/.trash/x.md`, Obsidian's trash) was linted
+    and could block with exit 2, with or without `--watch notes/*`, where a shell glob would not
+    descend into `.trash/`. Pre-existing. Reproduced. Low. Class: neighbour of the fixed input (a
+    dot-folder instead of a dotfile).
 
 ## Checked and found clean (both reviewers and both verifiers)
 
