@@ -250,8 +250,9 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
 
 
 def _read_json(path):
-    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
-    naming the file, which main() reports as one line before anything is written."""
+    """Read a JSON object; a file that is not UTF-8, not JSON, not an object or nested too deep
+    to write back is a ValueError naming the file, which main() reports as one line before
+    anything is written."""
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -259,9 +260,25 @@ def _read_json(path):
         raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deep to read; flatten it first") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
+    _check_writable_depth(path, data)
     return data
+
+
+def _check_writable_depth(path, data):
+    """A value nested so deep that _write_json cannot write it back is a ValueError naming the
+    file. json reads with a far higher limit than the indented writer has (near a thousand
+    levels on Python 3.12, where the file is read whole), so without this check the run died
+    with a traceback at the settings.json write, after its copy, the interim record and the
+    hook were written. The record nests a replaced top-level value one level deeper than the
+    file does, so the check writes the object one level down."""
+    try:
+        json.dumps({"": data}, indent=2, ensure_ascii=False)
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deep to write back; flatten it first") from None
 
 
 def _refuse_read_only(path):
@@ -455,10 +472,13 @@ def read_record(path):
         raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); fix it or delete it first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it or delete it first") from e
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deep to read; fix it or delete it first") from None
     except OSError as e:
         raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
         raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
+    _check_writable_depth(path, data)
     _check_record(path, data)
     return data
 
@@ -582,7 +602,8 @@ def install(home, force=False, progress=None, config_dir=None):
     # file shows anything of an interrupted write): the top-level values as they are now, and
     # the permissions.deny list as it is, since merge_settings fills the containers in place
     # and replaces the rest. Not a deep copy of the file: a value of yours nested a few
-    # hundred levels deep made that copy hit the recursion limit, where json does not.
+    # hundred levels deep made that copy hit the recursion limit at half the depth json
+    # reads and writes (_read_json refuses a file json cannot write back).
     settings_before = dict(existing)
     permissions = existing.get("permissions")
     if isinstance(permissions, dict):

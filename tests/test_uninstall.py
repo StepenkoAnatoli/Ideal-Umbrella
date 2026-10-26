@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -906,6 +907,35 @@ def test_read_only_files_the_undo_deletes_are_deleted(install_module, uninstall_
     assert any(c.startswith("CLAUDE.md restored from") for c in changes), changes
     assert not paths["hook"].exists() and not paths["log"].exists() and not backup.exists()
     assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+
+
+@pytest.mark.parametrize("depth", [1500, 12000])
+def test_a_settings_json_nested_too_deep_to_write_back_is_refused_before_any_undo(
+        install_module, uninstall_module, tmp_path, depth):
+    # The undo reads settings.json and writes it back without the keys: a value you nested
+    # deeper than the indented writer writes (json reads far deeper on Python 3.12, where
+    # 1500 levels read and do not write; 12000 do neither on 3.12 or 3.13) made it die with a
+    # traceback at that write, after the hook and the state folder were removed. The read
+    # phase refuses the file before any write, so nothing is undone and the next run finds it
+    # all; where the interpreter writes the depth back, the undo goes through whole.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"})
+    assert any(c.startswith("autoCompactWindow: added") for c in install_module.install(home)[0])
+    # Spliced in as text: json.loads may not parse the depth either.
+    text = settings_file(home).read_text(encoding="utf-8")
+    assert text.startswith("{")
+    text = '{"deep": ' + "[" * depth + "]" * depth + ", " + text[1:]
+    settings_file(home).write_text(text, encoding="utf-8")
+    try:
+        changes, notices = uninstall_module.uninstall(home)
+    except ValueError as e:
+        assert re.fullmatch(r".*settings\.json is nested too deep to (write back|read); flatten it first", str(e)), e
+        assert settings_file(home).read_text(encoding="utf-8") == text
+        assert (home / ".claude" / "ballast" / "context_check.py").is_file()
+        assert "unfinished" not in install_module.read_record(home / ".claude" / "ballast" / "install-record.json")
+        return
+    assert "autoCompactWindow: removed" in changes, (changes, notices)
+    assert read_settings(home) == {"model": "opus", "deep": json.loads(text)["deep"]}
 
 
 def test_an_unfinished_record_restores_what_it_lists_and_judges_the_rest_from_the_evidence(uninstall_module):

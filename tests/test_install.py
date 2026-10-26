@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1683,13 +1684,14 @@ def test_a_settings_copy_name_the_installer_never_writes_is_not_reused(install_m
 
 def test_a_settings_json_nested_700_levels_installs_re_runs_and_undoes(install_module, tmp_path):
     # The snapshot of settings.json the run keeps for its pre-write comparisons was a deep copy
-    # of the whole file: a value of yours nested a few hundred levels deep (json reads and
-    # writes it without trouble) made the copy hit the interpreter's recursion limit, and the
-    # install died with a traceback before its first write. Only what the run compares later
-    # is kept: the top-level values, and the permissions.deny list as it was. 700 levels: the
-    # deep copy needs two frames per level and fails under the default limit of 1000, while
-    # the indented json encoder the installer writes with needs one and gets through (at 1500
-    # it did not on Python 3.12, where the generator frames count against that limit).
+    # of the whole file: a value of yours nested a few hundred levels deep made the copy hit
+    # the interpreter's recursion limit (deepcopy spends two frames per level, so it stops
+    # near 500 on the default limit of 1000; json's indented writer spends one and stops near
+    # 1000 on Python 3.11 and 3.12, where json reads it without trouble), and the install died
+    # with a traceback before its first write. Only what the run compares later is kept: the
+    # top-level values, and the permissions.deny list as it was. 700 levels: past deepcopy's
+    # limit on every interpreter, inside the writer's on each; the first version of this test
+    # used 1500, which only Python 3.13 writes back, and passed on 3.13 alone.
     home = tmp_path / "home"
     (home / ".claude").mkdir(parents=True)
     deep = json.loads("[" * 700 + "]" * 700)
@@ -1701,6 +1703,52 @@ def test_a_settings_json_nested_700_levels_installs_re_runs_and_undoes(install_m
     changes, notices = uninstall_module.uninstall(home)
     assert "autoCompactWindow: removed" in changes, (changes, notices)
     assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"model": "opus", "deep": deep}
+
+
+@pytest.mark.parametrize("depth", [1500, 12000])
+def test_a_settings_json_nested_too_deep_to_write_back_is_refused_before_any_write(install_module, tmp_path, depth):
+    # json reads a file far deeper than its indented writer writes (near a thousand levels on
+    # Python 3.12, the limit of 1000 frames, where the C reader takes ten thousand; 3.13 reads
+    # and writes ten thousand), so a settings.json nested between the two limits was read,
+    # snapshotted and merged, and the run died with a traceback at the settings.json write,
+    # after its copy, the interim record and the hook were written: an unfinished install
+    # from a file the run could have refused. The read phase now checks that the file can be
+    # written back, one level deeper than the file is, since the record nests a replaced
+    # top-level value one level down. The contract is the same on every interpreter: a clean
+    # refusal before any write, or a full install, re-run and undo; never a traceback or a
+    # partial install. 1500 levels is refused on 3.12 (the writer) and installs on 3.13;
+    # 12000 is refused by the reader on both.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    text = '{"model": "opus", "deep": ' + "[" * depth + "]" * depth + "}"   # json.loads may not parse it either
+    settings_file(home).write_text(text, encoding="utf-8")
+    try:
+        changes, notices = install_module.install(home)
+    except ValueError as e:
+        assert re.fullmatch(r".*settings\.json is nested too deep to (write back|read); flatten it first", str(e)), e
+        assert sorted(p.name for p in (home / ".claude").iterdir()) == ["settings.json"]
+        assert settings_file(home).read_text(encoding="utf-8") == text
+        return
+    assert any(c.startswith("autoCompactWindow: added") for c in changes), changes
+    assert install_module.install(home) == ([], [])
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow: removed" in changes, (changes, notices)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == json.loads(text)
+
+
+def test_a_settings_json_nested_too_deep_is_one_error_line_and_nothing_written(tmp_path):
+    # The same refusal through the command line, with a depth no interpreter reads or writes
+    # on its default limits: one Error line naming the file, exit 1, nothing written.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text('{"model": "opus", "deep": ' + "[" * 12000 + "]" * 12000 + "}", encoding="utf-8")
+    result = subprocess.run([sys.executable, "-I", str(INSTALL), "--home", str(home)],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 1, result
+    assert result.stderr.count("\n") == 1 and "Traceback" not in result.stderr, result.stderr
+    assert "settings.json is nested too deep to" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert sorted(p.name for p in (home / ".claude").iterdir()) == ["settings.json"]
 
 
 def _move_template(install_module, tmp_path, monkeypatch, key, value):
