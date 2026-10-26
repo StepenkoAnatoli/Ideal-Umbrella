@@ -141,7 +141,8 @@ def main(argv=None):
         sys.exit("count must be an integer")
     if count <= 0:
         sys.exit("count must be positive")
-    files = sorted(glob.glob(os.path.join(glob.escape(folder), "*.jsonl")), key=os.path.getsize, reverse=True)[:count]
+    files = [f for f in glob.glob(os.path.join(glob.escape(folder), "*.jsonl")) if os.path.isfile(f)]
+    files = sorted(files, key=os.path.getsize, reverse=True)[:count]
     if not files:
         sys.exit(f"no .jsonl files in {folder}")
     tot, out_chars, turns = summarize(files)

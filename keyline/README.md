@@ -119,7 +119,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    (a `notes/` folder outside the project too), and only acts on `.txt`, `.md`, `.keyline` or
    extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
-   absolute pattern matches the absolute path, a relative one the path from the project dir).
+   absolute pattern matches the absolute path, a relative one the path from the project dir;
+   the suffix rule still applies, so a watched `.py` file is passed over).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt`. The hook then checks it whenever
@@ -184,7 +185,8 @@ Two panel claims do not reproduce exactly:
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
   words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,
-  `b07b3b6`, `__init__` and `v2` are.
+  `b07b3b6`, `__init__`, `v2`, `S3`, `1e10` and `0x1f` are. A sign is not part of a number
+  (`-5` is the number `5`), so a rendering that drops it passes.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k
   vocabulary is multilingual, so short shorthands that are already one token pass: rb, cfg, err,
   conn, svc, msg, idx and others. Those are allowed by the spec. k8s, mgmt, dflt and similar are

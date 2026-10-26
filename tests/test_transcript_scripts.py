@@ -75,3 +75,11 @@ def test_non_utf8_transcript_does_not_crash(script, tmp_path):
     odd.write_bytes(b'{"message": {"role": "user", "content": "caf\xe9 please"}}\n')
     result = run(script, str(odd))
     assert "Traceback" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_a_missing_transcript_is_one_line_not_a_traceback(script, tmp_path):
+    result = run(script, str(tmp_path / "missing.jsonl"))
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "error:" in result.stderr and "missing.jsonl" in result.stderr

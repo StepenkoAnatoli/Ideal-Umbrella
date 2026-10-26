@@ -59,3 +59,18 @@ def test_counts_skills_commands_mcp_and_hooks(plugin_cost, tmp_path, capsys):
     assert tokens > 0
     assert rows["beta"][1:3] == [0, 0]
     assert "2 plugins, 3 skills/commands" in capsys.readouterr().out
+
+
+def test_a_description_with_a_special_token_or_a_bom_is_counted(plugin_cost, tmp_path, capsys):
+    # tiktoken refuses "<|endoftext|>" unless told otherwise, so one plugin description holding
+    # it stopped the whole run; and a SKILL.md saved with a BOM had no front matter to the
+    # regex, so its description was counted as empty.
+    pytest.importorskip("tiktoken")
+    plugin = make_plugin(tmp_path, "odd", skills=["special", "bom"])
+    (plugin / "skills" / "special" / "SKILL.md").write_text(
+        "---\nname: special\ndescription: Stops at <|endoftext|> markers\n---\n", encoding="utf-8")
+    (plugin / "skills" / "bom" / "SKILL.md").write_text(
+        "---\nname: bom\ndescription: Reads files with a byte order mark\n---\n", encoding="utf-8-sig")
+    assert plugin_cost.desc_of(plugin / "skills" / "bom" / "SKILL.md") == "Reads files with a byte order mark"
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path)]) == 0
+    assert "1 plugins, 2 skills/commands" in capsys.readouterr().out

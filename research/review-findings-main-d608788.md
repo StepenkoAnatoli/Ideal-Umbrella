@@ -8,9 +8,11 @@ config/, hooks/, tests/, CI and their docs (marked B). Their full reports and pr
 in the scratchpad (`review6/a/report.md`, `review6/b/report.md`, not in the repo). All three
 medium findings were re-reproduced here with `python -I` before being accepted (the install one
 as user `nobody`, since root ignores file modes); the lows are quoted from the reviewers' own
-probe output. Nothing in the repo was changed by this pass.
+probe output. The fixes landed in the same PR (#20); each finding below ends with what was
+changed, the other hits of its class, and the prevention.
 
-Status: reported, not fixed. Counts: 0 high, 3 medium, 8 low. Every finding was CONFIRMED by
+Status: all 11 fixed class-wide in PR #20 (pytest 236 passed, 2 skipped; keyline suite 35/35).
+Counts: 0 high, 3 medium, 8 low. Every finding was CONFIRMED by
 a run or is visible in the code as quoted. Line numbers are the reviewed tree's (main d608788).
 
 Pattern across the pass: again mostly neighbours of earlier fixes. A filter written for `A`,
@@ -41,6 +43,17 @@ None.
    (keeps `A`, `I`, `As`; `A1` is then checked, the safer direction); update the comment and
    keyline/README.md if it lists the exclusion. Presence is tested by the same extraction, so
    the self-check invariant holds.
+   Fixed: the filter is now `re.fullmatch(r"[A-Z]s?", tok)`: a lone letter and its plural
+   (`A`, `I`, `As`) are skipped, every other all-caps token (`S3`, `A100`, `P0`, `Q4`, `H264`,
+   and now `A1`) is an invariant. Tests: `tests/test_keyline_check.py`
+   `test_a_one_letter_acronym_with_digits_is_an_identifier` (six tokens, extracted, pass against
+   self, fail when replaced) and `test_a_lone_capital_letter_is_still_not_an_identifier`.
+   Other hits: the only other kind filter with a count is the `snake` one two lines below
+   (`"_" not in tok.strip("_")`), which is exact; `PROPER_STOP` is a word list, not a shape.
+   Reviewer A's two fuzzers (20000 and 30000 random lines, three seeds each) still report 0
+   self-check failures with the wider rule. Prevention: the test names the shape by example
+   (one letter plus digits), so a later tightening of the rule fails it; keyline/README.md
+   "Honest limits" now lists `S3` among the tokens that are extracted.
 
 2. (A) keyline/measure.py:24-33 (`files_in`) and :57 (`read_bytes`): a FIFO under the measured
    folder hangs the run. `os.walk` lists the FIFO under `names`, `read_bytes()` blocks until a
@@ -57,6 +70,22 @@ None.
    `S_ISSOCK` on `lstat` if the dangling-symlink message in tests/test_measure.py must stay);
    in keyline_check.py's CLI an `os.path.isfile` check before `open` with the existing
    "no such file" message.
+   Fixed: `measure.py` skips anything in a walked folder that is not a regular file before
+   reading it, with one stderr line (`skip (not a regular file): pipe.txt`; a dangling symlink
+   says `symlink to a missing target`). Test: `tests/test_measure.py`
+   `test_a_named_pipe_in_a_folder_is_skipped_not_read` (mkfifo in the folder, run under a 30 s
+   timeout, exit 0, the pipe named, the good file counted; skipped where `os.mkfifo` is missing).
+   Decision on `keyline_check.py`: its CLI reads the paths it is given as written, including a
+   pipe, because `keyline_check.py note.txt <(translate note.txt)` is a legitimate use (process
+   substitution is a pipe) and the hook never hands it anything but a regular file
+   (`path.is_file()` and `he.is_file()` are checked first). A pipe given on the command line
+   is read on purpose, as `cat` would. Other hits: `scripts/usage_breakdown.py:144` and
+   `scripts/unused_tools.py:21` now keep regular files only in their globbed lists (finding 8
+   covers the folder case there); `scripts/lint_validate.py:34` globs `*.md` and reads inside
+   `try/except OSError`, and a FIFO named `x.md` in a corpus folder would still block it (left:
+   a corpus-building dev script, not a hook or an installer). Prevention: the walk-then-read
+   pattern now has a test with a FIFO in it; the rule is "a walked path is read only when
+   `is_file()`".
 
 3. (B) config/install.py:405-438: when the settings.json write fails after CLAUDE.md was
    replaced (read-only settings.json as a non-root user, disk full, `.claude` not writable),
@@ -83,6 +112,22 @@ None.
    write (`_merge_record(old_record, {"claude_md": ...})`) and the full one after settings. A
    record that names a CLAUDE.md backup but no settings keys makes uninstall restore CLAUDE.md
    and leave settings alone, which is correct.
+   Fixed: `install()` writes the record twice when CLAUDE.md changes: once right after the
+   CLAUDE.md write, holding only the `claude_md` entry merged into the old record, and the
+   final one after settings.json as before. A settings write that fails after the CLAUDE.md
+   write now leaves a record naming the backup, so the next install keeps that entry and
+   uninstall restores it. The settings values are still recorded only once settings.json holds
+   them: `tests/test_install.py::test_record_is_written_after_settings` now asserts that the
+   record after a failed settings write holds no `added_keys`, `replaced`, `deny_added` or
+   `installed` (it used to assert no record at all). New test:
+   `test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it` (settings
+   write fails, install again, uninstall, CLAUDE.md is back to "my own rules"). The pre-flight
+   alternative was not taken: a disk-full or a folder appearing between the check and the
+   write would still produce the halfway state, and the interim record covers every cause.
+   Other hits: `config/add_to_repo.py` writes the hook before settings.json and has no record
+   and no undo, so nothing is left unrecorded there; `config/uninstall.py` already writes its
+   leftover record last and restores from the record it read. Prevention: README.md's write
+   order sentence now says the CLAUDE.md change is recorded before settings.json is written.
 
 ## Low
 
@@ -97,6 +142,17 @@ None.
    Fix: either extend the alternative (`[-+]?\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?` plus a
    `0x[0-9a-fA-F]+` branch, keeping `R`; run the fuzzers and `check(line, line)` after), or add
    one line to "Honest limits" saying signs, exponents and hex literals are not compared.
+   Fixed: the `number` alternative is now
+   `0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?`, so `1e10`, `2.5e-3`,
+   `0x1f` and `0xDEADBEEF` are one invariant each (the hex alternative comes first so `0x1f`
+   is not `0` plus letters). Signs stay outside the number: `[-+]?` before `\d` would turn
+   `2020-2024` and `FY2024-25` into different tokens, and both are pinned by earlier tests.
+   Test: `tests/test_keyline_check.py::test_an_exponent_or_hex_number_is_one_invariant` (four
+   forms, extracted, pass against self, fail when replaced). The fuzzers (above) stay at 0
+   self-check failures. Other hits: none; `number` is the only numeric alternative and
+   `present()` looks numbers up by extraction, so the rendering side follows automatically.
+   Prevention: keyline/README.md "Honest limits" names `1e10` and `0x1f` as extracted and says
+   a sign is not part of a number.
 
 5. (A) keyline/keyline_hook.py:161-163: `except OSError` prints "cannot read <note>" for errors
    that come from the tiktoken cache, not the note: a file named `cache` in the keyline folder,
@@ -109,6 +165,16 @@ None.
    Fix: read the note in its own try (message "cannot read {path}") and let the lint/cache
    OSError fall to a second handler with "keyline hook: {e}"; the same split in keyline_lint
    `main` if wanted.
+   Fixed: the hook loads the lint's word list (`keyline_lint.load_words()`) before the
+   note is touched, in its own `try`, and reports an `OSError` or `TiktokenMissing` from it as
+   `keyline hook: <error>` with exit 1. The `except OSError` around the lint and the check keeps
+   `cannot read`, and adds the note's path only when the error does not already name a file
+   (an allow file beside the note names itself). Test: `tests/test_keyline_hook.py`
+   `test_a_word_cache_error_is_not_reported_as_the_note_being_unreadable` (in-process `main()`
+   with `load_words` raising "is a folder"; exit 1, the cause printed, no "cannot read").
+   Other hits: `keyline_lint.py main()` already loads the words in a separate `try` (lines
+   257-261) and reports `error: <e>`; `keyline_check.py` has no cache. Prevention: the hook's
+   `run_main` helper in the tests makes the next in-process hook test a few lines.
 
 6. (A) keyline/keyline_hook.py:144-147: a non-string `cwd` in the event is a traceback, not
    exit 0. The `except Exception` at :142 guards only the `file_path` lookup; `cwd` is used
@@ -119,6 +185,17 @@ None.
    Class: neighbour of a previous fix (the guard covers `file_path` but not `cwd`).
    Fix: `cwd = event.get("cwd"); if not isinstance(cwd, str): cwd = None` once, used in both
    places; or widen the try at :142 to cover root and path construction.
+   Fixed: `cwd = event.get("cwd")`, replaced by `"."` unless it is a non-empty string, and
+   used for both the project root fallback and the relative `file_path`. Test:
+   `tests/test_keyline_hook.py::test_a_cwd_that_is_not_a_string_is_ignored` (`"cwd": 5` with a
+   relative path; exit 0, nothing on stderr). Other hits: `hooks/context_check.py:154` reads
+   `transcript_path` with `or ""` and passes it to `Path`, which raises `TypeError` for a
+   non-string too; the hook's `main` is wrapped in a catch-all that exits 0 (checked:
+   `data.get("transcript_path") or ""` at :154, the guard at the call site), so it does not
+   traceback. `event["tool_input"]["file_path"]` in the keyline hook is inside the
+   `except Exception` guard already. Prevention: the rule for hook input is "every field read
+   from the event is type-checked where it is read"; the two hooks now follow it for every
+   field they use.
 
 7. (A) scripts/plugin_cost.py:70 and the other `enc.encode` calls: a tiktoken special token in
    a SKILL.md description crashes the script. Reproduced: a plugin whose SKILL.md front matter
@@ -129,6 +206,18 @@ None.
    (description "") while the skill is still counted.
    Class: twin not given the same fix.
    Fix: `disallowed_special=()` on every `enc.encode` in plugin_cost.py; `utf-8-sig` at :36.
+   Fixed: `disallowed_special=()` on the one `enc.encode` in `scripts/plugin_cost.py` (the
+   docstring count, line 70); `desc_of` reads with `utf-8-sig`. Test:
+   `tests/test_plugin_cost.py::test_a_description_with_a_special_token_or_a_bom_is_counted`.
+   Other hits: `keyline/keyline_lint.py:162` encodes a single lowercase word (a chunk holding
+   `<`, `|` or `>` is an identifier to the lint and never reaches it, and the call is inside
+   `except Exception`); `keyline/measure.py` already passes `disallowed_special=()`;
+   `scripts/tokentest.py:54` encodes its own fixed samples. The `.json` reads in
+   `plugin_cost.py` (:56, :75) stay `utf-8`: `json.load` rejects a BOM either way, and both are
+   inside `except (OSError, ValueError)`, so a BOM-marked manifest counts as empty rather than
+   stopping the run (not changed: a manifest with a BOM is not valid JSON to Claude Code
+   either). Prevention: the test holds the literal `<|endoftext|>`, the token that made
+   tiktoken raise.
 
 8. (A) scripts/toolresult_share.py:36, scripts/usertext_split.py:17, scripts/usertext_top.py:14:
    `open(path, ...)` on a missing path is a FileNotFoundError traceback, rc 1.
@@ -140,6 +229,18 @@ None.
    Class: unguarded read (neighbour of the `errors="replace"` fix).
    Fix: wrap the open in `try/except OSError as e: print(f"error: {e}", file=sys.stderr);
    return 1`, or skip non-files in the glob loop for the folder-reading scripts.
+   Fixed: the three scripts open each transcript inside `try/except OSError` and exit 1 with
+   `error: <e>` (the message names the path); `usage_breakdown.py` and `unused_tools.py` keep
+   only regular files from their globs. Tests:
+   `tests/test_transcript_scripts.py::test_a_missing_transcript_is_one_line_not_a_traceback`
+   (all three scripts), `tests/test_usage_breakdown.py` and `tests/test_unused_tools.py`
+   `test_a_folder_named_like_a_transcript_is_skipped`. Other hits: `scripts/lint_validate.py:65`
+   already catches `OSError`; `scripts/plugin_cost.py:56`, `:75` and `:36` catch it;
+   `scripts/unused_tools.py:62` reads the repo's own `user-settings.json`; `config/*` reads go
+   through `_read_text`/`_read_bytes`, which turn the error into a `ValueError` naming the file.
+   Prevention: the transcript-script test file now has one parametrized test per failure shape
+   (usage, odd lines, empty input, missing file), so a fourth script added to `SCRIPTS` gets
+   all of them.
 
 9. (A) keyline/README.md:120-122 and keyline/keyline_hook.py:9: both say `--watch PATTERN`
    watches the matching files "instead", but the note-suffix rule (`NOTE_SUFFIXES`: .txt, .md,
@@ -150,6 +251,13 @@ None.
    Fix: one clause in both places ("the pattern replaces the notes/plans rule only; the file
    must still be .txt, .md, .keyline or extension-less"), or drop the suffix check when patterns
    are given.
+   Fixed: both sentences gained "the suffix rule still applies, so a watched `.py` file is
+   passed over" (keyline/README.md step 2 and the hook's docstring). Test:
+   `tests/test_keyline_hook.py::test_watch_patterns_do_not_lift_the_suffix_rule` (a watched
+   `PROGRESS.py` exits 0 in silence, and both texts hold the clause). Other hits:
+   `keyline/hooks-example.json` and `CLAUDE-snippet.md` do not describe `--watch`; the root
+   README.md does not mention it. Prevention: the test counts the clause in both documents, so
+   dropping it from one fails.
 
 10. (B) config/install.py:408-418: a reinstall after `config/CLAUDE.md` changed leaves an orphan
     backup of the installer's own previous template. The record correctly keeps the first
@@ -163,6 +271,18 @@ None.
     Fix: decide "is the current file ours" (the `old_md["sha256"] == text_hash(current_md)`
     test at :413-414) before calling `_backup` and skip the backup when it is ours, or unlink
     the fresh backup in that branch.
+   Fixed: whether the current CLAUDE.md is still what the last install wrote (`sha256` in the
+   old record equals the hash of the file) is decided before the backup, and no backup is made
+   when it is: the first backup stays the one the record names. The record branch is
+   unchanged otherwise (an old record without `sha256` still keeps its entry, and is still
+   backed up, since the file could be the user's). Test: `tests/test_install.py`
+   `test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_file` (install,
+   point `CLAUDE_MD` at a longer template, install again: "CLAUDE.md updated" without a
+   "CLAUDE.md backup:" line, exactly one `.bak-*` and it holds the user's text). Other hits:
+   settings.json is backed up on every rewrite by design (the record, not a backup, is what
+   restores it; nothing names those backups); `config/add_to_repo.py` backs up the repo's
+   settings.json the same way. Prevention: the test asserts the count of backup files, not
+   just the change list.
 
 11. (B) config/uninstall.py:107-110 and :132-133, with config/install.py:181-184 and :191-196:
     the uninstaller deletes `permissions`, `permissions.deny` and `hooks` whenever they end up
@@ -176,6 +296,18 @@ None.
     Fix: record which containers `merge_settings` created (e.g. `record["created"] =
     ["permissions", "permissions.deny", "hooks", "hooks.UserPromptSubmit"]`) and let
     `undo_settings` delete only those; or never delete an empty container.
+   Fixed: `merge_settings` records the containers it creates in `record["created"]`
+   (`permissions`, `permissions.deny`, `hooks`, `hooks.<event>`), `_merge_record` carries the
+   list across installs, and `undo_settings` deletes an emptied container only when the record
+   lists it. A record without the list (an install from before this change) and the no-record
+   mode keep the old behaviour and delete, since they say nothing either way; the leftover
+   record keeps the `permissions` entries when `permissions.deny` is left as is. Tests:
+   `tests/test_uninstall.py::test_empty_containers_the_user_had_before_are_kept` (seed
+   `{"permissions": {"deny": []}, "hooks": {"UserPromptSubmit": []}}`, install, uninstall,
+   settings equal the seed) and `test_containers_the_install_created_are_removed`. Other hits:
+   `config/add_to_repo.py:85-92` creates `hooks` and `hooks.<event>` with `setdefault` too, but
+   has no undo, so nothing deletes them. Prevention: the round-trip test compares the whole
+   settings object with the seed, so any other container the undo touches shows up.
 
 ## Observations, not findings
 

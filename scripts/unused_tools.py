@@ -18,7 +18,7 @@ USER_SETTINGS = Path(__file__).resolve().parents[1] / "config" / "user-settings.
 def tool_calls(folder):
     """Return (number of transcripts, Counter of tool names)."""
     called = collections.Counter()
-    files = sorted(Path(folder).rglob("*.jsonl"))
+    files = sorted(p for p in Path(folder).rglob("*.jsonl") if p.is_file())
     for path in files:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:

@@ -53,6 +53,12 @@ def main(argv):
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
         for p in paths:
+            if not p.is_file():
+                # A named pipe or socket in a walked folder would block the read; a symlink to
+                # a missing target would fail it.
+                why = "symlink to a missing target" if p.is_symlink() else "not a regular file"
+                print(f"skip ({why}): {p}", file=sys.stderr)
+                continue
             try:
                 text = p.read_bytes().decode("utf-8-sig")
             except UnicodeDecodeError:

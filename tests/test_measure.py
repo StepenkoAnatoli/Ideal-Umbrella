@@ -1,5 +1,8 @@
+import os
 import subprocess
 import sys
+
+import pytest
 
 from conftest import ROOT
 
@@ -27,4 +30,17 @@ def test_unreadable_file_is_skipped_not_a_traceback(tmp_path):
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
     assert "Traceback" not in result.stderr and "skip" in result.stderr and "gone.txt" in result.stderr
+    assert "good.txt" in result.stdout
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no named pipes here")
+def test_a_named_pipe_in_a_folder_is_skipped_not_read(tmp_path):
+    # os.walk lists a FIFO like any file, and reading it blocked until a writer came along.
+    pytest.importorskip("tiktoken")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    os.mkfifo(tmp_path / "pipe.txt")
+    result = subprocess.run([sys.executable, "-I", str(ROOT / "keyline" / "measure.py"), str(tmp_path)],
+                            capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "Traceback" not in result.stderr and "skip" in result.stderr and "pipe.txt" in result.stderr
     assert "good.txt" in result.stdout

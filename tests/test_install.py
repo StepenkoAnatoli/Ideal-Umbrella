@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT
+from conftest import ROOT, load_module
 
 INSTALL = ROOT / "config" / "install.py"
 
@@ -259,7 +259,8 @@ def test_record_is_written_after_settings(install_module, tmp_path, monkeypatch)
     monkeypatch.setattr(install_module, "_write_json", failing_write)
     with pytest.raises(OSError):
         install_module.install(home)
-    assert not paths["record"].exists()
+    record = install_module.read_record(paths["record"]) or {}
+    assert not any(record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
     assert not paths["settings"].exists()
     assert paths["hook"].exists()
 
@@ -527,3 +528,49 @@ def test_write_bytes_removes_the_temp_file_when_the_rename_fails(install_module,
         assert [p.name for p in tmp_path.iterdir()] == ["CLAUDE.md"]
     finally:
         target.chmod(0o644)
+
+
+def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it(install_module, tmp_path, monkeypatch):
+    # CLAUDE.md was replaced and backed up, then the settings write failed and no record was
+    # written; the next install saw a CLAUDE.md that already matched, recorded nothing for it,
+    # and uninstall never restored the user's file from the first backup.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    paths = install_module.layout(home)
+    real_write = install_module._write_json
+
+    def failing_write(path, data):
+        if path == paths["settings"]:
+            raise OSError("disk full")
+        real_write(path, data)
+
+    monkeypatch.setattr(install_module, "_write_json", failing_write)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_json", real_write)
+    install_module.install(home)
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
+    changes, notices = uninstall_module.uninstall(home)
+    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+
+
+def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_file(install_module, tmp_path, monkeypatch):
+    # A CLAUDE.md still holding what the last install wrote was backed up again when the
+    # template changed, leaving a *.bak-* of the installer's own text that nothing restores.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own rules\n", encoding="utf-8")
+    install_module.install(home)
+    newer = tmp_path / "CLAUDE.md"
+    newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
+    monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md updated" in changes
+    assert not any(c.startswith("CLAUDE.md backup:") for c in changes), changes
+    backups = sorted(claude.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "my own rules\n"

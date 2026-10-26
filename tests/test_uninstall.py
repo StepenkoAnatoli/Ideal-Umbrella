@@ -481,3 +481,22 @@ def test_a_junctioned_state_folder_is_unlinked_not_followed(install_module, unin
     assert not os.path.lexists(ballast / "state")
     assert (elsewhere / "session-1").is_file()
     assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")
+
+
+def test_empty_containers_the_user_had_before_are_kept(install_module, uninstall_module, tmp_path):
+    # permissions, permissions.deny, hooks and hooks.<event> were deleted when the undo left
+    # them empty, whether or not the install had created them.
+    home = tmp_path / "home"
+    before = {"permissions": {"deny": []}, "hooks": {"UserPromptSubmit": []}}
+    seed(home, before)
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == before
+
+
+def test_containers_the_install_created_are_removed(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    seed(home, {"customKey": "keep-me"})
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"customKey": "keep-me"}

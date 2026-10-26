@@ -33,7 +33,7 @@ def default_app_dir():
 
 def desc_of(md):
     try:
-        t = open(md, encoding="utf-8", errors="ignore").read()
+        t = open(md, encoding="utf-8-sig", errors="ignore").read()
     except OSError:
         return ""
     m = re.match(r"---\s*\n(.*?)\n---", t, re.S)
@@ -67,7 +67,7 @@ def plugin_rows(app_dir, enc):
             sk = os.path.basename(os.path.dirname(s)) if s.endswith("SKILL.md") else os.path.splitext(os.path.basename(s))[0]
             names.append(sk)
             d = desc_of(s)[:DESCRIPTION_LIMIT]
-            tok += len(enc.encode(f"- {name}:{sk}: {d}\n"))
+            tok += len(enc.encode(f"- {name}:{sk}: {d}\n", disallowed_special=()))
         mcp = 0
         mf = os.path.join(r, ".mcp.json")
         if os.path.isfile(mf):

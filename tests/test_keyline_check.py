@@ -262,3 +262,28 @@ def test_a_number_glued_to_a_separator_is_a_path(keyline_check):
     # itself.
     assert keyline_check.check("value 10", "scored 10/ 20").missing == ["10"]
     assert keyline_check.check("scored 10/ 20", "scored 10/ 20").ok
+
+
+@pytest.mark.parametrize("tok", ["S3", "A100", "P0", "Q4", "H264", "A1"])
+def test_a_one_letter_acronym_with_digits_is_an_identifier(keyline_check, tok):
+    # The upper rule needed two capital letters, so S3, A100 and P0 were not invariants and a
+    # rendering could drop or change them unnoticed.
+    source = f"Moved the logs to {tok} last week."
+    assert keyline_check.invariants(source) == {tok: "upper"}
+    assert keyline_check.check(source, source).ok
+    assert not keyline_check.check(source, source.replace(tok, "the bucket")).ok
+
+
+@pytest.mark.parametrize("tok", ["A", "I", "As"])
+def test_a_lone_capital_letter_is_still_not_an_identifier(keyline_check, tok):
+    assert keyline_check.invariants(f"Then {tok} went home.") == {}
+
+
+@pytest.mark.parametrize("tok", ["1e10", "2.5e-3", "0x1f", "0xDEADBEEF"])
+def test_an_exponent_or_hex_number_is_one_invariant(keyline_check, tok):
+    # "1e10" and "0x1f" fell through every rule (the number rule stopped at the letter), so a
+    # rendering with the exponent or the hex value changed passed.
+    source = f"The job took {tok} steps."
+    assert keyline_check.invariants(source) == {tok: "number"}
+    assert keyline_check.check(source, source).ok
+    assert not keyline_check.check(source, source.replace(tok, "9")).ok

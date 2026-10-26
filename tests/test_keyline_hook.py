@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -49,3 +50,51 @@ def test_a_symlinked_notes_folder_inside_the_project_is_watched(keyline_hook, tm
     note.write_text("# My todo\n", encoding="utf-8")
     assert keyline_hook.watched(note, proj)
     assert not keyline_hook.watched(real / "todo.md", proj)
+
+
+def run_main(keyline_hook, monkeypatch, event, argv=()):
+    """Run the hook's main() in process on one event; return its exit code."""
+    stdin = io.TextIOWrapper(io.BytesIO(json.dumps(event).encode("utf-8")), encoding="utf-8")
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setattr(sys, "argv", ["keyline_hook.py", *argv])
+    return keyline_hook.main()
+
+
+def test_a_word_cache_error_is_not_reported_as_the_note_being_unreadable(keyline_hook, tmp_path, monkeypatch, capsys):
+    # An OSError from loading the lint's word cache (a folder in the way, a read-only cache
+    # path) was caught by the "cannot read <note>" handler and blamed on the note.
+    note = tmp_path / "notes" / "todo.md"
+    note.parent.mkdir()
+    note.write_text("# My todo\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+
+    def failing_load_words():
+        raise OSError("cache/o200k_single_token_words.txt is a folder")
+
+    monkeypatch.setattr(keyline_hook.keyline_lint, "load_words", failing_load_words)
+    code = run_main(keyline_hook, monkeypatch, {"tool_name": "Write", "tool_input": {"file_path": str(note)}})
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "is a folder" in err and "cannot read" not in err
+
+
+def test_a_cwd_that_is_not_a_string_is_ignored(keyline_hook, tmp_path, monkeypatch, capsys):
+    # A malformed event with "cwd": 5 reached Path(5) and raised TypeError.
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    event = {"tool_name": "Write", "cwd": 5, "tool_input": {"file_path": "elsewhere/todo.md"}}
+    assert run_main(keyline_hook, monkeypatch, event) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_watch_patterns_do_not_lift_the_suffix_rule(keyline_hook, tmp_path, monkeypatch, capsys):
+    # The docs said --watch checks the matching files "instead"; a watched .py file is still
+    # not a note and is passed over.
+    script = tmp_path / "PROGRESS.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "tool_input": {"file_path": str(script)}}
+    assert run_main(keyline_hook, monkeypatch, event, ["--watch", str(script)]) == 0
+    assert capsys.readouterr().err == ""
+    doc = keyline_hook.__doc__ + (ROOT / "keyline" / "README.md").read_text(encoding="utf-8")
+    assert doc.count("suffix rule still applies") == 2
