@@ -246,3 +246,19 @@ def test_a_source_passes_against_itself(keyline_check, line):
     # so a year range or a fraction failed against a rendering holding the source verbatim.
     result = keyline_check.check(line, line)
     assert result.ok, result.missing
+
+
+def test_a_number_alone_on_a_line_is_not_a_list_marker(keyline_check):
+    # LIST_MARKER's "\s+" after "10." matched the newline, so a rendering that answers with the
+    # number on a line of its own had it stripped as a marker and the number went missing.
+    assert keyline_check.invariants("the answer\n10.\n") == {"10": "number"}
+    assert keyline_check.check("value 10", "the answer\n10.\n").ok
+    assert keyline_check.invariants("1. first\n2) second\n- third\n") == {}
+
+
+def test_a_number_glued_to_a_separator_is_a_path(keyline_check):
+    # Documented boundary of the lookup by extraction: "10/" is a path to the extractor (as
+    # "notes/" is), on both sides, so a bare "10" is not found in it and "10/" passes against
+    # itself.
+    assert keyline_check.check("value 10", "scored 10/ 20").missing == ["10"]
+    assert keyline_check.check("scored 10/ 20", "scored 10/ 20").ok

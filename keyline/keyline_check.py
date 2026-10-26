@@ -26,7 +26,8 @@ R = r"(?![A-Za-z0-9_]|\.\d)"
 # "10/25" or the date "2026-10-25" (each one token to the extractor), while both ends of the
 # range "5-10", the year range "2020-2024" and "10" in "ב-10" are (each a token of its own).
 # Whatever the extractor takes from a source line it takes from the same line in a rendering,
-# so a rendering holding the source verbatim always passes.
+# so a rendering holding the source verbatim always passes. A number glued to a path
+# separator ("10/", "/10", "10\\") is a path, as "notes/" is: the source's "10" is not in it.
 # For a time: "00:30" is not present at the end of "10:00:30".
 L_TIME = L + r"(?<!\d:)"
 
@@ -75,7 +76,8 @@ PROPER_STOP = {
 }
 
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
-LIST_MARKER = re.compile(r"^\s*(?:\d+[.)]|[-*+])\s+", re.M)
+# The marker's item follows on the same line: "10." alone on a line is the number 10, not a marker.
+LIST_MARKER = re.compile(r"^[ \t]*(?:\d+[.)]|[-*+])[ \t]+", re.M)
 
 # A month or weekday name is an invariant like any proper noun, and a Hebrew rendering may write
 # it in Hebrew: either the English token or one of these forms counts as present.

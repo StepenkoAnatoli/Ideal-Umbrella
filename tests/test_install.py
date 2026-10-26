@@ -420,15 +420,23 @@ def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
-def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path):
+def test_new_files_get_the_umask_mode_not_the_temp_file_mode(install_module, tmp_path, umask_022):
     """A file written for the first time gets the mode a plain write would give it (0644 under
-    umask 022), not the private 0600 of the temp file it was written through."""
+    umask 022), not the private 0600 of the temp file it was written through. The umask is
+    pinned: under 077 the two modes are the same and the test held without the fix."""
     home = tmp_path / "home"
     install_module.install(home)
-    expected = 0o666 & ~install_module._umask()
     for name in ("settings.json", "CLAUDE.md", os.path.join("ballast", "context_check.py")):
         path = home / ".claude" / name
-        assert path.stat().st_mode & 0o777 == expected, name
+        assert path.stat().st_mode & 0o777 == 0o644, name
+
+
+def test_writing_a_new_file_never_touches_the_process_umask(install_module, tmp_path, monkeypatch):
+    # The mode came from reading the umask, which os.umask can only do by setting it: files
+    # another thread created in that window were made 0666.
+    monkeypatch.setattr(os, "umask", lambda *a: pytest.fail("os.umask was called"))
+    install_module._write_bytes(tmp_path / "new.txt", b"x\n")
+    assert (tmp_path / "new.txt").read_bytes() == b"x\n"
 
 
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root writes read-only files")

@@ -28,7 +28,6 @@ import os
 import shlex
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -241,11 +240,29 @@ def _backup(path):
     return backup
 
 
-def _umask():
-    """The process umask; os.umask can only read it by setting it."""
-    value = os.umask(0)
-    os.umask(value)
-    return value
+def _new_temp(directory, prefix):
+    """Create a new file in directory with the mode a plain write gives (0666 less the umask,
+    applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
+    read: reading it means setting it, which leaves a window where another thread's files are
+    created unmasked."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        tmp = os.path.join(directory, prefix + os.urandom(4).hex())
+        try:
+            return os.open(tmp, flags, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
+
+
+def _is_link(path):
+    """A symlink, or on Windows a junction: Path.is_symlink() does not see a junction, while
+    shutil.rmtree refuses one and a write through a dangling one fails like a dangling symlink."""
+    if Path(path).is_symlink():
+        return True
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+, Windows only
+    return bool(isjunction and isjunction(path))
 
 
 def _write_bytes(path, data):
@@ -259,14 +276,12 @@ def _write_bytes(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not os.access(path, os.W_OK):
         raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
-    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+    fd, tmp = _new_temp(path.parent, f".{path.name}-")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
         if path.exists():
             os.chmod(tmp, path.stat().st_mode & 0o7777)
-        else:
-            os.chmod(tmp, 0o666 & ~_umask())   # a plain write's mode, not mkstemp's 0600
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -367,7 +382,7 @@ def install(home, force=False, progress=None, config_dir=None):
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
     for name in ("settings", "claude_md", "hook", "record"):
-        if paths[name].is_symlink() and not paths[name].exists():
+        if _is_link(paths[name]) and not paths[name].exists():
             raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)

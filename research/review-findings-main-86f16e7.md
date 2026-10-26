@@ -13,9 +13,10 @@ changed by this pass.
 Status: all 20 findings fixed in PR #19 (the PR that carries this report), each with a
 failing-first test, a search of the whole repository for the same pattern (listed under "Other
 hits") and a prevention. A fresh-context self-review of the PR diff (section "Self-review of
-the PR diff" below) found 9 more (1 high, 2 medium, 6 low), all fixed the same way. After both
-rounds: pytest 203 passed (1 skipped as root), keyline suite 35/35, pyflakes clean, JSON files
-parse. Counts of this review: 0 high, 3 medium, 17 low. Findings 17 and 18
+the PR diff" below) found 9 more (1 high, 2 medium, 6 low), all fixed the same way, and a
+pre-merge check of those fixes (section "Pre-merge check of the self-review fixes") found 6
+more (0 high, 1 medium, 5 low), also fixed. After all three rounds: pytest 209 passed (1
+skipped as root, 1 Windows-only), keyline suite 35/35, pyflakes clean, JSON files parse. Counts of this review: 0 high, 3 medium, 17 low. Findings 17 and 18
 were PLAUSIBLE (one step depends on Claude Code behaviour that cannot be checked here) and are
 fixed on the assumption that the documented behaviour holds; all others were CONFIRMED by a run
 and their reproductions now give the expected result. Line numbers in the finding text are the
@@ -482,6 +483,94 @@ clean.
    Fixed: keyline/README.md:131-133 names exit 1 (see finding 12's Other hits above).
    Other hits: none; README.md and CHANGELOG.md do not list the hook's exit codes.
    Prevention: none mechanical.
+
+## Pre-merge check of the self-review fixes
+
+Before the merge ("check work and merge if good") a fresh-context reviewer read the diff of
+commit 0348f19 (the nine self-review fixes above), the one commit no reviewer had seen. Its
+report is in the scratchpad (`check6/report.md`, not in the repo). It verified the lookup by
+extraction against its invariant (700k random lines, zero `check(line, line)` misses; the old
+code missed 85k of 300k), the rule-five scanner on 17 forms, and the hook's `CLAUDE_CONFIG_DIR`
+handling against the installer's. Six findings (0 high, 1 medium, 5 low), all fixed in PR #19
+the same way; line numbers are the fixed tree's. After the fixes: pytest 209 passed (1 skipped
+as root, 1 Windows-only), keyline suite 35/35, pyflakes clean.
+
+1. MEDIUM keyline/keyline_lint.py (the fix of self-review finding 3): `token_count()` returns
+   None for any exception, and the new message hard-coded one cause, so with tiktoken
+   installed but its o200k_base data not loadable (offline on first use, a proxy, a corrupt
+   `TIKTOKEN_CACHE_DIR` entry) the lint told the user to install a package they had. Class: a
+   catch-all whose message names one cause.
+   Fixed: keyline/keyline_lint.py:167-178 `uncounted_reason()` asks tiktoken again and reports
+   what it raised (`TiktokenMissing` is "tiktoken is missing"; anything else is "tiktoken could
+   not load o200k_base: ..."); :196, :216 find the reason once per lint.
+   Other hits: the repo's other `except Exception` sites either print the exception
+   (config/verify-tokens.py:92, :128, :136; hooks/context_check.py:200 logs the traceback) or
+   say nothing (hooks/context_check.py:78, keyline/keyline_hook.py:142); none names a cause.
+   Prevention: tests/test_keyline_lint.py `test_a_tiktoken_that_cannot_load_its_data_is_not_called_missing`
+   (a `get_encoding` that raises ConnectionError: the message carries its text and not
+   "missing"); the existing `test_missing_tiktoken_says_the_word_was_not_counted` keeps the
+   other branch.
+2. LOW keyline/keyline_check.py:80 `LIST_MARKER`: its `\s+` after `10.` matched a newline, so a
+   rendering that answers with the number alone on a line (`the answer\n10.`) had it stripped
+   as a list marker and `10` went missing. Class: `\s` in a line-anchored pattern crossing the
+   line it anchors to.
+   Fixed: keyline/keyline_check.py:80: `[ \t]*` and `[ \t]+`; a marker's item follows on the
+   same line.
+   Other hits: scripts/plugin_cost.py:43 (`^description:\s*` under `re.S | re.M`) is meant to
+   span lines (a folded YAML value); no other anchored pattern uses `\s`.
+   Prevention: tests/test_keyline_check.py `test_a_number_alone_on_a_line_is_not_a_list_marker`
+   (the number is extracted, the pair passes, real markers are still stripped).
+3. LOW keyline/keyline_check.py:47 (the path alternative, with :222): a number glued to a path
+   separator (`10/`, `/10`, `10\\`) is a path to the extractor, so a bare `10` is no longer
+   found in `scored 10/ 20` where the old raw-text lookup found it. Judged a boundary, not a
+   bug: `notes/` must stay a path, so the alternative accepts an empty tail, and the rendering's
+   `10/` is not the source's `10`; the pair is symmetric, so nothing fails against itself.
+   Class: an undocumented boundary of a lookup by extraction.
+   Fixed: documented at keyline/keyline_check.py:29-30 and pinned, not changed.
+   Other hits: the other documented boundaries (`10` in `10:00`, `2,500`, `10%`, `10/25`, a
+   date) are listed in the same comment and in `test_a_number_inside_another_token_is_not_present`.
+   Prevention: tests/test_keyline_check.py `test_a_number_glued_to_a_separator_is_a_path`.
+4. LOW tests/test_keyline_lint.py:135 `test_a_rebuilt_cache_gets_the_umask_mode`: the expected
+   mode was computed from the host's own umask, and under umask 077 (hardened hosts, some CI
+   images) a temp file's 0600 equals it, so the test passed with the chmod line deleted.
+   Class: a mode test whose expectation comes from the same umask the code reads.
+   Fixed: tests/conftest.py:22 `umask_022` pins the umask for the test and restores it; the
+   test asserts 0644 (tests/test_keyline_lint.py:135-154).
+   Other hits: tests/test_install.py:423 and tests/test_add_to_repo.py:159
+   (`test_new_files_get_the_umask_mode_not_the_temp_file_mode`, both computed `0o666 &
+   ~_umask()`): same fixture, same assertion.
+   Prevention: the fixture's docstring says why; a mode test without it computes from the
+   host again.
+5. LOW keyline/keyline_lint.py (`_umask()`, with config/install.py and config/add_to_repo.py):
+   `os.umask(0); os.umask(value)` is process-wide, so in a threaded host that imports the
+   module, files another thread created in that window were made 0666 (reproduced by the
+   reviewer: 300 cache builds beside a writer thread). Class: reading a process-wide setting
+   by setting it.
+   Fixed: keyline/keyline_lint.py:115-128, config/install.py:243-256, config/add_to_repo.py:124-137
+   `_new_temp()` creates the temp file with `os.open(..., O_CREAT | O_EXCL, 0o666)` (with
+   `O_NOFOLLOW` and `O_BINARY` where they exist, as mkstemp does), so the kernel applies the
+   umask and nothing reads it; `_umask()` is gone from all three. An existing file's mode is
+   still copied onto the temp file.
+   Other hits: no other `os.umask` call in the repo.
+   Prevention: tests/test_keyline_lint.py `test_building_the_cache_never_touches_the_process_umask`,
+   tests/test_install.py and tests/test_add_to_repo.py `test_writing_a_new_file_never_touches_the_process_umask`
+   (`os.umask` is patched to fail the test if called).
+6. LOW config/uninstall.py:208 (the fix of self-review finding 2; Windows, shown by the
+   reviewer from CPython's source, not run): `Path.is_symlink()` is false for a junction
+   (`mklink /J`, the one directory link a Windows user can make without privileges), while
+   `shutil.rmtree` refuses a junction as it refuses a symlink, so a junctioned `ballast/state`
+   still stopped the undo with the error the fix set out to remove. Class: a link check that
+   sees only symlinks.
+   Fixed: config/install.py:259-266 `_is_link()` (a symlink, or `os.path.isjunction` on
+   Python 3.12+); config/uninstall.py:208 uses it, and `Path.unlink()` removes a junction as
+   it removes a directory symlink (CPython's `Py_DeleteFileW` calls `RemoveDirectoryW` for a
+   directory reparse point).
+   Other hits: the dangling-link checks at config/install.py:385 and config/add_to_repo.py:219
+   (its own `_is_link`, :140) saw only symlinks too; both use the helper now, with the message
+   unchanged.
+   Prevention: tests/test_uninstall.py `test_a_junctioned_state_folder_is_unlinked_not_followed`
+   (Windows only, made with `mklink /J`; skipped elsewhere, so the CI Windows runner is the
+   one that runs it).
 
 ## Observations, not findings
 - A source date `2026-10-14` is reported missing when the rendering writes the same day as

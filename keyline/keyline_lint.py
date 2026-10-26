@@ -25,10 +25,10 @@ Usage:
   python keyline_lint.py --rebuild-cache              rebuild the single-token word list
 Exit: 0 clean, 1 findings, 2 usage or read error.
 """
+import errno
 import os
 import re
 import sys
-import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -102,23 +102,30 @@ def build_cache():
               f"built by keyline_lint.py with tiktoken {tiktoken.__version__}; {len(words)} words\n")
     # Whole or not at all: a build cut short (disk full, a killed process) must not leave a
     # short list that the next run would trust.
-    fd, tmp = tempfile.mkstemp(prefix=f".{WORDS_CACHE.name}-", dir=CACHE_DIR)
+    fd, tmp = _new_temp(CACHE_DIR, f".{WORDS_CACHE.name}-")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(header + "\n".join(sorted(words)) + "\n")
-        os.chmod(tmp, 0o666 & ~_umask())     # the mode a plain write gives, not mkstemp's 0600
         os.replace(tmp, WORDS_CACHE)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
     return words
 
-
-def _umask():
-    """The process umask; os.umask can only read it by setting it."""
-    value = os.umask(0)
-    os.umask(value)
-    return value
+def _new_temp(directory, prefix):
+    """Create a new file in directory with the mode a plain write gives (0666 less the umask,
+    applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
+    read: reading it means setting it, which leaves a window where another thread's files are
+    created unmasked."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        tmp = os.path.join(directory, prefix + os.urandom(4).hex())
+        try:
+            return os.open(tmp, flags, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
 
 
 def load_words():
@@ -157,6 +164,19 @@ def token_count(word):
         return None
 
 
+def uncounted_reason():
+    """Why token_count() returned None: the cause itself, not a guess at it. tiktoken being
+    installed but its o200k_base data not loadable (offline on first use, a proxy, a corrupt
+    TIKTOKEN_CACHE_DIR entry) is not "tiktoken is missing"."""
+    try:
+        _tiktoken().get_encoding("o200k_base")
+    except TiktokenMissing:
+        return "tiktoken is missing"
+    except Exception as e:
+        return f"tiktoken could not load o200k_base: {e}"
+    return "tiktoken could not count it"
+
+
 def looks_invented(part, words=frozenset()):
     """True when a multi-token lowercase word has the shape of an invented abbreviation."""
     if NUMERONYM.fullmatch(part):
@@ -173,6 +193,7 @@ def looks_invented(part, words=frozenset()):
 
 def lint_text(text, words, allow):
     """Yield (line_no, message) findings."""
+    reason = None                             # why a word was not counted, found once
     for no, line in enumerate(text.splitlines(), 1):
         for pat, what in FURNITURE:
             if pat.search(line):
@@ -192,7 +213,8 @@ def lint_text(text, words, allow):
                 if n == 1:
                     continue                  # one token after all: the word list is not complete
                 if n is None:
-                    size = "not in the one-token word list and was not counted (tiktoken is missing)"
+                    reason = reason or uncounted_reason()
+                    size = f"not in the one-token word list and was not counted ({reason})"
                 else:
                     size = f"{n} tokens under o200k_base"
                 yield no, (f"abbreviation: '{part}' is {size}; spell it out, "

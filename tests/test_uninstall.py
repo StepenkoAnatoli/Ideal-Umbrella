@@ -459,3 +459,25 @@ def test_a_symlinked_state_folder_is_unlinked_not_followed(install_module, unins
     assert not (ballast / "state").is_symlink()
     assert (elsewhere / "session-1").is_file()
     assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="a junction is a Windows directory link")
+def test_a_junctioned_state_folder_is_unlinked_not_followed(install_module, uninstall_module, tmp_path):
+    # Path.is_symlink() does not see a junction (the one directory link a Windows user can make
+    # without privileges), while shutil.rmtree refuses it, so the undo stopped on it as it had
+    # on a symlink.
+    home = tmp_path / "home"
+    install_module.install(home)
+    ballast = home / ".claude" / "ballast"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "session-1").write_text("1", encoding="utf-8")
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(ballast / "state"), str(elsewhere)],
+                          capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("cannot create a junction here")
+    changes, _ = uninstall_module.uninstall(home)
+    assert "state link removed" in changes
+    assert not os.path.lexists(ballast / "state")
+    assert (elsewhere / "session-1").is_file()
+    assert json.loads((ballast / "install-record.json").read_text(encoding="utf-8")).get("uninstalled")
