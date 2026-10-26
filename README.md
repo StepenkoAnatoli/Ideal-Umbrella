@@ -23,7 +23,7 @@ claude -p "Call get_usage and list every context category with its tokens."
 
 # 3. Optional: give a repository's cloud sessions the hook and the two keys.
 python -I config/add_to_repo.py /path/to/your/repo
-cd /path/to/your/repo && git add .claude && git commit -m "chore: add Ideal-Umbrella cloud config"
+cd /path/to/your/repo && git add .claude notes/learnings.md && git commit -m "chore: add Ideal-Umbrella cloud config"
 ```
 
 Then turn off the three app switches by hand: **Settings -> Claude Code -> Browser**, **Claude.ai connectors**, and **Prompt suggestions**. These are account/app settings, not JSON keys; the installer cannot change them. The Browser switch is the largest measured win in the table below.
@@ -39,10 +39,11 @@ Then turn off the three app switches by hand: **Settings -> Claude Code -> Brows
 | Never-used tools dropped: Artifact, ScheduleWakeup, ReportFindings, SearchPlugins, SuggestPluginInstall, SuggestSkills (0 calls in 60 chats) | `permissions.deny` in `~/.claude/settings.json` (via `config/user-settings.json`) | fresh chat first call 65,483 -> 49,423 tokens (-25%). **Visualize cannot be denied this way**: the desktop app adds it outside the deny filter (checked 2026-10-19). |
 | Prompt suggestions off | Settings -> Claude Code (app setting) | one fewer model request after every reply |
 | Short reports from side sessions and subagents | `~/.claude/CLAUDE.md` (copy of `config/CLAUDE.md`) | reports from other sessions averaged **5,126 characters (baseline; no after-size measured yet)** |
-| Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 224 tokens per session; a fresh session starts near 71k instead of carrying up to ~217k |
+| Long chats: resume point in a file, then offer a fresh session past 150k tokens | same `~/.claude/CLAUDE.md` | whole file costs 286 tokens per session (224 before the learnings rule); a fresh session starts near 71k instead of carrying up to ~217k |
 | Restarts: the resume point is updated at the end of each task (replaced, not appended) | same `~/.claude/CLAUDE.md` | a restart loses at most the task in progress; start a fresh chat from the resume point rather than reopening a long chat, because the prompt cache lives 1 hour |
 | Finished side sessions are archived once their result is checked | same `~/.claude/CLAUDE.md` | keeps the sidebar clean; archived chats can be reopened |
-| Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (installed to `~/.claude/ballast/`) | reads real context size from transcript; past 150k it tells Claude to offer a fresh session and shows you a notice; repeats only every +25k, resets after compaction; ~1 s per message, 0 tokens below 150k |
+| Learnings file: what the code cannot tell the next session (a choice and why; an approach dropped and why; a bug's cause found after failed attempts; a correction from you) | `notes/learnings.md` in the repository, started from `config/learnings.md` by `add_to_repo.py`; the rule that says when to write one is in the same `~/.claude/CLAUDE.md` | three Keyline lines under `decided`, `tried and ruled out`, `watch out`; read on demand, not every session; the template is 76 tokens, this repo's own file 341 |
+| Hand-off reminder that does not rely on Claude noticing | `UserPromptSubmit` hook `hooks/context_check.py` (installed to `~/.claude/ballast/`) | reads real context size from transcript; on every prompt it shows you a savings line (`Ideal-Umbrella: floor 40k, now 42k`, and `saved 31k vs baseline` when `IDEAL_UMBRELLA_BASELINE` is set) that costs the model nothing; past 150k it tells Claude to offer a fresh session; repeats only every +25k, resets after compaction; ~1 s per message, 0 tokens to the model below 150k |
 
 The install steps below reproduce the settings, `CLAUDE.md` and hook rows. The connectors, Browser and prompt-suggestion rows are app switches and must be set by hand; the table says which measured state each switch produced.
 
@@ -85,10 +86,10 @@ Cloud sessions don't read `~/.claude/`; they only read the repository's committe
 ### Single-repository cloud sessions
 
 1. Run `python -I config/add_to_repo.py <repo>`.
-2. Commit the two files it writes: `.claude/settings.json` and `.claude/hooks/context_check.py`.
+2. Commit the files it writes: `.claude/settings.json`, `.claude/hooks/context_check.py` and, when the repository had none, `notes/learnings.md` (the learnings template).
 3. The hook runs only when `CLAUDE_CODE_REMOTE=true` (cloud), so local sessions are unaffected.
 
-`add_to_repo.py` preserves other keys and hooks, updates an existing Ideal-Umbrella hook in place, and changes nothing on a second run. A scalar value the repository already sets (its own `autoCompactWindow`, say) is kept and reported; pass `--force` to replace it.
+`add_to_repo.py` preserves other keys and hooks, updates an existing Ideal-Umbrella hook in place, and changes nothing on a second run. A scalar value the repository already sets (its own `autoCompactWindow`, say) is kept and reported; pass `--force` to replace it. `notes/learnings.md` is copied from `config/learnings.md` only when the repository has none; from then on it is the repository's own file, and later runs (`--force` included) leave it.
 
 ### Multi-repository cloud sessions (limitation)
 
@@ -108,13 +109,27 @@ Call get_usage and list every context category with its tokens.
 
 Expected: context categories include `cache_read`, `cache_creation`, `input`, `output` with totals reflecting the 250k compact window and reduced skill listing.
 
+## Savings line
+
+The hook prints one line to you on every prompt, as a `systemMessage` that Claude Code shows and never sends to the model:
+
+```text
+Ideal-Umbrella: floor 40k, now 42k
+```
+
+The floor is the context of the session's first main-chain call (input, cache write and cache read: the system prompt, the tools and the first message); `now` is the context after the last call. Set `IDEAL_UMBRELLA_BASELINE` to the floor of a session without Ideal-Umbrella (the numbers under [Measured numbers](#measured-numbers) put it near 71k on this setup) and the line ends in `, saved 31k vs baseline`, or `, 2k over baseline` when the floor is above it. Unset, no saving is shown. The line is left out until the transcript holds a first call (the hook runs before the first model call of a session), and on `PostToolUse`, where it would repeat on every tool call. Past the hand-off threshold the same line carries the notice: `Ideal-Umbrella: floor 40k, now 152k; over 150k, a fresh session is due at the next step boundary.`
+
+## Learnings file
+
+`notes/learnings.md` is where a session leaves what the code cannot tell the next one: a choice and why under `decided`; an approach dropped and why under `tried and ruled out`; a bug's cause found after failed attempts, or you correcting how something is done here, under `watch out`. One Keyline line per heading, items split by semicolons, no markdown; `keyline/keyline_lint.py` accepts the file. The template is `config/learnings.md`; `add_to_repo.py` copies it when the repository has none, and the rule that says when to write a line is in `config/CLAUDE.md` and in `keyline/CLAUDE-snippet.md`. This repo's own file is `notes/learnings.md`.
+
 ## Undo
 
 Run `python -I config/uninstall.py` (add `--dry-run` to preview). The installer records what it changed in `~/.claude/ballast/install-record.json`; the uninstaller uses that to put back values that were there before (including ones replaced with `--force`), remove only the `permissions.deny` tools it added, remove its hook entry (sibling hooks stay), delete the copied hook, and restore the `CLAUDE.md` backup. It compares against the values the install wrote, so a `git pull` that changes the templates in between does not get in the way. Values you changed after installing are left alone and reported. If you edited `CLAUDE.md` after installing and then reinstalled, the backup holding those edits is the one restored. If that backup has been deleted, `CLAUDE.md` is left in place and reported rather than deleted. `settings.json` is backed up first. Afterwards the record stays as a marker, so running the uninstaller again changes nothing. Installs made before the record existed: the two keys are removed only if they still hold the template values and the Ideal-Umbrella hook is installed, `CLAUDE.md` is backed up before it is deleted, the hook is removed, and `permissions.deny` is left for you.
 
 By hand: delete the two keys (`autoCompactWindow`, `skillListingBudgetFraction`), remove the Ideal-Umbrella `hooks.UserPromptSubmit` entry, remove the six `permissions.deny` tools, and delete `~/.claude/CLAUDE.md`, `~/.claude/ballast/context_check.py`, `~/.claude/ballast/install-record.json` and what the hook wrote while it ran: `~/.claude/ballast/state/` and `~/.claude/ballast/context_check.log`. Backups written by the installer are named `*.bak-YYYYMMDD-HHMMSS`.
 
-Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000); `IDEAL_UMBRELLA_TAIL_BYTES` (default 4 MB) sets how much of the transcript end the hook reads. Folder-level `.claude/settings.local.json` files override user settings.
+Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `IDEAL_UMBRELLA_HANDOFF_STEP` (default 25000); `IDEAL_UMBRELLA_BASELINE` (unset by default) is the floor the savings line compares against; `IDEAL_UMBRELLA_TAIL_BYTES` (default 4 MB) sets how much of the transcript end the hook reads, and how far from its start the floor is looked for. Folder-level `.claude/settings.local.json` files override user settings.
 
 ## What did not work
 
@@ -132,9 +147,10 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 
 ## Contents
 
-- `config/` - settings snippet (`user-settings.json`, `repo-settings.json`), `CLAUDE.md` rule, cloud setup script (`cloud-setup.sh`), repo installer (`add_to_repo.py`), user installer and undo (`install.py`, `uninstall.py`), token calibration (`verify-tokens.py`)
+- `config/` - settings snippet (`user-settings.json`, `repo-settings.json`), `CLAUDE.md` rule, learnings template (`learnings.md`), cloud setup script (`cloud-setup.sh`), repo installer (`add_to_repo.py`), user installer and undo (`install.py`, `uninstall.py`), token calibration (`verify-tokens.py`)
+- `notes/` - this repo's `learnings.md` (Keyline; what the code cannot tell the next session)
 - `.claude/settings.json` - this repo's cloud settings (the hook runs only in cloud sessions)
-- `hooks/` - the long-chat hand-off reminder (stdlib Python)
+- `hooks/` - the long-chat hand-off reminder and the savings line (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
 - `scripts/` - measurement scripts (token counts, transcript breakdowns). `lint_validate.py` and `plugin_cost.py` take their input folder as an argument (defaults: the folder holding this repo, and the Claude app folder for your OS or `CLAUDE_APP_DIR`). `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts.
@@ -179,7 +195,7 @@ python -m pytest -q
 python -I keyline/tests/run_tests.py
 ```
 
-The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook, and the calibration fixture path. GitHub Actions (`.github/workflows/ci.yml`) runs both on Ubuntu and Windows for every pull request and push to `main`. Run both commands above before opening a pull request.
+The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook and its savings line, the learnings template, and the calibration fixture path. GitHub Actions (`.github/workflows/ci.yml`) runs both on Ubuntu and Windows for every pull request and push to `main`. Run both commands above before opening a pull request.
 
 ## Research
 

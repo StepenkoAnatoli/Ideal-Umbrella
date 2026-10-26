@@ -321,7 +321,7 @@ def test_generated_hook_command_runs_the_hook(install_module, tmp_path):
         "transcript_path": str(transcript), "session_id": "s-1"}),
         capture_output=True, text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, result.stderr
-    assert "context about 160k tokens" in json.loads(result.stdout)["systemMessage"]
+    assert "now 160k; over 150k" in json.loads(result.stdout)["systemMessage"]
 
 
 def test_verify_reports_a_file_system_error_in_one_line(install_module, tmp_path, capsys):

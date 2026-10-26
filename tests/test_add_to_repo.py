@@ -9,6 +9,7 @@ from conftest import ROOT
 
 ADD = ROOT / "config" / "add_to_repo.py"
 TEMPLATE = json.loads((ROOT / "config" / "repo-settings.json").read_text(encoding="utf-8"))
+LEARNINGS = (ROOT / "config" / "learnings.md").read_bytes()
 
 
 def run(repo):
@@ -137,12 +138,13 @@ def test_non_utf8_settings_say_so(tmp_path):
     assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
 
 
-@pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
+@pytest.mark.parametrize("relative", [".claude/settings.json", ".claude/hooks/context_check.py",
+                                      "notes/learnings.md"])
 def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
     # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two
     # kinds of file, did not: the error named a temp file in the missing target folder.
     repo = tmp_path / "repo"
-    link = repo / ".claude" / relative
+    link = repo / relative
     link.parent.mkdir(parents=True)
     try:
         link.symlink_to(tmp_path / "gone" / link.name)
@@ -153,6 +155,8 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
     assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
+    assert not (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert not (repo / "notes" / "learnings.md").is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
@@ -165,6 +169,7 @@ def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_pa
     for name in ("settings.json", os.path.join("hooks", "context_check.py")):
         path = repo / ".claude" / name
         assert path.stat().st_mode & 0o777 == 0o644, name
+    assert (repo / "notes" / "learnings.md").stat().st_mode & 0o777 == 0o644
 
 
 def test_writing_a_new_file_never_touches_the_process_umask(add_to_repo, tmp_path, monkeypatch):
@@ -200,3 +205,55 @@ def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monke
     err = capsys.readouterr().err
     assert "Done before the error" in err and "context_check.py written" in err, err
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+
+
+# --- the learnings template -------------------------------------------------------------
+
+def test_learnings_template_is_copied_once_and_then_left_alone(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    first = run(repo)
+    assert first.returncode == 0, first.stderr
+    learnings = repo / "notes" / "learnings.md"
+    assert learnings.read_bytes() == LEARNINGS
+    assert "notes/learnings.md written" in first.stdout
+    assert ("Commit .claude/settings.json, .claude/hooks/context_check.py and notes/learnings.md "
+            "in that repository.") in first.stdout
+
+    # The file is the repository's data from now on: a second run, forced or not, leaves it.
+    mine = "decided: keep the old parser; the new one drops trailing commas\n"
+    learnings.write_text(mine, encoding="utf-8")
+    second = run(repo)
+    assert second.returncode == 0, second.stderr
+    assert "already up to date" in second.stdout
+    assert "notes/learnings.md" not in second.stdout
+    forced = subprocess.run([sys.executable, "-I", str(ADD), "--force", str(repo)], cwd=ROOT,
+                            capture_output=True, text=True, encoding="utf-8")
+    assert forced.returncode == 0, forced.stderr
+    assert learnings.read_text(encoding="utf-8") == mine
+
+
+def test_existing_learnings_file_is_not_replaced_and_not_named(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "notes").mkdir(parents=True)
+    (repo / "notes" / "learnings.md").write_bytes(b"")   # even an empty one is the user's
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert (repo / "notes" / "learnings.md").read_bytes() == b""
+    assert "notes/learnings.md" not in result.stdout
+    assert "Commit .claude/settings.json and .claude/hooks/context_check.py in that repository." in result.stdout
+
+
+def test_notes_as_a_file_in_the_way_is_one_line_with_what_was_done(tmp_path):
+    # The hook is written before the template, settings.json after it: a `notes` that is a file
+    # stops the run with the hook in place and no hook entry pointing nowhere.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "notes").write_text("in the way", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
+    assert "Done before the error" in result.stderr and "context_check.py written" in result.stderr
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert not (repo / ".claude" / "settings.json").exists()
+    assert (repo / "notes").read_text(encoding="utf-8") == "in the way"

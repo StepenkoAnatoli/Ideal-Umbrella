@@ -1,4 +1,5 @@
-"""Ideal-Umbrella: give a repository's cloud sessions the hook and the two keys.
+"""Ideal-Umbrella: give a repository's cloud sessions the hook and the two keys,
+and a learnings file.
 
 Cloud sessions read only the repository's committed .claude/settings.json, not
 ~/.claude/. This copies hooks/context_check.py to <repo>/.claude/hooks/ and
@@ -8,10 +9,15 @@ scalar value the repository already sets (for example its own autoCompactWindow)
 is kept and reported unless --force is given. An existing Ideal-Umbrella hook is
 updated in place, not duplicated. Running it again changes nothing.
 
+It also copies config/learnings.md (the Keyline template with the headings
+decided, tried and ruled out, watch out) to <repo>/notes/learnings.md when that
+file is absent. The file is the repository's own data from then on: later runs,
+--force included, never touch it, and nothing removes it.
+
 The hook exits at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep
 only the user-level hook. Stdlib only; run with
-`python -I config/add_to_repo.py [--force] <repo>`, then commit the two files in
-that repository.
+`python -I config/add_to_repo.py [--force] <repo>`, then commit the files it
+names in that repository.
 """
 import errno
 import json
@@ -21,6 +27,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "repo-settings.json")
 SCRIPT = os.path.join(os.path.dirname(HERE), "hooks", "context_check.py")
+LEARNINGS = os.path.join(HERE, "learnings.md")
 
 
 def _hook_command(hook):
@@ -201,21 +208,26 @@ def main(argv=None):
     for notice in notices:
         print(f"note: {notice}")
     if changes:
-        print("Commit .claude/settings.json and .claude/hooks/context_check.py in that repository.")
+        files = ".claude/settings.json and .claude/hooks/context_check.py"
+        if any(change.startswith("notes/learnings.md") for change in changes):
+            files = ".claude/settings.json, .claude/hooks/context_check.py and notes/learnings.md"
+        print(f"Commit {files} in that repository.")
     return 0
 
 
 def _add(repo, force, progress=None):
-    """Merge the template into <repo>/.claude/settings.json and copy the hook; return
-    (changes, notices). Each file written is appended to `progress` (when given) as it is
-    done. The hook is copied before settings.json is written: a hook entry that points at a
-    hook file that was never copied would exit 2 on every prompt."""
+    """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
+    repository has no notes/learnings.md, the learnings template; return (changes, notices).
+    Each file written is appended to `progress` (when given) as it is done. settings.json is
+    written last: a hook entry that points at a hook file that was never copied would exit 2
+    on every prompt."""
     if progress is None:
         progress = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
-    for p in (path, target):
+    learnings = os.path.join(repo, "notes", "learnings.md")
+    for p in (path, target, learnings):
         if _is_link(p) and not os.path.exists(p):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
@@ -231,15 +243,27 @@ def _add(repo, force, progress=None):
             old = f.read()
     with open(SCRIPT, "rb") as f:
         source = f.read()
+    # An existing notes/learnings.md is the repository's own, whatever it holds: never replaced.
+    learnings_missing = not os.path.exists(learnings)
+    learnings_template = b""
+    if learnings_missing:
+        with open(LEARNINGS, "rb") as f:
+            learnings_template = f.read()
     hook_changed = source != old
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py written")
+    if learnings_missing:
+        _write_bytes(learnings, learnings_template)
+        progress.append("notes/learnings.md written")
     if changes:
         _write_json(path, settings)
         progress.append(".claude/settings.json written")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
+    if learnings_missing:
+        changes.append("notes/learnings.md written (the learnings template; it is yours now, "
+                       "later runs leave it)")
     return changes, notices
 
 

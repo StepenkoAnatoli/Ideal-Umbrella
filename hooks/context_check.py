@@ -1,18 +1,31 @@
-"""Ideal-Umbrella: remind Claude to hand a long chat over to a fresh session.
+"""Ideal-Umbrella: show what a session costs, and remind Claude to hand a long chat
+over to a fresh session.
 
 Hook for UserPromptSubmit (and optionally PostToolUse). It reads the session
 transcript, takes the context size of the last main-chain model call and, once
 that passes the threshold, adds a short note for Claude. It speaks again only
 after the context has grown by another STEP tokens, and resets after compaction.
+
+On every UserPromptSubmit it also prints a savings line as a systemMessage, which
+Claude Code shows to the user and never sends to the model (0 tokens):
+  Ideal-Umbrella: floor 40k, now 42k
+The floor is the context of the session's first main-chain call (input, cache
+write and cache read: the system prompt, the tools and the first message), "now"
+the context after the last call. With IDEAL_UMBRELLA_BASELINE set to the floor of
+an unoptimised session, the line ends in ", saved 31k vs baseline" (or ", 2k over
+baseline"). The line is left out until the transcript holds a first call, and on
+PostToolUse, where it would repeat on every tool call.
 Stdlib only; run with `python -I`.
 
 Environment:
   IDEAL_UMBRELLA_HANDOFF_AT    threshold in tokens (default 150000)
   IDEAL_UMBRELLA_HANDOFF_STEP  repeat interval in tokens (default 25000)
+  IDEAL_UMBRELLA_BASELINE      floor of an unoptimised session in tokens; unset: no saving shown
   IDEAL_UMBRELLA_STATE_DIR     override the per-session state folder (tests)
   IDEAL_UMBRELLA_LOG           override the error log path
   IDEAL_UMBRELLA_TAIL_BYTES    how much of the transcript end to read (default 4 MB);
-                               raise it if a single turn writes more than that
+                               raise it if a single turn writes more than that; it also
+                               bounds how far into the transcript the floor is looked for
 
 Invalid integer settings fall back to the defaults with a warning; they never
 crash the hook before it can read the prompt event.
@@ -97,18 +110,34 @@ def warn(message):
 
 
 def parse_int(name, default):
+    """A positive integer setting, or default; a default of 0 means the setting is off."""
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return default
+    fallback = "ignoring it" if default == 0 else f"using {default}"
     try:
         value = int(raw)
     except ValueError:
-        warn(f"{name}={raw!r} is not an integer; using {default}")
+        warn(f"{name}={raw!r} is not an integer; {fallback}")
         return default
     if value <= 0:
-        warn(f"{name}={raw!r} must be positive; using {default}")
+        warn(f"{name}={raw!r} must be positive; {fallback}")
         return default
     return value
+
+
+def _usage(event):
+    """The usage of a main-chain assistant event, else None."""
+    if not isinstance(event, dict) or event.get("isSidechain") or event.get("type") != "assistant":
+        return None
+    return (event.get("message") or {}).get("usage") or {}
+
+
+def _prompt_tokens(usage):
+    """What the call carried in: input, cache write and cache read."""
+    return sum(int(usage.get(key) or 0) for key in (
+        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"
+    ))
 
 
 def context_tokens(path):
@@ -130,21 +159,81 @@ def context_tokens(path):
             # assistant event reports real usage. Older transcripts carry only preTokens: then
             # report 0, which also clears the band state so the reminder can fire again later.
             return (event.get("compactMetadata") or {}).get("postTokens") or 0
-        if event.get("type") != "assistant":
+        usage = _usage(event)
+        if usage is None:
             continue
-        usage = (event.get("message") or {}).get("usage") or {}
-        n = sum(int(usage.get(key) or 0) for key in (
-            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"
-        ))
+        n = _prompt_tokens(usage)
         if n:
             # Thinking tokens are part of the context window, so count all output here.
             return n + max(0, int(usage.get("output_tokens") or 0))
     return 0
 
 
+def floor_tokens(path):
+    """Context size at the first main-chain call: the session's floor (the system prompt,
+    the tools and the first message), read from the start of the transcript. 0 when no such
+    call is found within TAIL_BYTES of the start."""
+    limit = parse_int("IDEAL_UMBRELLA_TAIL_BYTES", TAIL_BYTES)
+    seen = 0
+    with open(path, "rb") as f:
+        for raw in f:
+            seen += len(raw)
+            try:
+                usage = _usage(json.loads(raw))
+            except ValueError:
+                usage = None
+            n = _prompt_tokens(usage) if usage else 0
+            if n:
+                return n
+            if seen >= limit:
+                return 0
+    return 0
+
+
+def status_line(floor, now, baseline):
+    """The savings line, or "" while the transcript holds no first call or no context."""
+    if not (floor and now):
+        return ""
+    line = f"Ideal-Umbrella: floor {floor // 1000}k, now {now // 1000}k"
+    if baseline:
+        if baseline >= floor:
+            line += f", saved {(baseline - floor) // 1000}k vs baseline"
+        else:
+            line += f", {(floor - baseline) // 1000}k over baseline"
+    return line
+
+
+def handoff_due(n, threshold, step, session):
+    """True when the hand-off note is due: the context is over the threshold and in a band
+    this session has not been told about. Keeps the band in the per-session state file;
+    below the threshold the state is dropped, so the note can fire again after a compaction."""
+    state = os.path.join(state_dir(), session)
+    if n < threshold:
+        if os.path.exists(state):
+            os.remove(state)
+        return False
+    band = (n - threshold) // step
+    try:
+        with open(state, encoding="utf-8") as f:
+            last = int(f.read().strip())
+    except (OSError, ValueError):
+        last = -1
+    # Same band as the last reminder: stay silent. A lower band means the context shrank
+    # (a compaction that still landed above the threshold): the old reminder is stale, so
+    # start again from this band.
+    if band == last:
+        return False
+    os.makedirs(state_dir(), exist_ok=True)
+    prune_state(state_dir())
+    with open(state, "w", encoding="utf-8") as f:
+        f.write(str(band))
+    return True
+
+
 def run():
     threshold = parse_int("IDEAL_UMBRELLA_HANDOFF_AT", DEFAULT_THRESHOLD)
     step = parse_int("IDEAL_UMBRELLA_HANDOFF_STEP", DEFAULT_STEP)
+    baseline = parse_int("IDEAL_UMBRELLA_BASELINE", 0)
     # Claude Code sends UTF-8; the locale codec (cp1252 on many Windows hosts) would choke on
     # a non-ASCII transcript path, so read the bytes and decode them as UTF-8 ourselves.
     stdin = getattr(sys.stdin, "buffer", None)
@@ -156,32 +245,22 @@ def run():
     if not (path and session and os.path.isfile(path)):
         return
     n = context_tokens(path)
-    state = os.path.join(state_dir(), session)
-    if n < threshold:
-        if os.path.exists(state):
-            os.remove(state)
-        return
-    band = (n - threshold) // step
-    try:
-        with open(state, encoding="utf-8") as f:
-            last = int(f.read().strip())
-    except (OSError, ValueError):
-        last = -1
-    # Same band as the last reminder: stay silent. A lower band means the context shrank
-    # (a compaction that still landed above the threshold): the old reminder is stale, so
-    # start again from this band.
-    if band == last:
-        return
-    os.makedirs(state_dir(), exist_ok=True)
-    prune_state(state_dir())
-    with open(state, "w", encoding="utf-8") as f:
-        f.write(str(band))
     event = data.get("hook_event_name") or "UserPromptSubmit"
+    status = status_line(floor_tokens(path), n, baseline) if event == "UserPromptSubmit" else ""
+    # A hook prints one JSON object, so the savings line and the hand-off note share it.
+    if not handoff_due(n, threshold, step, session):
+        if status:
+            print(json.dumps({"systemMessage": status}))
+        return
+    if status:
+        message = f"{status}; over {threshold // 1000}k, a fresh session is due at the next step boundary."
+    else:
+        message = (f"Ideal-Umbrella: context about {n // 1000}k tokens; "
+                   "a fresh session is due at the next step boundary.")
     print(
         json.dumps(
             {
-                "systemMessage": f"Ideal-Umbrella: context about {n // 1000}k tokens; "
-                "a fresh session is due at the next step boundary.",
+                "systemMessage": message,
                 "hookSpecificOutput": {
                     "hookEventName": event,
                     "additionalContext": NOTE.format(k=n // 1000, t=threshold // 1000),
