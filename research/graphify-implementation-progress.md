@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, after review pass 5 fixes)
+# Graphify-derived improvements: resume point (2026-10-27, after review pass 6 fixes)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -8,7 +8,8 @@
 - Review pass 3 (fresh agent on the default model, Fable limit again; head f6ca6ef): 10 findings (2 medium, 5 low, 3 info), all fixed class-wide with failing-first tests in the commit after f6ca6ef; record `research/review-findings-graphify-f6ca6ef.md`. Main changes: the record written first keeps the one it replaces as `pending` and `settle_record` resolves it against the files (update runs stopped by a failed write are undone completely); `_backup` writes whole or not at all; the wrap path keeps the record's `wrapped`; a section found only by the hash inside a code fence is never changed (`fenced_line`, `fence_advice`); non-finite floats rejected and `allow_nan=False`; a non-UTF-8 hook path stops install before any write; every script prints with `errors="backslashreplace"` (source rule 3); `tests/test_failed_writes.py` covers five kinds of run.
 - Review pass 4 (fresh agent on the default model, Fable limit again; head 032a6bf): 3 low findings, 1 info finding (6 surviving mutants), 5 notes, all fixed or noted with failing-first tests in the commit after 032a6bf; record `research/review-findings-graphify-032a6bf.md`. Main changes: uninstall reads `joined` as a number of line breaks (line endings changed after install); a rerun writes the settled record when the earlier one kept `pending`; the edited-section backup is named `edited_backup` and deleted by uninstall when CLAUDE.md holds the same bytes; a kept safety backup is named; no "part way" before any step; mutant tests for M1, M6, M8, M22.
 - Review pass 5 (fresh agent, default model after the Fable limit; head 3d9c4e8): 5 low, 1 low found while fixing, 6 info; all fixed class-wide with failing-first tests in the commit after 3d9c4e8; record `research/review-findings-graphify-3d9c4e8.md`. Main changes: uninstall's failed writes and deletes are finished by a rerun (legacy/whole-file backup equal to CLAUDE.md deleted); no false "differs" on a second uninstall; a hand-added marker section is `hand_section` and left whole; record field types checked in `read_record`; `install.backup_of` accepts installer backup names only; ledger counts capped at 15 digits; 11 mutants killed.
-- Next: review pass 6 with a NEW fresh agent (findings to scratchpad `review6-findings.md`); repeat until a pass finds nothing; then merge PR #27 with a merge commit on green CI.
+- Review pass 6 (fresh agent, default model after the Fable limit; head 1e9664a): 3 low, 5 info; fixed class-wide in 7f2d8d2; record `research/review-findings-graphify-1e9664a.md`. Main changes: `install.refuse_read_only` checks every file a run writes before the first write (install and add_to_repo); `_backup` makes the backup owner-writable; uninstall deletes backups, hook and log through `install.remove` (clears a read-only bit, needed on Windows); `_BACKUP_NAME` uses `[0-9]`; README second-uninstall wording; tests for mutants n01, n12, n13, n32, n24, n31. Windows read-only semantics are simulated in `tests/test_read_only.py`. Uninstall deliberately does not check write access up front (a rerun finishes it; tested).
+- Next: review pass 7 with a NEW fresh agent (findings to scratchpad `review7-findings.md`); repeat until a pass finds nothing; then merge PR #27 with a merge commit on green CI.
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -31,5 +32,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`. Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 6 and later, merge.
+- Review pass 7 and later, merge.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
