@@ -14,7 +14,10 @@ import stat
 
 import pytest
 
-from conftest import load_module
+from conftest import ROOT, load_module
+
+# The rules with LF line ends: a Windows checkout may give config/CLAUDE.md CRLF.
+RULES = (ROOT / "config" / "CLAUDE.md").read_bytes().replace(b"\r\n", b"\n")
 
 
 @pytest.fixture
@@ -62,7 +65,7 @@ def every_file_needs_a_write(inst, home, tmp_path, monkeypatch):
     (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
     inst.install(home)
     template = tmp_path / "CLAUDE-template.md"
-    template.write_bytes(inst.CLAUDE_MD.read_bytes() + b"- a rule added later\n")
+    template.write_bytes(RULES + b"- a rule added later\n")
     monkeypatch.setattr(inst, "CLAUDE_MD", template)
     settings = json.loads(inst.USER_SETTINGS.read_text(encoding="utf-8"))
     settings["autoCompactWindow"] = 123456
@@ -110,15 +113,14 @@ def test_uninstall_deletes_a_read_only_backup_of_its_own(install_module, uninsta
     install_module.install(home)
     if kind == "legacy":
         # The whole-file installer's state: CLAUDE.md is the rules, the user's file a backup.
-        rules = install_module.CLAUDE_MD.read_bytes()
         for path in claude(home).glob("CLAUDE.md.bak-*"):
             path.unlink()
-        (claude(home) / "CLAUDE.md").write_bytes(rules)
+        (claude(home) / "CLAUDE.md").write_bytes(RULES)
         (claude(home) / "CLAUDE.md.bak-20250101-000000").write_bytes(b"mine\n")
         record_path = claude(home) / "ballast" / "install-record.json"
         record = json.loads(record_path.read_text(encoding="utf-8"))
         record["claude_md"] = {"backup": "CLAUDE.md.bak-20250101-000000",
-                               "sha256": hashlib.sha256(rules).hexdigest()}
+                               "sha256": hashlib.sha256(RULES).hexdigest()}
         record_path.write_text(json.dumps(record), encoding="utf-8")
     for path in claude(home).glob("CLAUDE.md.bak-*"):
         read_only(path)
