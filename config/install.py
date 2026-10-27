@@ -480,14 +480,38 @@ def same_file(a, b):
         return True
 
 
+def _look(path, follow=False):
+    """os.lstat of path (os.stat with follow), or None when there is nothing there. Any other
+    refusal is a ValueError naming the path: a folder above it that only root may search (a
+    sudo install with umask 077) is not "no file". pathlib's exists() raises for it up to
+    Python 3.13 and says False from 3.14, which would make an install look like none."""
+    try:
+        return os.stat(path) if follow else os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return None   # a symlink loop leads nowhere, like a link to a missing target
+        raise ValueError(f"cannot look at {path} ({e.strerror or e})") from e
+
+
+def _dangling(paths):
+    """Each of paths, or a folder above it, that is a symlink whose target is missing; a
+    ValueError for one that cannot be looked at, so that no later exists() or is_file() can
+    take it for missing."""
+    for path in paths:
+        for part in (path, *path.parents):
+            if _look(part) is not None and _is_link(part) and _look(part, follow=True) is None:
+                yield part
+
+
 def refuse_dangling(paths):
     """Raise ValueError when one of paths, or a folder above it, is a symlink whose target is
     missing (a dotfiles folder moved or not mounted): read as a missing file, it would be
-    written over (into the missing target), or its undo dropped."""
-    for path in paths:
-        for part in (path, *path.parents):
-            if _is_link(part) and not part.exists():
-                raise ValueError(f"{part} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
+    written over (into the missing target), or its undo dropped. One that cannot be looked at
+    is refused too (see _look)."""
+    for part in _dangling(paths):
+        raise ValueError(f"{part} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
 
 
 def _is_link(path):
@@ -809,11 +833,12 @@ def read_record(path):
     the error does not advise deleting it. A BOM (an editor that saves UTF-8 with one) is read
     as settings.json's is.
     """
-    if not path.exists():
-        return None
     try:
+        # Not exists() first: from Python 3.14 it says False for a record it cannot look at.
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
     except UnicodeDecodeError as e:
         # PowerShell 5's `>` and Out-File save UTF-16; that is not a JSON error.
         raise ValueError(f"{path} is not UTF-8 ({_bad_byte(path, e)}); save it as UTF-8 first "
@@ -994,7 +1019,7 @@ def install(home, force=False, progress=None, config_dir=None):
             notices.append(md_plan["notice"])
         kept = backup_of(paths["claude_md"], (old_record.get("claude_md") or {}).get("safety_backup"))
         if md_plan["backup"] == "edited" and kept is not None and kept.is_file() and not kept.is_symlink() \
-                and kept.read_bytes() == paths["claude_md"].read_bytes() \
+                and _holds(kept, paths["claude_md"].read_bytes()) \
                 and not same_file(kept, paths["claude_md"]):
             # An earlier run backed the file up before adding its section, then stopped before
             # its CLAUDE.md write: the section is the one that was there, and the backup holds it.
@@ -1094,6 +1119,9 @@ def verify(home, config_dir=None):
     command that "|| exit 0" silences, so the interpreter is checked too."""
     paths = layout(home, config_dir)
     issues, warnings = [], []
+    # A file that cannot be looked at is an error, not "Missing:"; a dangling link is Missing.
+    for _ in _dangling(paths[name] for name in ("settings", "claude_md", "hook")):
+        pass
 
     if not paths["settings"].exists():
         issues.append(f"Missing: {paths['settings']}")
@@ -1160,7 +1188,7 @@ def verify(home, config_dir=None):
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
     else:
-        text = paths["claude_md"].read_bytes().decode("utf-8", errors="replace")
+        text = _read_bytes(paths["claude_md"]).decode("utf-8", errors="replace")
         try:
             entry = (settle_record(read_record(paths["record"]), None, text) or {}).get("claude_md")
         except ValueError:
@@ -1180,7 +1208,7 @@ def verify(home, config_dir=None):
 
     if not paths["hook"].exists():
         issues.append(f"Missing: {paths['hook']}")
-    elif paths["hook"].read_bytes() != HOOK_SRC.read_bytes():
+    elif _read_bytes(paths["hook"]) != _read_bytes(HOOK_SRC):
         issues.append("Hook content differs from hooks/context_check.py")
 
     return len(issues) == 0, issues, warnings

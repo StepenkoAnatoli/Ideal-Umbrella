@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -1653,3 +1654,166 @@ def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(install_mo
     path.write_bytes(b'{\r"a": 1,\r"b": }\r')
     assert install_module.main(["--home", str(home)]) == 1
     assert "line 3" in capsys.readouterr().err
+
+
+def _python_314_pathlib(monkeypatch):
+    """pathlib as in Python 3.14: exists() and the is_*() checks say False for a path they
+    cannot look at, where 3.13 and earlier raise."""
+    monkeypatch.setattr(Path, "exists", lambda self, *, follow_symlinks=True: os.path.exists(self)
+                        if follow_symlinks else os.path.lexists(self))
+    monkeypatch.setattr(Path, "is_file", lambda self, *, follow_symlinks=True: os.path.isfile(self))
+    monkeypatch.setattr(Path, "is_dir", lambda self, *, follow_symlinks=True: os.path.isdir(self))
+    monkeypatch.setattr(Path, "is_symlink", lambda self: os.path.islink(self))
+
+
+def _unsearchable(folder, monkeypatch):
+    """Make folder one that may not be searched (a root 0700 folder left by a sudo install):
+    every look at a path inside it is refused, the folder itself can still be seen."""
+    import builtins
+    inside = os.fspath(folder) + os.sep
+
+    real_lstat = os.lstat
+
+    def target(path):
+        """Where a look that follows links ends up: a link into the folder is refused too."""
+        for _ in range(40):
+            try:
+                if not stat.S_ISLNK(real_lstat(path).st_mode):
+                    return path
+            except OSError:
+                return path
+            path = os.path.join(os.path.dirname(path), os.readlink(path))
+        return path
+
+    def refused(path, follow):
+        if not isinstance(path, (str, os.PathLike)):
+            return False
+        path = os.fspath(path)
+        return path.startswith(inside) or (follow and target(path).startswith(inside))
+
+    def wrap(real, follow):
+        def look(path, *args, **kwargs):
+            if refused(path, follow and kwargs.get("follow_symlinks", True)):
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real(path, *args, **kwargs)
+        return look
+    for name, follow in (("stat", True), ("lstat", False), ("open", True), ("scandir", True), ("listdir", True)):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name), follow))
+    monkeypatch.setattr(builtins, "open", wrap(builtins.open, True))
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("folder", ["ballast", "claude"])
+@pytest.mark.parametrize("run", ["install", "uninstall", "verify"])
+def test_a_folder_that_cannot_be_searched_stops_before_anything_is_written(install_module, uninstall_module, tmp_path,
+                                                                           capsys, monkeypatch, run, folder,
+                                                                           pathlib_kind):
+    # Review 24, F1: on Python 3.14 exists() says False for a record in a folder that cannot be
+    # searched, so uninstall ran as if there were no install and dropped the user's own value
+    # that only the record held; on 3.13 the error was a bare [Errno 13].
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text('{"autoCompactWindow": 100000}', encoding="utf-8")
+    install_module.install(home, force=True)
+    before = {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()}
+    blocked = home / ".claude" / "ballast" if folder == "ballast" else home / ".claude"
+    if pathlib_kind == "3.14":
+        _python_314_pathlib(monkeypatch)
+    _unsearchable(blocked, monkeypatch)
+    module = uninstall_module if run == "uninstall" else install_module
+    argv = ["--home", str(home)] + (["--verify-only"] if run == "verify" else [])
+    assert module.main(argv) == 1
+    captured = capsys.readouterr()
+    assert "cannot look at" in captured.err and "[Errno" not in captured.err, captured
+    assert "Missing" not in captured.out and "Nothing to undo" not in captured.out, captured
+    if run != "verify":
+        assert "nothing written" in captured.err, captured.err
+    monkeypatch.undo()
+    assert {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()} == before
+
+
+def test_a_record_is_read_whatever_exists_says(install_module, tmp_path, monkeypatch):
+    # Review 24, F1 (mutant a05): read_record decided "no record" with exists(), which on 3.14
+    # is False for a record it cannot look at.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = install_module.layout(home)["record"]
+    monkeypatch.setattr(Path, "exists", lambda self, **kwargs: False)
+    monkeypatch.setattr(os.path, "exists", lambda path: False)
+    assert install_module.read_record(record) is not None
+    assert install_module.read_record(record.parent / "missing.json") is None
+    assert install_module.read_record(record / "below-a-file.json") is None
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_a_link_into_a_folder_that_cannot_be_searched_is_not_called_missing(install_module, uninstall_module, tmp_path,
+                                                                            capsys, monkeypatch, pathlib_kind):
+    # Review 24, F1: the target is there, it just cannot be looked at (macOS: dotfiles under
+    # ~/Documents without access); "put the target back" was wrong advice.
+    home = tmp_path / "home"
+    install_module.install(home)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    settings_file(home).replace(dotfiles / "settings.json")
+    link_or_skip(settings_file(home), dotfiles / "settings.json")
+    if pathlib_kind == "3.14":
+        _python_314_pathlib(monkeypatch)
+    _unsearchable(dotfiles, monkeypatch)
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", str(home)]) == 1
+        err = capsys.readouterr().err
+        assert "cannot look at" in err and "missing target" not in err and "nothing written" in err, err
+
+
+def test_an_os_error_at_the_first_write_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys,
+                                                              monkeypatch):
+    # Review 24, F2: the review-4 test now reaches the read error, so nothing covered an
+    # OSError raised before any step of the undo was done.
+    import errno
+    home = tmp_path / "home"
+    seed(home, {}, "my own notes\n")
+    install_module.install(home)
+
+    def full(path, data):
+        raise OSError(errno.ENOSPC, "No space left on device", str(path))
+    monkeypatch.setattr(uninstall_module.install, "_write_bytes", full)
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "No space left" in err and "run uninstall again" in err, err
+    assert "part way" not in err and "Done before the error" not in err and "nothing written" not in err, err
+
+
+@pytest.mark.parametrize("name", ["ballast/context_check.py", "CLAUDE.md"])
+def test_verify_names_a_file_it_cannot_read(install_module, tmp_path, capsys, name):
+    # Review 24, F3 other hits: verify read the hook and CLAUDE.md outside any handler, so a
+    # folder in their place gave a bare [Errno 21].
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / name
+    path.unlink()
+    path.mkdir()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "[Errno" not in err, err
+
+
+def test_a_backup_that_cannot_be_read_does_not_stop_install(install_module, tmp_path, monkeypatch):
+    # Review 24, F3 other hits: an earlier safety backup was compared with read_bytes() outside
+    # any handler; one left root-owned by a sudo run is no match, as in _backup_name.
+    home = tmp_path / "home"
+    md = home / ".claude" / "CLAUDE.md"
+    md.parent.mkdir(parents=True)
+    md.write_bytes(b"mine\n")
+    install_module.install(home)
+    md.write_bytes(md.read_bytes().replace(b"\n# ", b"\n# Edited: ", 1))
+    real = Path.read_bytes
+
+    def read_bytes(self):
+        if ".bak-" in self.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real(self)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    notices = install_module.install(home)[1]
+    monkeypatch.undo()
+    assert any("had edits" in n for n in notices), notices
+    assert b"# Edited: " not in md.read_bytes()

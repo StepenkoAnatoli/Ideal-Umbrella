@@ -17,6 +17,8 @@ jobs:
           - {os: ubuntu-latest, python: "3.10"}
           - {os: ubuntu-latest, python: "3.12"}
           - {os: ubuntu-latest, python: "3.13"}
+          # 3.14: pathlib's exists() and is_*() say False on any OSError, not only "not there".
+          - {os: ubuntu-latest, python: "3.14"}
           - {os: windows-latest, python: "3.12"}
     runs-on: ${{ matrix.os }}
     env:

@@ -201,6 +201,28 @@ def _new_temp(directory, prefix):
     raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
 
 
+def _look(path, follow=False):
+    """os.lstat of path (os.stat with follow), or None when there is nothing there. Any other
+    refusal is a ValueError naming the path: a folder only root may search is not "no file",
+    though os.path.exists() says it is."""
+    try:
+        return os.stat(path) if follow else os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return None   # a symlink loop leads nowhere, like a link to a missing target
+        raise ValueError(f"cannot look at {path} ({e.strerror or e})") from e
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
+
+
 def _is_link(path):
     """A symlink, or on Windows a junction (os.path.islink does not see a junction)."""
     if os.path.islink(path):
@@ -315,8 +337,10 @@ def _add(repo, force, progress=None, handoff_at=None):
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     # The folders too: a .claude linked into a moved folder would be created at its target.
+    # Each is looked at first, so that the exists() checks below cannot take a file that
+    # cannot be looked at for a missing one.
     for p in (path, target, claude_dir, os.path.dirname(target)):
-        if _is_link(p) and not os.path.exists(p):
+        if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
             raise ValueError(f"{p} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
@@ -328,12 +352,8 @@ def _add(repo, force, progress=None, handoff_at=None):
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None
 
-    old = b""
-    if os.path.exists(target):
-        with open(target, "rb") as f:
-            old = f.read()
-    with open(SCRIPT, "rb") as f:
-        source = f.read()
+    old = _read_bytes(target) if os.path.exists(target) else b""
+    source = _read_bytes(SCRIPT)
     hook_changed = source != old
     # A read-only file is refused before the first write, not at its own write after the hook.
     for p, written in ((target, hook_changed), (path, changes)):

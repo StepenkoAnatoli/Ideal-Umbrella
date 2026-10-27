@@ -430,3 +430,51 @@ def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(tmp_path):
     result = run(repo)
     assert result.returncode == 1
     assert "line 3" in result.stderr, result.stderr
+
+
+def test_a_hook_file_that_cannot_be_read_stops_before_anything_is_written(tmp_path):
+    # Review 24, F3: the hook was read outside any handler, so a folder in its place gave a
+    # bare [Errno 21] without "nothing written".
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks" / "context_check.py").mkdir(parents=True)
+    result = run(repo)
+    assert result.returncode == 1
+    assert "cannot read" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "[Errno" not in result.stderr and not (repo / ".claude" / "settings.json").exists(), result.stderr
+
+
+def test_a_source_hook_that_cannot_be_read_stops_before_anything_is_written(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 24, F3: the hook shipped with the repo was read outside any handler too.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(add_to_repo, "SCRIPT", os.fspath(tmp_path))
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "nothing written" in err and "[Errno" not in err, err
+    assert not (repo / ".claude").exists()
+
+
+def test_a_folder_that_cannot_be_searched_stops_before_anything_is_written(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 24, F1 other hits: os.path.exists() says False for a hook it cannot look at (a
+    # folder only root may search), so the user's own hook would be taken for none.
+    import builtins
+    repo = tmp_path / "repo"
+    hooks = repo / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "context_check.py").write_text("# my own hook\n", encoding="utf-8")
+    inside = os.fspath(hooks) + os.sep
+
+    def wrap(real):
+        def look(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)) and os.fspath(path).startswith(inside):
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real(path, *args, **kwargs)
+        return look
+    for name in ("stat", "lstat", "open"):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name)))
+    monkeypatch.setattr(builtins, "open", wrap(builtins.open))
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "nothing written" in err and "[Errno" not in err, err
+    monkeypatch.undo()
+    assert not (repo / ".claude" / "settings.json").exists()
