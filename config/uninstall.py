@@ -202,8 +202,17 @@ def _is_file(path):
     return path is not None and path.is_file() and not path.is_symlink()
 
 
+def _is_target(backup, claude_md):
+    """True when CLAUDE.md is a link to this backup (put back with `ln -s` rather than a copy):
+    deleting the backup would delete the file. When it cannot be told, the backup is kept."""
+    try:
+        return backup.resolve() == claude_md.resolve()
+    except (OSError, RuntimeError):   # RuntimeError: a symlink loop, before Python 3.13
+        return True
+
+
 def _empty(claude_md):
-    """Delete CLAUDE.md, or empty it through a symlink (dotfiles, stow, home-manager): the file
+    """Delete CLAUDE.md, or empty it through a symlink (dotfiles, stow): the file
     the link points at would otherwise keep what is being removed, and the next stow would put
     it back. Returns the change to report."""
     if install._is_link(claude_md):
@@ -225,15 +234,17 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         # A run that stopped after its CLAUDE.md step never printed its notes; this gives them.
         if _is_file(safety):
             if safety.read_bytes() == on_disk:
-                apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)",
-                      lambda: install.remove(safety))
+                if not _is_target(safety, claude_md):
+                    apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)",
+                          lambda: install.remove(safety))
             else:
                 notices.append(f"your CLAUDE.md from before the install is kept in {safety.name}; "
                                "it differs from the file now, so delete it once you no longer need it")
         if _is_file(legacy_path):
             if legacy_path.read_bytes() == on_disk:
-                apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)",
-                      lambda: install.remove(legacy_path))
+                if not _is_target(legacy_path, claude_md):
+                    apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)",
+                          lambda: install.remove(legacy_path))
             else:
                 notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
         return False
@@ -266,17 +277,17 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         # and it stays whole, marker lines included.
         notices.append("CLAUDE.md's Ideal-Umbrella section was added by hand; left as is"
                        + (f" (your file from before the install changed its rules is in {safety.name})"
-                          if safety is not None and safety.is_file() else ""))
+                          if _is_file(safety) else ""))
         return False
     number = install.fenced_line(current, found)
     if number is not None:
         notices.append(f"{install.fence_advice(number)}, and run uninstall again; left as is")
         return True
     if install.text_hash(install.section_text(install.section_body(current, found))) != entry.get("sha256"):
-        notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is")
+        notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is"
+                       + (f" (your file from before the install is in {safety.name})" if _is_file(safety) else ""))
         edited = _backup_of(claude_md, entry.get("edited_backup"))
-        if edited is not None and edited.is_file() and not edited.is_symlink() \
-                and edited.read_bytes() == claude_md.read_bytes():
+        if _is_file(edited) and edited.read_bytes() == on_disk and not _is_target(edited, claude_md):
             # The install backed up the user's edits, then stopped before its CLAUDE.md write:
             # the file still holds those edits, so the copy names nothing that is not in it.
             apply(f"CLAUDE.md backup {edited.name} deleted (CLAUDE.md holds the same bytes)",
@@ -298,14 +309,14 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
 
         def act():
             action()
-            if _is_file(safety) and safety.read_bytes() == final:
+            if _is_file(safety) and safety.read_bytes() == final and not _is_target(safety, claude_md):
                 install.remove(safety)
         apply(change, act)
         return False
 
     if _blank(rest):
         if legacy:
-            if legacy_path is None or not legacy_path.exists():
+            if not _is_file(legacy_path):
                 # The install replaced a file of yours and its backup is gone: removing the
                 # section would leave nothing of it, so keep the file and say so.
                 notices.append(f"CLAUDE.md left as is: the backup {legacy} it should be restored from is missing")
@@ -316,14 +327,15 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                 # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
                 # link; a copy that fails part way must not leave a truncated file.
                 install._write_bytes(claude_md, old)
-                install.remove(legacy_path)
+                if not _is_target(legacy_path, claude_md):
+                    install.remove(legacy_path)
             return finish(f"CLAUDE.md restored from {legacy}", old, restore)
         if entry.get("created") is True:
             change, delete = _empty(claude_md)
             return finish(change, b"", delete)
     data = rest.encode("utf-8")
     finish("CLAUDE.md: Ideal-Umbrella section removed", data, lambda: install._write_bytes(claude_md, data))
-    if legacy_path is not None and legacy_path.exists():
+    if _is_file(legacy_path):
         notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
     return False
 
@@ -399,11 +411,15 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
 
     claude_md_left = False
     if current_md is None:
-        section_entry = isinstance(entry, dict) and entry.get("format") == "section"
-        legacy = entry.get("legacy_backup") if section_entry else None
-        legacy_path = _backup_of(claude_md, legacy) if legacy else None
-        if legacy_path is not None and legacy_path.exists():
-            notices.append(f"CLAUDE.md is gone; your file from before the first install is still in {legacy}")
+        # Nothing is left to undo in it and the record entry goes, so no later run names the
+        # backups that hold a file of the user's: name them now.
+        if isinstance(entry, dict):
+            kept = (("safety_backup", "the install"), ("legacy_backup", "the first install")) \
+                if entry.get("format") == "section" else (("backup", "the install"),)
+            for key, which in kept:
+                path = _backup_of(claude_md, entry.get(key))
+                if _is_file(path):
+                    notices.append(f"CLAUDE.md is gone; your file from before {which} is still in {path.name}")
     elif isinstance(entry, dict) and entry.get("format") == "section":
         claude_md_left = _undo_section(claude_md, current_md, md_utf8, found, entry, apply, notices)
     elif found is not None and not isinstance(entry, dict):
@@ -449,12 +465,12 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         else:
             ours = install._lf(current_md) == install._lf(template_md)
         backup = _backup_of(claude_md, entry.get("backup") if isinstance(entry, dict) else None)
-        if backup is not None and backup.is_file() and not backup.is_symlink() \
-                and backup.read_bytes() == raw_md:
+        if _is_file(backup) and backup.read_bytes() == raw_md:
             # An earlier uninstall restored the file from this backup, then stopped before it
-            # deleted the backup (or the user copied it back by hand).
-            apply(f"CLAUDE.md backup {backup.name} deleted (CLAUDE.md holds the same bytes)",
-                  lambda: install.remove(backup))
+            # deleted the backup (or the user copied it back by hand, or linked it).
+            if not _is_target(backup, claude_md):
+                apply(f"CLAUDE.md backup {backup.name} deleted (CLAUDE.md holds the same bytes)",
+                      lambda: install.remove(backup))
         elif not ours and backup is not None and not (backup.exists() or backup.is_symlink()):
             # The file is not the one installed and there is no backup to give back: an earlier
             # uninstall restored it and stopped before it wrote the record, or the user replaced
@@ -466,11 +482,15 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             # not the rules is the user's, or one an earlier run took the section out of.
             if evidence:
                 notices.append("CLAUDE.md has no Ideal-Umbrella section and is not the rules file; left as is")
+        elif not ours and backup is None and record is not None and _blank(current_md):
+            # An earlier run emptied the file through its link (_empty), then stopped before its
+            # last step: nothing is left to undo, and the record entry goes.
+            pass
         elif not ours:
             claude_md_left = True
             notices.append("CLAUDE.md differs from what was installed; left as is"
-                           + (f" (your earlier file is in {backup.name})" if backup and backup.exists() else ""))
-        elif backup is not None and backup.exists():
+                           + (f" (your earlier file is in {backup.name})" if _is_file(backup) else ""))
+        elif _is_file(backup):
             if dry_run:
                 changes.append(f"CLAUDE.md restored from {backup.name}")
             else:

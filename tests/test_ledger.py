@@ -103,7 +103,9 @@ def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger,
     b'{"date": "2026-10-19", "fixed_tokens": 71396}\n' + b"\x00" * 48,
     b'{"date": "2026-10-19", "fixed_tokens": 71396}\n' + b"\x00" * 48 + b"\n",
     b'{"date": "2026-10-19", "fixed_tokens": 71396}\n{"date": "2026-10' + b"\x00" * 40,
-], ids=["nul-tail", "nul-line", "torn-then-nul"])
+    # Review 11, finding B2: a UTF-8 BOM (Notepad) before the torn line is no wide encoding.
+    b"\xef\xbb\xbf" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
+], ids=["nul-tail", "nul-line", "torn-then-nul", "bom-then-nul"])
 def test_a_torn_append_filled_with_nul_bytes_is_an_unreadable_line(ledger, tmp_path, capsys, data):
     # Review 10, finding L2: after a power loss a file can keep its new size with the block never
     # written, so the torn line reads as NUL bytes. Since review 9 any NUL stopped every run with

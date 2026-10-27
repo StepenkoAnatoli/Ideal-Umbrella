@@ -735,3 +735,253 @@ def test_a_record_field_of_the_wrong_type_stops_uninstall_with_one_line(install_
     assert uninstall_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err and "nothing written" in err and field in err
+
+
+def link_or_skip(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+
+def a_section_install(install_module, home):
+    """The safety backup holds "my own notes" and CLAUDE.md is linked to it."""
+    (home / ".claude" / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    install_module.install(home)
+    (backup,) = (home / ".claude").glob("CLAUDE.md.bak-*")
+    return backup
+
+
+def a_whole_file_record(install_module, home):
+    whole_file_install(install_module, home, "CLAUDE.md.bak-20250101-000000")
+    for name in (home / ".claude").glob("CLAUDE.md.bak-*"):
+        name.unlink()
+    backup = home / ".claude" / "CLAUDE.md.bak-20250101-000000"
+    backup.write_text("my own notes\n", encoding="utf-8")
+    return backup
+
+
+def a_legacy_backup(install_module, home):
+    backup = a_whole_file_record(install_module, home)
+    install_module.install(home)   # turns the whole file into the section
+    return backup
+
+
+def an_edited_section(install_module, home):
+    (home / ".claude" / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    install_module.install(home)
+    md = home / ".claude" / "CLAUDE.md"
+    text = md.read_text(encoding="utf-8")
+    end = text.index("<!-- Ideal-Umbrella rules: end -->")
+    edited = home / ".claude" / "CLAUDE.md.bak-20250101-000000"
+    edited.write_text(text[:end] + "- my own rule\n" + text[end:], encoding="utf-8")
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"]["edited_backup"] = edited.name
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return edited
+
+
+def a_legacy_backup_holding_the_section(install_module, home):
+    """The file from before the whole-file install held nothing but the section, so uninstall
+    restores it (mutant n17 of review 11)."""
+    backup = a_legacy_backup(install_module, home)
+    backup.write_bytes((home / ".claude" / "CLAUDE.md").read_bytes())
+    return backup
+
+
+@pytest.mark.parametrize("make", [a_section_install, a_whole_file_record, a_legacy_backup, an_edited_section,
+                                  a_legacy_backup_holding_the_section],
+                         ids=lambda make: make.__name__)
+def test_a_claude_md_linked_to_its_own_backup_keeps_the_backup(install_module, uninstall_module, tmp_path, make):
+    # Review 11, finding B3: the user put CLAUDE.md back by linking it to a backup
+    # (ln -sf CLAUDE.md.bak-... CLAUDE.md). Uninstall saw the same bytes and deleted the backup,
+    # which was the link's target: CLAUDE.md was left dangling and the user's text was gone.
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = make(install_module, home)
+    md = home / ".claude" / "CLAUDE.md"
+    held = backup.read_bytes()
+    md.unlink()
+    link_or_skip(md, backup.name)
+    changes, notices = uninstall_module.uninstall(home)
+    assert backup.is_file() and md.read_bytes() == held, (changes, notices)
+    assert not any("deleted" in c and backup.name in c for c in changes), changes
+
+
+@pytest.mark.parametrize("own_text", [True, False], ids=["section-removed", "restored"])
+def test_a_folder_named_as_the_legacy_backup_is_no_backup(install_module, uninstall_module, tmp_path, own_text):
+    # Review 11, finding B5: the section removal named the folder as "your CLAUDE.md from before
+    # the first install is still in ...", and the restore read it and stopped on every run with
+    # "Is a directory". Only a file can hold the user's CLAUDE.md.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    legacy = a_legacy_backup(install_module, home)
+    if own_text:
+        md = claude / "CLAUDE.md"
+        md.write_text("notes\n\n" + md.read_text(encoding="utf-8"), encoding="utf-8")
+    legacy.unlink()
+    legacy.mkdir()
+    changes, notices = uninstall_module.uninstall(home)
+    assert not any(legacy.name in n and "still in" in n for n in notices), notices
+    if own_text:
+        assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "notes\n\n"
+    else:
+        assert any("missing" in n for n in notices), notices
+    assert legacy.is_dir()
+
+
+def test_a_folder_named_as_the_whole_file_backup_is_no_backup(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = a_whole_file_record(install_module, home)
+    backup.unlink()
+    backup.mkdir()
+    changes, notices = uninstall_module.uninstall(home)
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert any("missing" in n for n in notices), notices
+    assert backup.is_dir()
+
+
+def test_a_folder_named_as_the_legacy_backup_is_not_named_when_the_section_was_taken_out(
+        install_module, uninstall_module, tmp_path):
+    # Review 11, mutant t24: the leave() path, where the file has no section.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    legacy = a_legacy_backup(install_module, home)
+    (claude / "CLAUDE.md").write_text("notes\n", encoding="utf-8")
+    legacy.unlink()
+    legacy.mkdir()
+    _, notices = uninstall_module.uninstall(home)
+    assert not any(legacy.name in n for n in notices), notices
+    assert legacy.is_dir()
+
+
+def test_a_symlink_named_as_the_safety_backup_is_neither_deleted_nor_named(install_module, uninstall_module,
+                                                                           tmp_path):
+    # Review 11, mutant t09: the installer never makes a link as a backup, so one with that name
+    # is not its own.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    backup = a_section_install(install_module, home)
+    (claude / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("my own notes\n", encoding="utf-8")
+    backup.unlink()
+    link_or_skip(backup, elsewhere)
+    changes, notices = uninstall_module.uninstall(home)
+    assert backup.is_symlink() and elsewhere.read_text(encoding="utf-8") == "my own notes\n"
+    assert not any(backup.name in s for s in changes + notices), (changes, notices)
+
+
+@pytest.mark.parametrize("make", [a_section_install, a_whole_file_record, a_legacy_backup],
+                         ids=lambda make: make.__name__)
+def test_a_backup_is_named_when_claude_md_is_gone(install_module, uninstall_module, tmp_path, make):
+    # Review 11, finding B6: with CLAUDE.md gone, uninstall named only the whole-file installer's
+    # backup of a section install; the copy made before the section (or the whole-file record's
+    # backup) was kept with no word, and the record entry that named it went.
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = make(install_module, home)
+    (home / ".claude" / "CLAUDE.md").unlink()
+    changes, notices = uninstall_module.uninstall(home)
+    assert backup.read_text(encoding="utf-8") == "my own notes\n"
+    assert any(backup.name in n and "gone" in n for n in notices), (changes, notices)
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_an_edited_section_names_the_copy_made_before_the_install(install_module, uninstall_module, tmp_path):
+    # Review 11, finding B7: the section is left (the user edited it) and so is the copy of the
+    # file from before the install; the hand-section branch named that copy, this one did not.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    backup = a_section_install(install_module, home)
+    md = claude / "CLAUDE.md"
+    text = md.read_text(encoding="utf-8")
+    end = text.index("<!-- Ideal-Umbrella rules: end -->")
+    md.write_text(text[:end] + "- my own rule\n" + text[end:], encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert any("differs" in n and backup.name in n for n in notices), notices
+
+
+def test_a_claude_md_linked_to_a_read_only_file_stops_uninstall_at_its_step_with_the_path(
+        install_module, uninstall_module, tmp_path, monkeypatch):
+    # Review 11, finding B4: home-manager links into the read-only Nix store, which no write
+    # through the link can change; the README no longer claims it. The error names the file
+    # the link points at, and the rerun after the link is replaced finishes the undo.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    install_module.install(home)
+    store = tmp_path / "store" / "CLAUDE.md"
+    store.parent.mkdir()
+    (claude / "CLAUDE.md").replace(store)
+    link_or_skip(claude / "CLAUDE.md", store)
+    real_access = os.access
+    monkeypatch.setattr(os, "access", lambda p, mode, *a, **k: False if str(p) == str(store.resolve())
+                        and mode == os.W_OK else real_access(p, mode, *a, **k))
+    with pytest.raises(PermissionError) as error:
+        uninstall_module.uninstall(home)
+    assert error.value.filename == str(store.resolve())
+    monkeypatch.setattr(os, "access", real_access)
+    (claude / "CLAUDE.md").unlink()
+    (claude / "CLAUDE.md").write_bytes(store.read_bytes())
+    uninstall_module.uninstall(home)
+    assert not (claude / "CLAUDE.md").exists()
+    assert not (claude / "ballast" / "context_check.py").exists()
+
+
+def test_a_backup_is_kept_when_it_cannot_be_told_whether_claude_md_links_to_it(uninstall_module, tmp_path,
+                                                                               monkeypatch):
+    # Review 11, mutant n02: a path that cannot be resolved may still be the link's target.
+    backup, md = tmp_path / "CLAUDE.md.bak-20250101-000000", tmp_path / "CLAUDE.md"
+
+    def refuse(self, *args, **kwargs):
+        raise OSError("cannot resolve")
+    monkeypatch.setattr(type(backup), "resolve", refuse)
+    assert uninstall_module._is_target(backup, md) is True
+
+
+def a_hand_section(install_module, home):
+    backup = a_section_install(install_module, home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"]["hand_section"] = True
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return backup
+
+
+def a_rewritten_whole_file(install_module, home):
+    backup = a_whole_file_record(install_module, home)
+    (home / ".claude" / "CLAUDE.md").write_text("rewritten\n", encoding="utf-8")
+    return backup
+
+
+def an_edited_section_in_the_file(install_module, home):
+    edited = an_edited_section(install_module, home)
+    (home / ".claude" / "CLAUDE.md").write_bytes(edited.read_bytes())
+    return edited
+
+
+@pytest.mark.parametrize("make, gone", [
+    (a_hand_section, False), (a_rewritten_whole_file, False), (an_edited_section_in_the_file, False),
+    (a_section_install, True), (a_whole_file_record, True), (a_legacy_backup, True)],
+    ids=["hand-section", "whole-file-differs", "edited", "section-gone", "whole-file-gone", "legacy-gone"])
+def test_a_folder_named_as_a_backup_is_neither_read_nor_named(install_module, uninstall_module, tmp_path,
+                                                              make, gone):
+    # Review 11, mutants n18 to n21: every note that names a backup, and every read of one,
+    # checks that it is a file (finding B5).
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = make(install_module, home)
+    if gone:
+        (home / ".claude" / "CLAUDE.md").unlink()
+    backup.unlink()
+    backup.mkdir()
+    changes, notices = uninstall_module.uninstall(home)
+    assert backup.is_dir()
+    assert not any(backup.name in s for s in changes + notices), (changes, notices)

@@ -61,10 +61,11 @@ def _text(text):
 def _wide(data):
     """True for UTF-16 or UTF-32 text (PowerShell 5's default for Out-File, > and >>): a byte
     order mark, or NULs between the bytes of the first characters, which in a ledger are ASCII.
-    NULs alone are no encoding: a torn append after a power loss reads as a run of them."""
-    if data.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")):
+    NULs alone are no encoding: a torn append after a power loss reads as a run of them, also
+    after a UTF-8 BOM (Notepad). UTF-32 BE starts with NULs, so the second check finds it."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return True
-    head = data[:4]
+    head = data[3:7] if data.startswith(b"\xef\xbb\xbf") else data[:4]
     return b"\x00" in head and bool(head.strip(b"\x00"))
 
 

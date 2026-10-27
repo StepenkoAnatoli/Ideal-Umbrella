@@ -400,7 +400,7 @@ def refuse_read_only(path):
 def _write_bytes(path, data):
     """Write a user file whole or not at all: to a temp file beside it, then rename over it.
     A write that fails part way (disk full, a killed process) leaves the old file as it was
-    instead of a truncated one. Writes through a symlink (dotfiles, stow, home-manager)
+    instead of a truncated one. Writes through a symlink (dotfiles, stow)
     instead of replacing the link, and keeps the file's mode; a new file gets the mode a
     plain write would give it. A read-only target is refused, as a plain write refuses it.
     A hard-linked target becomes a new file: the other links keep the old content."""

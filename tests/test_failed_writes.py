@@ -343,6 +343,87 @@ def test_a_folder_named_as_the_kept_backup_is_not_named(uninstall_module, tmp_pa
     assert backup.is_dir()
 
 
+
+def a_created_section_left_alone(inst, home, tmp_path, monkeypatch):
+    # Review 11, finding B6: the install created CLAUDE.md, the user replaced the section with
+    # their own text, installed again (a copy of that text is made before the section) and then
+    # deleted the text. Uninstall deletes the file and keeps the copy, which a rerun after a
+    # later failure found with CLAUDE.md gone and never named.
+    claude(home).mkdir(parents=True)
+    (claude(home) / "settings.json").write_text(json.dumps(BEFORE_SETTINGS), encoding="utf-8")
+    inst.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(b"my notes\n")
+    inst.install(home)
+    text = md.read_bytes()
+    md.write_bytes(text[text.index(b"<!--"):])
+
+
+@pytest.mark.parametrize("number", range(STEPS))
+def test_a_kept_backup_is_named_when_a_rerun_finds_claude_md_gone(uninstall_module, tmp_path, monkeypatch, number):
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    a_created_section_left_alone(inst, home, tmp_path, monkeypatch)
+    said = []
+    stop = fail_step(monkeypatch, inst, number)
+    try:
+        said += uninstall_module.uninstall(home)[1]
+    except OSError:
+        pass
+    stop()
+    said += uninstall_module.uninstall(home)[1]
+    assert not (claude(home) / "CLAUDE.md").exists()
+    (kept,) = claude(home).glob("CLAUDE.md.bak-*")
+    assert kept.read_bytes() == b"my notes\n"
+    assert any(kept.name in n for n in said), said
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def a_created_whole_file(inst, home):
+    inst.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(RULES.encode("utf-8"))
+    path = claude(home) / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"] = {"sha256": inst.text_hash(RULES)}
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def a_created_section(inst, home):
+    inst.install(home)
+
+
+@pytest.mark.parametrize("number", range(STEPS))
+@pytest.mark.parametrize("make", [a_created_whole_file, a_created_section], ids=lambda make: make.__name__)
+def test_a_symlinked_claude_md_emptied_by_an_uninstall_that_failed_part_way_is_finished(
+        uninstall_module, tmp_path, monkeypatch, make, number):
+    # Review 11, finding B1: since review 10 a symlinked CLAUDE.md is emptied through the link,
+    # not unlinked. A whole-file record then found an empty file on the rerun, said "CLAUDE.md
+    # differs from what was installed; left as is" and kept its record entry, on every run.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    claude(home).mkdir(parents=True)
+    (claude(home) / "settings.json").write_text(json.dumps(BEFORE_SETTINGS), encoding="utf-8")
+    make(inst, home)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    md = claude(home) / "CLAUDE.md"
+    md.replace(dotfiles / "CLAUDE.md")
+    try:
+        md.symlink_to(dotfiles / "CLAUDE.md")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    stop = fail_step(monkeypatch, inst, number)
+    try:
+        uninstall_module.uninstall(home)
+    except OSError:
+        pass
+    stop()
+    _, notices = uninstall_module.uninstall(home)
+    assert md.is_symlink() and (dotfiles / "CLAUDE.md").read_bytes() == b""
+    assert not any("differs" in n for n in notices), notices
+    assert uninstall_module.uninstall(home) == ([], [])
+
 # Review 7, finding L2: with no install record, the hook file and the hook entry are the only
 # evidence of an install. Uninstall removed both before its CLAUDE.md step, so a rerun after a
 # failure there said "Nothing to undo." and left the section (or the whole-file rules) for good.
