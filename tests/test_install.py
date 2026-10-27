@@ -160,16 +160,26 @@ def test_failed_install_writes_nothing(install_module, tmp_path, capsys):
     assert not (claude / "ballast").exists()
 
 
-@pytest.mark.parametrize("home_arg", [".", "~"])
+@pytest.mark.parametrize("home_arg", [".", "~", "~other", None])
 def test_relative_home_gives_absolute_hook_path(install_module, tmp_path, monkeypatch, home_arg):
+    # None: no --home and a HOME with ".." in it; "~other": another user's home that exists
+    # (review 16: the HOME is resolved as --home is, and only a "~name" that is not there is refused).
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    assert install_module.main(["--home", home_arg]) == 0
+    (tmp_path / "x").mkdir()
+    home = tmp_path / "x" / ".." if home_arg is None else tmp_path
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    if home_arg == "~other":
+        real_expanduser = Path.expanduser
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path.joinpath(*self.parts[1:])
+                            if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    assert install_module.main([] if home_arg is None else ["--home", home_arg]) == 0
 
     settings = json.loads(settings_file(tmp_path).read_text(encoding="utf-8"))
     command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
     assert str((tmp_path / ".claude" / "ballast" / "context_check.py").resolve()) in command
+    assert str(tmp_path / "x" / "..") not in command
 
 
 def test_symlinked_settings_stay_symlinks(install_module, tmp_path):
