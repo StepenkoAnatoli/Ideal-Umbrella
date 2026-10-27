@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 9 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 10 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -12,7 +12,8 @@
 - 74942be: `tests/test_read_only.py` uses the rules with LF line ends (Windows CI failed on 59fb4c9: a Windows checkout gives `config/CLAUDE.md` CRLF, and the whole-file record hash is of LF text). CI green on 74942be (Ubuntu 3.10/3.12/3.13, Windows).
 - Review pass 7 (fresh agent, default model after the Fable limit; head 59fb4c9): 3 low, 1 info; fixed class-wide in the commit after 219a49c; record `research/review-findings-graphify-59fb4c9.md`. Main changes: `install.remove` deletes first and clears a read-only bit only on a refused delete of a non-symlink (a chmod of a file another user owns fails on POSIX), mode set back if the retry fails; uninstall without a record deletes the hook file last (it is the evidence a rerun needs) and names its CLAUDE.md backup in the progress; coverage tests kill 18 of the 22 mutants (p06, p10, p11, p22 equivalent).
 - Review pass 8 (fresh agent, default model after the Fable limit; head ded6960): 4 low, 1 info; fixed class-wide in the commit after ded6960; record `research/review-findings-graphify-ded6960.md`. Main changes: uninstall writes `settings.json` after the `CLAUDE.md` step in every mode (without a record and with the hook file gone, the hook entry is the only evidence); no-record mode never says "differs from what was installed" (it also fired in homes never installed), it says "no section and not the rules; left as is" only when an install is found; `install.remove` re-raises the refused delete when the chmod fails; `scripts/ledger.py` reads a BOM; the "whole file without a record" test kind really has no markers now (it was a wrapped section; `-59fb4c9.md` L2 corrected). Mutants q01, q04-q07, q11, q12 killed; q03, q10 equivalent.
-- Next: review pass 9 with a NEW fresh agent (fable, else default model) and the same breaker brief: findings files -5a18f22 to -ded6960, known-and-accepted list in `-1e9664a.md` L1 Other hits and I3, `-59fb4c9.md` L1 Other hits, and pass-8 equivalent mutants q03, q10 (q02, q08 equivalent before the change); report to the scratchpad `review9-findings.md` (a fresh session lacks it: rerun the pass). Then repeat until a clean pass; then merge PR #27 with a merge commit on green CI.
+- Review pass 9 (fresh agent, default model after the Fable limit; head 5584721): 3 low, 2 info; fixed class-wide in the commit after 5584721; record `research/review-findings-graphify-5584721.md`. Main changes: with no section and a kept pre-install copy that differs, uninstall names the copy (a run stopped after the CLAUDE.md step, e.g. at a read-only settings.json, never printed that note); `without_the_hook_entry` no-record test kinds (the hook file as only evidence; kills mutants r06-r08); `scripts/ledger.py` refuses a UTF-16/UTF-32 file (BOM or NUL) with a one-line error and writes nothing; README wording. r10 equivalent.
+- Next: review pass 10 with a NEW fresh agent (fable, else default model) and the same breaker brief: findings files -5a18f22 to -5584721, known-and-accepted list in `-1e9664a.md` L1 Other hits and I3, `-59fb4c9.md` L1 Other hits, equivalent mutants (pass 7 p06/p10/p11/p22, pass 8 q02/q03/q08/q10, pass 9 r10), the rejected marker record (`-ded6960.md` L1) and notices-on-error (`-5584721.md` L1); report to the scratchpad `review10-findings.md` (a fresh session lacks it: rerun the pass). Then repeat until a clean pass; then merge PR #27 with a merge commit on green CI.
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -35,5 +36,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`. Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 9 and later, merge.
+- Review pass 10 and later, merge.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).

@@ -60,11 +60,16 @@ def _text(text):
 
 def previous_entry(path):
     """Return (line number, entry, skipped) for the last line that is a JSON object.
-    A missing file is (None, None, 0); a file that cannot be read raises OSError."""
+    A missing file is (None, None, 0); a file that cannot be read raises OSError, and one in
+    UTF-16 or UTF-32 raises ValueError."""
     try:
         data = Path(path).read_bytes()
     except FileNotFoundError:
         return None, None, 0
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")) or b"\x00" in data:
+        # UTF-16 or UTF-32 (PowerShell 5's default for Out-File, > and >>): a UTF-8 line
+        # appended to it would leave a file no encoding reads. json.dumps never writes a NUL.
+        raise ValueError("not UTF-8 text (UTF-16 or UTF-32); save it as UTF-8 first")
     found, number, skipped = None, None, 0
     # Lines end at "\n" only: str.splitlines() also splits on U+2028, form feed and others,
     # which json.dumps(ensure_ascii=False) leaves raw inside a string. A BOM (Notepad, PowerShell
@@ -157,6 +162,9 @@ def main(argv=None):
             append(args.file, entry)
     except OSError as error:
         print(f"error: {args.file}: {error.strerror or error}", file=sys.stderr)
+        return 1
+    except ValueError as error:
+        print(f"error: {args.file}: {error}", file=sys.stderr)
         return 1
 
     line = json.dumps(entry, ensure_ascii=False)

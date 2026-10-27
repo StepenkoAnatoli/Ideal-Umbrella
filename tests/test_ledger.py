@@ -80,6 +80,23 @@ def test_a_byte_order_mark_before_the_first_line_is_not_an_unreadable_line(ledge
     assert "unreadable" not in out and "71,396 -> 70,000" in out
 
 
+@pytest.mark.parametrize("data", [
+    '{"fixed_tokens": 71396}\r\n'.encode("utf-16"),       # PowerShell 5 Out-File, > and >>
+    '{"fixed_tokens": 71396}\r\n'.encode("utf-16-be"),    # no BOM
+    '{"fixed_tokens": 71396}\n'.encode("utf-32"),
+], ids=["utf-16-bom", "utf-16-be", "utf-32"])
+def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger, tmp_path, capsys, data):
+    # Review 9, finding L3: a UTF-8 line appended to a UTF-16 file left a file neither
+    # encoding decodes.
+    path = tmp_path / "m.jsonl"
+    path.write_bytes(data)
+    for dry_run in ([], ["--dry-run"]):
+        assert ledger.main(["--file", str(path), "--fixed-tokens", "70000"] + dry_run) == 1
+        err = capsys.readouterr().err
+        assert err.startswith("error: ") and "UTF-8" in err and len(err.splitlines()) == 1, err
+    assert path.read_bytes() == data
+
+
 def test_crlf_and_non_utf8_bytes_in_the_file_do_not_stop_the_run(ledger, tmp_path, capsys):
     path = tmp_path / "m.jsonl"
     path.write_bytes(b'{"fixed_tokens": 71396, "note": "caf\xe9"}\r\n')

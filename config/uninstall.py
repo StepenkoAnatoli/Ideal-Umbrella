@@ -230,6 +230,12 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
             notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
                            + (f" (your file from before the first install is in {legacy})"
                               if legacy_path and legacy_path.exists() else ""))
+            if safety is not None and safety.is_file() and not safety.is_symlink():
+                # An earlier run removed the section and stopped before its last step, so the
+                # note it made on the copy from before the install was never printed; or the
+                # user took the section out by hand. The record entry goes after this run.
+                notices.append(f"your CLAUDE.md from before the install is kept in {safety.name}; "
+                               "it differs from the file now, so delete it once you no longer need it")
         return False
     if entry.get("hand_section") is True:
         # The user added the section by hand before the install updated its rules: it is theirs,

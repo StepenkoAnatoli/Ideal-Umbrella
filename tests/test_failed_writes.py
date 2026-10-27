@@ -270,6 +270,33 @@ def test_a_rerun_of_an_uninstall_that_failed_part_way_finishes_it(uninstall_modu
     assert uninstall_module.uninstall(home) == ([], [])
 
 
+
+@pytest.mark.parametrize("number", range(STEPS))
+def test_a_kept_backup_is_named_when_an_uninstall_that_failed_part_way_is_finished(uninstall_module, tmp_path,
+                                                                                    monkeypatch, number):
+    # Review 9, finding L1: the user changed their own text after the install, so the copy from
+    # before it is kept. A run that stopped after its CLAUDE.md step (the settings.json write,
+    # the hook delete, the record write) never printed the note naming it, and the rerun said
+    # only "no Ideal-Umbrella section", so the copy was left with no word about it.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    seed(home)
+    inst.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(md.read_bytes().replace(b"mine\n", b"mine, changed\n", 1))
+    said = []
+    stop = fail_step(monkeypatch, inst, number)
+    try:
+        said += uninstall_module.uninstall(home)[1]
+    except OSError:
+        pass
+    stop()
+    said += uninstall_module.uninstall(home)[1]
+    assert md.read_bytes() == b"mine, changed\n"
+    kept = list(claude(home).glob("CLAUDE.md.bak-*"))
+    assert [b.read_bytes() for b in kept] == [b"mine\n"]
+    assert any(kept[0].name in n for n in said), said
+
 # Review 7, finding L2: with no install record, the hook file and the hook entry are the only
 # evidence of an install. Uninstall removed both before its CLAUDE.md step, so a rerun after a
 # failure there said "Nothing to undo." and left the section (or the whole-file rules) for good.
@@ -302,8 +329,28 @@ def without_the_hook_file(run):
     return state
 
 
+
+def without_the_hook_entry(run):
+    # Review 9, finding L2: the hook file is then the only evidence left (the entry was taken
+    # out by hand, or a run without a record stopped at the hook delete).
+    def state(inst, home):
+        undone = run(inst, home)
+        path = claude(home) / "settings.json"
+        settings = json.loads(path.read_text(encoding="utf-8"))
+        hooks = settings["hooks"]
+        hooks["UserPromptSubmit"] = [e for e in hooks["UserPromptSubmit"] if "context_check" not in json.dumps(e)]
+        for event in [name for name, entries in hooks.items() if not entries]:
+            del hooks[event]
+        if not hooks:
+            del settings["hooks"]
+        path.write_text(json.dumps(settings), encoding="utf-8")
+        return undone
+    state.__name__ = f"{run.__name__}_or_hook_entry"
+    return state
+
 NO_RECORD = [a_section_without_a_record, the_whole_file_without_a_record,
-             without_the_hook_file(a_section_without_a_record), without_the_hook_file(the_whole_file_without_a_record)]
+             without_the_hook_file(a_section_without_a_record), without_the_hook_file(the_whole_file_without_a_record),
+             without_the_hook_entry(a_section_without_a_record), without_the_hook_entry(the_whole_file_without_a_record)]
 
 
 @pytest.mark.parametrize("number", range(STEPS))
