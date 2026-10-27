@@ -334,15 +334,22 @@ def _check_json(data, path, fix="fix it first"):
                 stack.append((item, depth + 1))
 
 
+def _bad_byte(raw, e):
+    """Where the byte that is not UTF-8 is in the file: utf-8-sig counts from after a BOM."""
+    bom = 3 if raw.startswith(b"\xef\xbb\xbf") else 0
+    return f"{e.reason} at byte {e.start + bom}"
+
+
 def _read_json(path):
     """Read a JSON object; a file that is not UTF-8, not JSON, not an object or not writable
     back is a ValueError naming the file, which main() reports as one line before anything is
     written."""
+    with open(path, "rb") as f:
+        raw = f.read()
     try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+        data = json.loads(raw.decode("utf-8-sig"))
     except UnicodeDecodeError as e:
-        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+        raise ValueError(f"{path} is not UTF-8 ({_bad_byte(raw, e)}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     except RecursionError:
@@ -798,12 +805,13 @@ def read_record(path):
     """
     if not path.exists():
         return None
+    with open(path, "rb") as f:
+        raw = f.read()
     try:
-        with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+        data = json.loads(raw.decode("utf-8-sig"))
     except UnicodeDecodeError as e:
         # PowerShell 5's `>` and Out-File save UTF-16; that is not a JSON error.
-        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first "
+        raise ValueError(f"{path} is not UTF-8 ({_bad_byte(raw, e)}); save it as UTF-8 first "
                          f"{RECORD_KEPT}") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); {RECORD_ADVICE}") from e

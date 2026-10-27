@@ -406,7 +406,7 @@ def test_dangling_symlink_is_reported_before_anything_is_written(install_module,
         pytest.skip("cannot create symlinks here")
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err
     assert not (claude / "ballast").exists()
     assert not settings_file(home).exists()
 
@@ -522,7 +522,7 @@ def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(
         pytest.skip("cannot create symlinks here")
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert not settings_file(home).exists()
     assert not (home / ".claude" / "CLAUDE.md").exists()
 
@@ -866,7 +866,7 @@ def test_a_dangling_settings_or_folder_link_stops_install_before_anything_is_wri
     link_or_skip(link, tmp_path / "missing")
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert not (tmp_path / "missing").exists()
 
 
@@ -883,7 +883,7 @@ def test_a_dangling_claude_config_dir_stops_install_before_anything_is_written(i
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     assert install_module.main([]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert not (tmp_path / "missing").exists()
 
 
@@ -904,7 +904,7 @@ def test_a_config_dir_under_a_dangling_folder_link_stops_install(install_module,
         args = ["--home", str(tmp_path / "link" / "h")]
     assert install_module.main(args) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert not (tmp_path / "missing").exists()
 
 
@@ -951,3 +951,20 @@ def test_an_unreadable_old_backup_does_not_stop_the_install(install_module, tmp_
     install_module.install(home)
     backups = sorted(b.name for b in claude.glob("CLAUDE.md.bak-*"))
     assert len(backups) == 2 and old.name in backups
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+@pytest.mark.parametrize("which", ["settings", "record"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(install_module, tmp_path, capsys, which, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    home = tmp_path / "home"
+    if which == "record":
+        install_module.install(home)
+        path = home / ".claude" / "ballast" / "install-record.json"
+    else:
+        path = home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+    body = b'{"a": "caf\xe9"}'
+    path.write_bytes(bom + body)
+    assert install_module.main(["--home", str(home)]) == 1
+    assert f"at byte {len(bom) + body.index(0xE9)})" in capsys.readouterr().err

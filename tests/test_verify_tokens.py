@@ -77,3 +77,14 @@ def test_no_api_count_at_all_is_exit_1(tmp_path, capsys, monkeypatch):
     assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
     out = capsys.readouterr()
     assert "ERROR" in out.out and "no file was counted" in out.err
+
+
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, capsys, monkeypatch):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    for bom in (b"", b"\xef\xbb\xbf"):
+        bad = tmp_path / "latin.txt"
+        bad.write_bytes(bom + b"caf\xe9\n")
+        module.main(["--api-key", "k", "--model", "m", str(bad)])
+        assert f"not UTF-8 (invalid continuation byte at byte {len(bom) + 3})" in capsys.readouterr().err

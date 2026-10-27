@@ -118,8 +118,13 @@ def main(argv=None):
 
         try:
             text = path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError) as e:
+        except OSError as e:
             print(f"Error reading {path}: {e}", file=sys.stderr)
+            continue
+        except UnicodeDecodeError as e:
+            # utf-8-sig counts from after a BOM; the offset names the byte in the file.
+            bom = 3 if path.read_bytes().startswith(b"\xef\xbb\xbf") else 0
+            print(f"Error reading {path}: not UTF-8 ({e.reason} at byte {e.start + bom})", file=sys.stderr)
             continue
         try:
             o200k, cl100k = count_tiktoken(text)

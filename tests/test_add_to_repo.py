@@ -160,7 +160,7 @@ def test_a_dangling_folder_link_is_reported_before_anything_is_written(tmp_path,
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 1
-    assert "symlink to a missing target" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "symlink to a missing target" in result.stderr and "put the target back" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
     assert not (tmp_path / "gone").exists()
 
 
@@ -177,7 +177,7 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 1
-    assert "symlink to a missing target" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "symlink to a missing target" in result.stderr and "put the target back" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
 
@@ -397,3 +397,15 @@ def test_the_handoff_value_takes_at_most_fifteen_digits(tmp_path, value, ok):
     repo = repo_with(tmp_path)
     result = run_with(repo, "--handoff-at", value)
     assert (result.returncode == 0) is ok, result.stderr[-300:]
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    body = b'{"a": "caf\xe9"}'
+    (repo / ".claude" / "settings.json").write_bytes(bom + body)
+    result = run(repo)
+    assert result.returncode == 1
+    assert f"at byte {len(bom) + body.index(0xE9)})" in result.stderr, result.stderr

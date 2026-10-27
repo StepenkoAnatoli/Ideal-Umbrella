@@ -274,7 +274,10 @@ def read(path):
         with open(path, encoding="utf-8-sig") as f:
             return f.read()
     except UnicodeDecodeError as e:
-        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
+        # utf-8-sig counts from after a BOM; the offset names the byte in the file.
+        with open(path, "rb") as f:
+            bom = 3 if f.read(3) == b"\xef\xbb\xbf" else 0
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start + bom}); save it as UTF-8") from None
 
 
 def report(src_path, out_path, source, rendering):

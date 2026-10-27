@@ -468,17 +468,25 @@ def test_a_record_saved_as_utf16_is_said_to_be_not_utf8(install_module, uninstal
     for module in (install_module, uninstall_module):
         assert module.main(["--home", str(home)]) == 1
         err = capsys.readouterr().err
-        assert "is not UTF-8" in err and "not valid JSON" not in err and "delete it" not in err, err
+        assert "is not UTF-8" in err and install_module.RECORD_KEPT in err and "not valid JSON" not in err, err
+        assert "delete it" not in err, err
 
 
-def test_a_key_deleted_by_hand_after_a_forced_install_stays_deleted(install_module, uninstall_module, tmp_path):
+@pytest.mark.parametrize("record_kind", ["current", "before-installed"])
+def test_a_key_deleted_by_hand_after_a_forced_install_stays_deleted(install_module, uninstall_module, tmp_path,
+                                                                   record_kind):
     # Review 21, finding L1: the second install added the key again, but the record kept the
     # first install's value as the one to put back, so uninstall brought back a value the
-    # user had deleted.
+    # user had deleted. Review 22, I2: a record from before "installed" existed too.
     home = tmp_path / "home"
     settings_file(home).parent.mkdir(parents=True)
     settings_file(home).write_text('{"autoCompactWindow": 100000, "mine": 1}', encoding="utf-8")
     install_module.install(home, force=True)
+    if record_kind == "before-installed":
+        record_path = home / ".claude" / "ballast" / "install-record.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        del record["installed"]
+        record_path.write_text(json.dumps(record), encoding="utf-8")
     settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     del settings["autoCompactWindow"]
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
@@ -498,7 +506,7 @@ def test_the_error_for_a_bad_record_does_not_advise_deleting_it(install_module, 
     for module in (install_module, uninstall_module):
         assert module.main(["--home", str(home)]) == 1
         err = capsys.readouterr().err
-        assert "fix it" in err and "delete it" not in err, err
+        assert install_module.RECORD_ADVICE in err and "delete it" not in err, err
 
 
 def test_an_os_error_before_any_step_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys):
@@ -1079,7 +1087,7 @@ def test_a_dangling_symlink_stops_uninstall_before_anything_is_written(install_m
     before = {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()}
     assert uninstall_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()} == before
     (tmp_path / "away").rename(dotfiles)
     uninstall_module.uninstall(home)
