@@ -1,6 +1,9 @@
 import pytest
 
-from conftest import load_module, python_314_pathlib, refuse_looks_inside, write_jsonl
+import os
+import sys
+
+from conftest import ROOT, load_module, python_314_pathlib, refuse_listing, refuse_looks_inside, write_jsonl
 
 
 @pytest.fixture
@@ -66,3 +69,36 @@ def test_a_transcript_that_cannot_be_looked_at_says_cannot_read(unused_tools, tm
     err = capsys.readouterr().err
     assert "cannot read" in err and "not a folder" not in err, err
     assert str(arg if where == "argument" else blocked / "b.jsonl") in err, err
+
+
+@pytest.mark.parametrize("which", ["top", "sub"])
+def test_a_folder_that_cannot_be_listed_says_cannot_read(unused_tools, tmp_path, capsys, monkeypatch, which):
+    # Review 26, C2: the rglob walk passed over a folder it could not list, so a transcript in
+    # it went uncounted (exit 0), and an unlistable top folder read as "no *.jsonl transcripts".
+    write_jsonl(tmp_path / "a.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Read"}]}}])
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    write_jsonl(sub / "b.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Artifact"}]}}])
+    refused = tmp_path if which == "top" else sub
+    refuse_listing(refused, monkeypatch)
+    assert unused_tools.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"cannot read {refused} (" in err and "no *.jsonl" not in err, err
+
+
+@pytest.mark.skipif(os.name == "nt" or not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a user that file modes apply to")
+def test_a_subfolder_that_cannot_be_listed_is_an_error_for_real(tmp_path):
+    import subprocess
+    write_jsonl(tmp_path / "a.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Read"}]}}])
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    write_jsonl(sub / "b.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Artifact"}]}}])
+    sub.chmod(0o311)
+    try:
+        result = subprocess.run([sys.executable, "-I", str(ROOT / "scripts" / "unused_tools.py"), str(tmp_path)],
+                                capture_output=True, text=True, encoding="utf-8", timeout=60)
+    finally:
+        sub.chmod(0o755)
+    assert result.returncode == 1, result
+    assert f"cannot read {sub} (" in result.stderr and "Traceback" not in result.stderr, result.stderr

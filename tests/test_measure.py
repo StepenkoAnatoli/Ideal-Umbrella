@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
+from conftest import ROOT, load_module, python_314_pathlib, refuse_listing, refuse_looks_inside
 
 
 def test_missing_tiktoken_gives_an_install_hint():
@@ -109,3 +109,49 @@ def test_a_file_in_a_folder_that_cannot_be_searched_says_cannot_read(tmp_path, c
         assert measure.main([str(sub / "hidden.txt")]) == 2
         err = capsys.readouterr().err
         assert "cannot read" in err and "hidden.txt" in err and "no such file" not in err, err
+
+
+@pytest.mark.parametrize("which", ["top", "sub"])
+def test_a_folder_that_cannot_be_listed_is_named_not_passed_over(tmp_path, capsys, monkeypatch, which):
+    # Review 26, C2: os.walk without onerror passed over a folder it could not list, so its
+    # files were missing from the table without a word (an empty table for the top folder).
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "hidden.txt").write_text("hello\n", encoding="utf-8")
+    refused = tmp_path if which == "top" else sub
+    refuse_listing(refused, monkeypatch)
+    assert measure.main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert f"skip (cannot read: Permission denied): {refused}" in captured.err, captured
+    assert ("good.txt" in captured.out) == (which == "sub"), captured
+
+
+def test_an_argument_through_a_file_is_no_such_file(tmp_path, capsys):
+    # Review 26, C3: nothing failed when NotADirectoryError ("a_file/x") read as "cannot read".
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "a_file").write_text("hello\n", encoding="utf-8")
+    assert measure.main([str(tmp_path / "a_file" / "x")]) == 2
+    err = capsys.readouterr().err
+    assert "no such file or folder" in err and "cannot read" not in err, err
+
+
+def test_a_file_gone_during_the_walk_is_no_longer_there(tmp_path, capsys, monkeypatch):
+    # Review 26, C3: nothing failed when a walked file removed before its stat was called a
+    # "symlink to a missing target".
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    real_walk = os.walk
+
+    def walk(top, *args, **kwargs):
+        for root, dirs, names in real_walk(top, *args, **kwargs):
+            yield root, dirs, names + ["gone.txt"]
+    monkeypatch.setattr(measure.os, "walk", walk)
+    assert measure.main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert f"skip (no longer there): {tmp_path / 'gone.txt'}" in captured.err, captured
+    assert "good.txt" in captured.out

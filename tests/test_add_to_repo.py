@@ -523,3 +523,24 @@ def test_a_repo_that_cannot_be_looked_at_says_so_not_usage(add_to_repo, tmp_path
     assert add_to_repo.main([str(locked / "repo")]) == 1
     err = capsys.readouterr().err
     assert "cannot look at" in err and "nothing written" in err and "usage" not in err, err
+
+
+def test_a_repo_that_is_a_link_to_a_folder_is_followed(add_to_repo, tmp_path, capsys):
+    # Review 26, C3: nothing failed when the repo check looked at the link itself, not at the
+    # folder it names.
+    (tmp_path / "repo").mkdir()
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / "repo", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    assert add_to_repo.main([str(tmp_path / "link")]) == 0, capsys.readouterr().err
+    assert (tmp_path / "repo" / ".claude" / "settings.json").is_file()
+
+
+def test_a_repo_that_is_a_file_is_the_usage_line(add_to_repo, tmp_path):
+    # Review 26, C3: nothing failed when the repo check took any file for a folder.
+    (tmp_path / "repo").write_text("not a folder\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([str(tmp_path / "repo")])
+    assert e.value.code == add_to_repo.USAGE
+    assert (tmp_path / "repo").read_text(encoding="utf-8") == "not a folder\n"

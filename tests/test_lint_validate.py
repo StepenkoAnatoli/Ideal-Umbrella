@@ -50,3 +50,12 @@ def test_a_path_that_cannot_be_looked_at_says_cannot_read(lint_validate, tmp_pat
     err = capsys.readouterr().err
     assert f"cannot read {old if which == 'file' else folder}" in err, err
     assert "not a file" not in err and "not a folder" not in err
+
+
+def test_a_corpus_path_through_a_file_is_not_a_folder(lint_validate, tmp_path, capsys):
+    # Review 26, C3: nothing failed when NotADirectoryError ("a_file/x") read as "cannot read".
+    (tmp_path / "a_file").write_text("", encoding="utf-8")
+    old = ROOT / "keyline" / "keyline_lint.py"
+    assert lint_validate.main([str(old), str(tmp_path / "a_file" / "x")]) == 1
+    err = capsys.readouterr().err
+    assert "is not a folder" in err and "cannot read" not in err, err

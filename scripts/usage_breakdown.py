@@ -8,9 +8,9 @@ records 5-minute and 1-hour cache writes separately; they cost $5/MTok and $8/MT
 on Opus 5.5, so pricing every write at the 5-minute rate understates the bill.
 """
 import collections
-import glob
 import json
 import os
+import stat
 import sys
 
 # Opus 5.5 list prices per MTok: input 4, 5m cache write 5, 1h cache write 8,
@@ -128,6 +128,20 @@ def print_report(files, tot, out_chars, turns):
     )
 
 
+def transcripts(folder):
+    """(path, size) of each *.jsonl file in folder; os.listdir and os.stat, not glob and
+    os.path.isfile, which say nothing for a folder or file they cannot look at."""
+    for name in os.listdir(folder):
+        if os.path.normcase(name).endswith(".jsonl") and not name.startswith("."):   # as glob's *.jsonl
+            path = os.path.join(folder, name)
+            try:
+                st = os.stat(path)
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            if stat.S_ISREG(st.st_mode):
+                yield path, st.st_size
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
@@ -142,11 +156,15 @@ def main(argv=None):
         sys.exit("count must be an integer")
     if count <= 0:
         sys.exit("count must be positive")
-    files = [f for f in glob.glob(os.path.join(glob.escape(folder), "*.jsonl")) if os.path.isfile(f)]
-    files = sorted(files, key=os.path.getsize, reverse=True)[:count]
-    if not files:
-        sys.exit(f"no .jsonl files in {folder}")
-    tot, out_chars, turns = summarize(files)
+    try:
+        files = sorted(transcripts(folder), key=lambda f: f[1], reverse=True)[:count]
+        files = [f for f, _ in files]
+        if not files:
+            sys.exit(f"no .jsonl files in {folder}")
+        tot, out_chars, turns = summarize(files)
+    except OSError as e:
+        # A folder or transcript that cannot be read would leave its usage out of the report.
+        sys.exit(f"cannot read {e.filename or folder} ({e.strerror or e})")
     print_report(files, tot, out_chars, turns)
     return 0
 

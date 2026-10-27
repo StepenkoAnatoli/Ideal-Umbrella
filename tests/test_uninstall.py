@@ -1766,6 +1766,30 @@ def test_a_home_that_cannot_be_looked_at_says_cannot_look_at(install_module, uni
     assert list(real_home.iterdir()) == []
 
 
+def test_a_home_that_is_a_link_to_a_folder_is_followed(install_module, uninstall_module, tmp_path, capsys,
+                                                       monkeypatch):
+    # Review 26, C3: nothing failed when the "~" check looked at the link itself, not at the
+    # folder it names (a home reached through a link, such as /home -> /usr/home).
+    real_home = tmp_path / "real"
+    real_home.mkdir()
+    link_or_skip(tmp_path / "home", real_home, target_is_directory=True)
+    monkeypatch.setenv(install_module.HOME_VARIABLE, str(tmp_path / "home"))
+    assert install_module.main(["--home", "~"]) == 0, capsys.readouterr().err
+    assert (real_home / ".claude" / "settings.json").is_file()
+    assert uninstall_module.main(["--home", "~"]) == 0, capsys.readouterr().err
+
+
+def test_a_home_that_is_a_file_is_not_found(install_module, uninstall_module, tmp_path, capsys, monkeypatch):
+    # Review 26, C3: nothing failed when the "~" check took any file for the home folder.
+    (tmp_path / "home").write_text("not a folder\n", encoding="utf-8")
+    monkeypatch.setenv(install_module.HOME_VARIABLE, str(tmp_path / "home"))
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", "~"]) == 1
+        err = capsys.readouterr().err
+        assert "cannot find the home folder" in err and "nothing written" in err, err
+    assert (tmp_path / "home").read_text(encoding="utf-8") == "not a folder\n"
+
+
 def test_an_os_error_at_the_first_write_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys,
                                                               monkeypatch):
     # Review 24, F2: the review-4 test now reaches the read error, so nothing covered an

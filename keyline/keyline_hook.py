@@ -153,7 +153,7 @@ def main():
         # os.stat, not is_file(): on Python 3.14 is_file() says False for a file it cannot look at.
         try:
             regular = stat.S_ISREG(os.stat(path).st_mode)
-        except (FileNotFoundError, NotADirectoryError):
+        except (FileNotFoundError, NotADirectoryError, ValueError):   # ValueError: a NUL in the name
             regular = False
         if not regular or not watched(path, root, patterns):
             return 0

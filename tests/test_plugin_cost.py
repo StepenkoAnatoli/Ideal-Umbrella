@@ -89,3 +89,12 @@ def test_an_app_folder_that_cannot_be_looked_at_says_cannot_read(plugin_cost, tm
     assert plugin_cost.main([str(tmp_path / "out.json"), str(app)]) == 1
     err = capsys.readouterr().err
     assert f"cannot read {app}" in err and "not a folder" not in err, err
+
+
+def test_an_app_folder_through_a_file_is_not_a_folder(plugin_cost, tmp_path, capsys):
+    # Review 26, C3: nothing failed when NotADirectoryError ("a_file/x") read as "cannot read".
+    (tmp_path / "a_file").write_text("", encoding="utf-8")
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path / "a_file" / "x")]) == 1
+    err = capsys.readouterr().err
+    assert "not a folder" in err and "cannot read" not in err, err
+    assert not (tmp_path / "out.json").exists()

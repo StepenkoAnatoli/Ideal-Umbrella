@@ -31,7 +31,9 @@ def files_in(arg):
         return [p]
     if stat.S_ISDIR(mode):
         out = []
-        for root, dirs, names in os.walk(p):
+        # onerror: a folder the walk cannot list is named, as a file it cannot read is.
+        for root, dirs, names in os.walk(p, onerror=lambda e: print(
+                f"skip (cannot read: {e.strerror or e}): {e.filename}", file=sys.stderr)):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
             out += [Path(root) / n for n in sorted(names)]
         return out

@@ -1,5 +1,8 @@
 import json
-from conftest import write_jsonl
+
+import pytest
+
+from conftest import refuse_listing, refuse_looks_inside, write_jsonl
 
 
 def test_prices_5m_and_1h_writes_separately(usage_breakdown, tmp_path):
@@ -133,3 +136,24 @@ def test_a_folder_named_like_a_transcript_is_skipped(usage_breakdown, tmp_path, 
     }])
     assert usage_breakdown.main([str(tmp_path)]) == 0
     assert "1 transcripts" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("what", ["folder", "transcript"])
+def test_a_folder_or_transcript_that_cannot_be_read_says_cannot_read(usage_breakdown, tmp_path, capsys,
+                                                                   monkeypatch, what):
+    # Review 26, C2 other hit: glob said nothing for a folder it could not list ("no .jsonl
+    # files"), os.path.isfile() passed a transcript it could not look at over, and open()
+    # raised a traceback for one it could not read.
+    write_jsonl(tmp_path / "t.jsonl", [{
+        "type": "assistant",
+        "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": []},
+    }])
+    if what == "folder":
+        refuse_listing(tmp_path, monkeypatch)
+    else:
+        refuse_looks_inside(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit) as e:
+        usage_breakdown.main([str(tmp_path)])
+    message = str(e.value.code)
+    assert "cannot read" in message and "no .jsonl" not in message, message
+    assert str(tmp_path if what == "folder" else tmp_path / "t.jsonl") in message, message

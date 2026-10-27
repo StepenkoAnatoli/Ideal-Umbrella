@@ -117,3 +117,22 @@ def test_a_file_that_cannot_be_stated_is_one_line_not_a_traceback(keyline_hook, 
     assert run_main(keyline_hook, monkeypatch, event) == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err and "cannot read" in err and "todo.md" in err
+
+
+def test_a_path_through_a_file_passes_silently(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 26, C3: nothing failed when NotADirectoryError ("a_file/x.md") read as "cannot
+    # read"; such a path is not a file the hook watches, as a missing one is not.
+    (tmp_path / "a_file").write_text("", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(tmp_path / "a_file" / "x.md")}}
+    assert run_main(keyline_hook, monkeypatch, event) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_a_path_holding_a_nul_byte_passes_silently(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 26, info 2: os.stat raises ValueError for a NUL byte, a traceback where is_file()
+    # said False; no file has such a name, so the hook has nothing to check.
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(tmp_path / "x\0.md")}}
+    assert run_main(keyline_hook, monkeypatch, event) == 0
+    assert capsys.readouterr().err == ""

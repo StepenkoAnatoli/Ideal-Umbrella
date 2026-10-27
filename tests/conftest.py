@@ -57,13 +57,24 @@ def write_jsonl(path, events):
 
 def python_314_pathlib(monkeypatch):
     """pathlib as in Python 3.14: exists() and the is_*() checks say False for a path they
-    cannot look at, where 3.13 and earlier raise."""
+    cannot look at, where 3.13 and earlier raise. They look through os.stat and os.lstat, not
+    os.path: on Windows os.path.exists() and the like are C functions that a patched os.stat
+    does not reach."""
+    import stat
     from pathlib import Path
-    monkeypatch.setattr(Path, "exists", lambda self, *, follow_symlinks=True: os.path.exists(self)
-                        if follow_symlinks else os.path.lexists(self))
-    monkeypatch.setattr(Path, "is_file", lambda self, *, follow_symlinks=True: os.path.isfile(self))
-    monkeypatch.setattr(Path, "is_dir", lambda self, *, follow_symlinks=True: os.path.isdir(self))
-    monkeypatch.setattr(Path, "is_symlink", lambda self: os.path.islink(self))
+
+    def says(path, kind, follow=True):
+        try:
+            return kind((os.stat if follow else os.lstat)(path).st_mode)
+        except (OSError, ValueError):
+            return False
+    monkeypatch.setattr(Path, "exists", lambda self, *, follow_symlinks=True:
+                        says(self, lambda mode: True, follow_symlinks))
+    monkeypatch.setattr(Path, "is_file", lambda self, *, follow_symlinks=True:
+                        says(self, stat.S_ISREG, follow_symlinks))
+    monkeypatch.setattr(Path, "is_dir", lambda self, *, follow_symlinks=True:
+                        says(self, stat.S_ISDIR, follow_symlinks))
+    monkeypatch.setattr(Path, "is_symlink", lambda self: says(self, stat.S_ISLNK, False))
 
 
 def refuse_looks_inside(folder, monkeypatch):
@@ -117,3 +128,26 @@ def refuse_looks_inside(folder, monkeypatch):
                              ("listdir", True)):
             if hasattr(accessor, name):
                 monkeypatch.setattr(accessor, name, staticmethod(wrap(getattr(accessor, name), follow)))
+
+
+def refuse_listing(folder, monkeypatch):
+    """A folder that may be searched but not listed (mode 0311, or 0300 seen by its owner's
+    group): listing it is refused, and a path inside it can still be looked at. Runs as root
+    and on Windows, where file modes do not refuse anything."""
+    import pathlib
+    refused = os.path.normcase(os.path.normpath(os.fspath(folder)))
+
+    def wrap(real):
+        def listing(path=".", *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)) and \
+                    os.path.normcase(os.path.normpath(os.fspath(path))) == refused:
+                raise PermissionError(13, "Permission denied", os.fspath(path))
+            return real(path, *args, **kwargs)
+        return listing
+    for name in ("scandir", "listdir"):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name)))
+    accessor = getattr(pathlib, "_NormalAccessor", None)   # 3.10 pathlib kept its own references
+    if accessor is not None:
+        for name in ("scandir", "listdir"):
+            if hasattr(accessor, name):
+                monkeypatch.setattr(accessor, name, staticmethod(wrap(getattr(accessor, name))))

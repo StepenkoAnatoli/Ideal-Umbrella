@@ -26,10 +26,24 @@ def _is(path, kind):
         return False
 
 
+def _raise(error):
+    raise error
+
+
+def transcripts(folder):
+    """The *.jsonl files under folder. os.walk with onerror, not rglob: rglob passes over a
+    folder it cannot list, and the transcripts in it would go uncounted."""
+    for root, _, names in os.walk(folder, onerror=_raise):
+        for name in names:
+            path = Path(root) / name
+            if os.path.normcase(name).endswith(".jsonl") and _is(path, stat.S_ISREG):   # as rglob
+                yield path
+
+
 def tool_calls(folder):
     """Return (number of transcripts, Counter of tool names)."""
     called = collections.Counter()
-    files = sorted(p for p in Path(folder).rglob("*.jsonl") if _is(p, stat.S_ISREG))
+    files = sorted(transcripts(folder))
     for path in files:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -63,7 +77,7 @@ def main(argv=None):
             return 2
         sessions, called = tool_calls(args.dir)
     except OSError as e:
-        # A transcript that cannot be read would leave its tool calls out of the count.
+        # A transcript or folder that cannot be read would leave its tool calls out of the count.
         print(f"error: cannot read {e.filename or args.dir} ({e.strerror or e})", file=sys.stderr)
         return 1
     if not sessions:
