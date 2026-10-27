@@ -74,7 +74,7 @@ The installer is **idempotent** and merges instead of replacing:
 - A symlinked `settings.json`, `CLAUDE.md` or hook file (dotfiles, stow) is written through; the link stays a link. A link to a read-only file (home-manager's Nix store) stops install and uninstall at that file with "read-only" and the path it points at: take the section out in the source, or replace the link with a file, then run again. A hard-linked file becomes a new file: the other links keep the old content. A file linked to one of the installer's own backups (put back with `ln -s`) gets a backup of its own, so the rules are never written into the only copy of your file.
 - `CLAUDE_CONFIG_DIR`, when set, is where the files go (it is where Claude Code reads them); `--home` overrides it.
 - Verification also checks that the Python the hook command names still exists (a deleted venv or a pyenv bump leaves a command that `|| exit 0` silences); run `install.py` again to point it at the current Python.
-- `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder.
+- `--home` may be relative or `~`; it is turned into an absolute path, because Claude Code runs the hook from the project folder. An empty `--home`, a `~name` for no such user, or no home folder at all stops the run with a one-line error before anything is written.
 
 ### Manual install
 

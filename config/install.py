@@ -85,13 +85,22 @@ def target(home_arg):
         # Claude Code runs from the project folder.
         return _absolute(home_arg), None
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path.home().resolve(), (_absolute(config) if config else None)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        # No HOME and no passwd entry for this user (some containers and CI images).
+        raise ValueError("cannot find your home folder; give it with --home") from None
+    return home.resolve(), (_absolute(config) if config else None)
 
 
 def _absolute(path):
     """path made absolute and resolved, except when it or a folder above it is a symlink to a
     missing target: resolving would drop the link, and refuse_dangling() could no longer see it."""
-    path = Path(path).expanduser()
+    try:
+        path = Path(path).expanduser()
+    except RuntimeError:
+        # "~name" for a user that does not exist (bash leaves it as typed), or "~" with no home.
+        raise ValueError(f"cannot find the home folder in {path}") from None
     if any(_is_link(p) and not p.exists() for p in (path, *path.parents)):
         return Path(os.path.abspath(path))
     return path.resolve()
@@ -1132,7 +1141,8 @@ def main(argv=None):
     try:
         home, config_dir = target(args.home)
     except (ValueError, OSError) as e:
-        # An empty --home, or a folder of the path that may not be looked at.
+        # An empty --home, a home that cannot be found, or a folder of the path that may not be
+        # looked at.
         report_error(e, [], before_writes=True)
         return 1
 

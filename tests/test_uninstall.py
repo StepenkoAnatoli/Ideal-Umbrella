@@ -1154,6 +1154,55 @@ def test_a_claude_md_linked_to_the_legacy_backup_and_installed_again_has_the_sec
         assert [n for n in notices if legacy.name in n] == [
             f"CLAUDE.md is a link to {legacy.name}, your file from before the first install, and holds "
             "nothing but the Ideal-Umbrella section; left as is"], notices
+        # Review 15, finding F2: the entry is dropped, so the note is not repeated on every run.
+        record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+        assert "claude_md" not in record, record
+        _, again = uninstall_module.uninstall(home)
+        assert not any(legacy.name in n for n in again), again
+
+
+def test_a_blank_claude_md_linked_to_its_safety_backup_holding_the_section_is_blank_again(
+        install_module, uninstall_module, tmp_path):
+    # Review 15, finding F3: the file was blank before the install and is put back with `ln -s`
+    # to its safety backup, which holds the section. No test had a linked safety backup with
+    # nothing else in it (a mutant taking it for the legacy case left the section, with a note).
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"\n")
+    install_module.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    safety = home / ".claude" / json.loads(record_path.read_text(encoding="utf-8"))["claude_md"]["safety_backup"]
+    safety.write_bytes(md.read_bytes())
+    md.unlink()
+    link_or_skip(md, safety.name)
+    changes, notices = uninstall_module.uninstall(home)
+    assert md.is_symlink() and safety.read_bytes() == b"\n" and notices == [], (changes, notices)
+    assert "claude_md" not in json.loads(record_path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("which", ["safety_backup", "legacy_backup"])
+def test_a_backup_replaced_by_a_dangling_link_is_not_taken_for_gone(install_module, uninstall_module, tmp_path,
+                                                                    which):
+    # Review 15, finding F4: the "no section" note when the recorded backup is still there; a
+    # backup replaced by a link to nothing is still there (it is not read or deleted), and no
+    # test checked that it was not taken for one already deleted.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    if which == "safety_backup":
+        md.write_bytes(b"mine\n")
+        install_module.install(home)
+    else:
+        a_legacy_backup(install_module, home)
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    backup = home / ".claude" / record["claude_md"][which]
+    backup.unlink()
+    link_or_skip(backup, "nowhere")
+    md.write_bytes(b"mine\n")   # the section taken out by hand
+    changes, notices = uninstall_module.uninstall(home)
+    assert md.read_bytes() == b"mine\n" and backup.is_symlink(), (changes, notices)
+    assert "CLAUDE.md has no Ideal-Umbrella section; left as is" in notices, notices
 
 
 @pytest.mark.parametrize("script", ["install", "uninstall"])
@@ -1206,6 +1255,41 @@ def test_an_empty_home_argument_is_refused(install_module, uninstall_module, tmp
     assert "--home is empty" in err and "nothing written" in err, err
     assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
 
+
+
+@pytest.mark.parametrize("case", ["home", "env", "no-home"])
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+def test_a_home_that_cannot_be_found_is_a_one_line_error(install_module, uninstall_module, tmp_path, monkeypatch,
+                                                         capsys, script, case):
+    # Review 15, finding F1: `--home '~nosuchuser'`, CLAUDE_CONFIG_DIR='~nosuchuser/cfg', or a
+    # user with no HOME and no passwd entry made Path.expanduser() or Path.home() raise
+    # RuntimeError, which neither main caught: a traceback, not a one-line error.
+    real_expanduser = Path.expanduser
+
+    def expanduser(self):
+        if str(self).startswith("~nosuchuser"):
+            raise RuntimeError("Could not determine home directory.")
+        return real_expanduser(self)
+
+    def no_home(cls=None):
+        raise RuntimeError("Could not determine home directory.")
+    monkeypatch.setattr(Path, "expanduser", expanduser)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    argv = []
+    if case == "home":
+        argv = ["--home", "~nosuchuser"]
+    elif case == "env":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~nosuchuser/cfg")
+    else:
+        monkeypatch.setattr(Path, "home", classmethod(no_home))
+    module = install_module if script == "install" else uninstall_module
+    assert module.main(argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
+    assert "home folder" in err, err
+    assert not (tmp_path / "home").exists()
 
 def tree(folder):
     """Every entry under folder, links as links (not followed), files with their bytes."""

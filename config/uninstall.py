@@ -569,7 +569,8 @@ def main(argv=None):
     try:
         home, config_dir = install.target(args.home)
     except (ValueError, OSError) as e:
-        # An empty --home, or a folder of the path that may not be looked at.
+        # An empty --home, a home that cannot be found, or a folder of the path that may not be
+        # looked at.
         install.report_error(e, [], before_writes=True)
         return 1
     progress = []

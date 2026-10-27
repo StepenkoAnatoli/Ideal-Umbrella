@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 15 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 16 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -18,7 +18,9 @@
 - Review pass 12 (fresh agent, default model after the Fable limit; head 341f303): 1 medium, 2 low, 2 info; fixed class-wide in the commit after 341f303; record `research/review-findings-graphify-341f303.md`. Main changes: `install.refuse_dangling()` also runs first in uninstall (a dangling settings/CLAUDE.md/hook/record link lost its undo); `install.same_file()` (`os.path.samefile`, True when it cannot tell) in `_backup_name()`, install's kept check and `_is_target()` (a file linked to its own backup); ledger `_wide()` decides by the first two characters with their NULs (x0y0, 0x0y, x000y000, 000x000y) after an optional UTF-8 BOM; one backup in two roles is named/deleted once. Mutants (scratchpad `fix12/mut.py`) m1-m13 killed.
 - Review pass 13 (fresh agent, default model after the Fable limit; head 7ee698e): 3 low, 2 info; fixed class-wide in the commit after 7ee698e; record `research/review-findings-graphify-7ee698e.md`. Main changes: ledger BOM tuple has UTF-32 BE again; `refuse_dangling()` checks every folder above each path and `target()` keeps a dangling `--home`/`CLAUDE_CONFIG_DIR` unresolved (`_absolute`); add_to_repo checks `.claude` and `.claude/hooks`; uninstall's first `_undo_section` check skips a backup that is CLAUDE.md itself; `_holds()` skips an unreadable backup in the reuse scan. Mutants (scratchpad `fix13/mut.py`) y1-y9 killed.
 - Review pass 14 (fresh agent, default model after the Fable limit; head 34cca4d): 3 low, 4 info; fixed class-wide in the commit after 34cca4d; record `research/review-findings-graphify-34cca4d.md`. Main changes: a safety or legacy backup that CLAUDE.md links to is decided once at the top of `_undo_section` to be the file itself (never compared, restored from, deleted or named; a linked legacy file holding only the section is left with a note); both mains report `target()` errors in one line; `--home ""` is refused; tests for the no-record edited/non-UTF-8 guards and the dry-run lines (`tree()` records links). Mutants (scratchpad `fix14/mut.py`) v01-v09, w01-w06 killed; z04, z05, z22 equivalent.
-- Next: review pass 15 (fresh agent; brief as scratchpad `brief14.txt` plus `-34cca4d.md`).
+- a57d553: the linked hand-section test writes bytes (Windows `write_text` gives CRLF); CI green.
+- Review pass 15 (fresh agent, default model after the Fable limit; head 4bbd9d2): 1 low, 3 info; fixed class-wide in the commit after a57d553; record `research/review-findings-graphify-4bbd9d2.md`. Main changes: `target()`/`_absolute()` turn `RuntimeError` from `Path.home()`/`expanduser()` (no such user, no home) into a one-line `ValueError`; tests kill mutants t02, t12, t14, t15 (scratchpad `fix15/mut.py`, also u01, u02).
+- Next: review pass 16 (fresh agent; brief as scratchpad `brief15.txt` plus `-4bbd9d2.md`).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -41,5 +43,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 15 and later, then merge.
+- Review pass 16 and later, then merge.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
