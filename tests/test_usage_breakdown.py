@@ -167,6 +167,26 @@ def _responses(path, n, start=0):
     } for i in range(start, start + n)])
 
 
+@pytest.mark.parametrize("what", ["no transcripts", "missing"])
+def test_a_folder_without_transcripts_is_a_one_line_error(usage_breakdown, tmp_path, capsys, what):
+    # Review 31, L1: nothing failed when the "no .jsonl files" check was dropped (a zero report,
+    # exit 0). Only the top folder is read: transcripts in a subfolder or hidden folder are not.
+    folder = tmp_path / "gone" if what == "missing" else tmp_path
+    if what == "no transcripts":
+        (tmp_path / "x.jsonl").mkdir()
+        _responses(tmp_path / ".d.jsonl", 1)
+        (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+        for sub in ("sub", ".hidden"):
+            (tmp_path / sub).mkdir()
+            _responses(tmp_path / sub / "t.jsonl", 1)
+    with pytest.raises(SystemExit) as e:
+        usage_breakdown.main([str(folder)])
+    message = str(e.value.code)
+    want = f"no .jsonl files in {folder}" if what == "no transcripts" else f"cannot read {folder}"
+    assert message.startswith(want), message
+    assert capsys.readouterr().out == ""
+
+
 def test_the_count_largest_transcripts_are_read_and_dot_files_are_not(usage_breakdown, tmp_path, capsys):
     # Review 27, L2: no test passed a COUNT or held transcripts of different sizes, so reading
     # the smallest first, or reading dot files, went unnoticed.
