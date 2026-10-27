@@ -335,6 +335,30 @@ def test_without_a_record_a_section_equal_to_the_template_is_removed_with_a_copy
     assert len(backups(home)) == 1
 
 
+@pytest.mark.parametrize("kind", ["edited", "not-utf-8"])
+def test_without_a_record_a_section_of_the_users_is_left_as_is(install_module, uninstall_module, tmp_path, kind):
+    # Review 14, finding E5: no test reached these two guards; without them the section of an
+    # install from before the record was removed, and a file that is not UTF-8 was written
+    # back with replacement characters.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    record_path(home).unlink()
+    for name in backups(home):
+        (home / ".claude" / name).unlink()
+    raw = md(home).read_bytes()
+    if kind == "edited":
+        raw = raw.replace(END.encode(), b"- my own rule\n" + END.encode())
+        note = "the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md; left as is"
+    else:
+        raw = raw.replace(b"mine", b"caf\xe9")
+        note = "CLAUDE.md is not UTF-8; left as is with its Ideal-Umbrella section"
+    md(home).write_bytes(raw)
+    changes, notices = uninstall_module.uninstall(home)
+    assert md(home).read_bytes() == raw and backups(home) == [], changes
+    assert note in notices, notices
+
+
 @pytest.mark.parametrize("legacy", [OLD_BACKUP, 1, "../x.bak", "sub/x.bak"])
 def test_a_missing_or_unusable_legacy_backup_keeps_the_file(install_module, uninstall_module, tmp_path, legacy):
     # After the migration only the section is left; removing it would leave the user without
@@ -879,15 +903,27 @@ def test_a_section_added_by_hand_stays_the_users_over_later_runs(install_module,
     assert read_md(home) == f"mine\n{second}"
 
 
+@pytest.mark.parametrize("linked", [False, True], ids=["plain", "linked"])
 @pytest.mark.parametrize("fail_at_uninstall", [False, True])
 def test_a_failed_write_over_a_section_added_by_hand_leaves_nothing(install_module, uninstall_module, tmp_path,
-                                                                     monkeypatch, fail_at_uninstall):
+                                                                     monkeypatch, fail_at_uninstall, linked):
     # Review 5, finding L3 (related): a first install over a hand section with older rules
     # recorded the section, then its CLAUDE.md write failed; uninstall then said the section
-    # "differs" on every run, and a rerun of install said it "had edits".
+    # "differs" on every run, and a rerun of install said it "had edits". Linked (review 14,
+    # finding E4): a CLAUDE.md linked into dotfiles is not a link to its backup.
     home = tmp_path / "home"
     before = f"mine\n{BEGIN}\n- older rules\n{END}\n"
-    write_md(home, before)
+    if linked:
+        dotfiles = tmp_path / "dotfiles" / "CLAUDE.md"
+        dotfiles.parent.mkdir()
+        dotfiles.write_text(before, encoding="utf-8")
+        md(home).parent.mkdir(parents=True)
+        try:
+            md(home).symlink_to(dotfiles)
+        except OSError:
+            pytest.skip("symlinks not permitted here")
+    else:
+        write_md(home, before)
     real_write = install_module._write_bytes
 
     def failing(path, data):

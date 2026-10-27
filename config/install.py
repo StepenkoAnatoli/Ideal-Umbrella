@@ -77,7 +77,10 @@ def target(home_arg):
     """(home, config_dir) for a --home argument. An explicit --home installs under
     <home>/.claude; without it, CLAUDE_CONFIG_DIR (the folder Claude Code reads instead of
     ~/.claude when it is set) is the target, else the current home."""
-    if home_arg:
+    if home_arg is not None:
+        if not home_arg:
+            # An unset variable in a script (--home "$DIR"): the current home is not what was meant.
+            raise ValueError("--home is empty")
         # A relative or literal "~" home would put a relative path in the hook command, which
         # Claude Code runs from the project folder.
         return _absolute(home_arg), None
@@ -1126,7 +1129,12 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         # A path that is not UTF-8 (Linux) is printed escaped rather than ending in a traceback.
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    home, config_dir = target(args.home)
+    try:
+        home, config_dir = target(args.home)
+    except (ValueError, OSError) as e:
+        # An empty --home, or a folder of the path that may not be looked at.
+        report_error(e, [], before_writes=True)
+        return 1
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")

@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -145,7 +147,7 @@ def test_dry_run_writes_nothing(install_module, tmp_path):
     home = tmp_path / "home"
     install_module.install(home)
     claude = home / ".claude"
-    snapshot = {p: p.read_bytes() for p in claude.rglob("*") if p.is_file()}
+    snapshot = tree(claude)
 
     result = subprocess.run(
         [sys.executable, "-I", str(UNINSTALL), "--home", str(home), "--dry-run"],
@@ -153,7 +155,7 @@ def test_dry_run_writes_nothing(install_module, tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "nothing written" in result.stdout
-    assert {p: p.read_bytes() for p in claude.rglob("*") if p.is_file()} == snapshot
+    assert tree(claude) == snapshot
 
 
 def test_nothing_installed_is_a_no_op(uninstall_module, tmp_path):
@@ -807,6 +809,10 @@ def test_a_claude_md_linked_to_its_own_backup_keeps_the_backup(install_module, u
     changes, notices = uninstall_module.uninstall(home)
     assert backup.is_file() and md.read_bytes() == held, (changes, notices)
     assert not any("deleted" in c and backup.name in c for c in changes), changes
+    # Review 14, findings E1 and E3: the backup is the file, so no note names it as a copy to
+    # delete, and the documented way back is not reported as a section taken out by hand.
+    assert not any(backup.name in n and ("delete" in n or " in " + backup.name in n) for n in notices), notices
+    assert not any("no Ideal-Umbrella section" in n for n in notices), notices
 
 
 @pytest.mark.parametrize("own_text", [True, False], ids=["section-removed", "restored"])
@@ -1113,6 +1119,131 @@ def test_a_claude_md_linked_to_its_recorded_backup_holding_the_section_has_the_s
     backup.write_bytes(md.read_bytes())
     md.unlink()
     link_or_skip(md, backup.name)
-    uninstall_module.uninstall(home)
+    changes, notices = uninstall_module.uninstall(home)
     assert md.is_symlink() and backup.read_text(encoding="utf-8") == "my own notes\n"
+    # Review 14, finding E1: the note said to delete the backup, which is the file.
+    assert not any(backup.name in n for n in notices), notices
     assert uninstall_module.uninstall(home) == ([], [])
+
+
+@pytest.mark.parametrize("own_text", ["my own notes\n", ""], ids=["own-text", "blank"])
+def test_a_claude_md_linked_to_the_legacy_backup_and_installed_again_has_the_section_removed(
+        install_module, uninstall_module, tmp_path, own_text):
+    # Review 14, finding E1 (b): CLAUDE.md put back with `ln -s` to the whole-file installer's
+    # backup, then installed again (the section goes into that file through the link). The note
+    # said the file from before the first install "is still in" it, which is CLAUDE.md; with
+    # nothing else in the file, uninstall "restored" it from itself and the section stayed.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    legacy = a_legacy_backup(install_module, home)
+    legacy.write_text(own_text, encoding="utf-8")
+    md.unlink()
+    link_or_skip(md, legacy.name)
+    install_module.install(home)
+    held = legacy.read_bytes()
+    changes, notices = uninstall_module.uninstall(home)
+    assert md.is_symlink() and not any(legacy.name in c for c in changes), (changes, notices)
+    if own_text:
+        assert legacy.read_text(encoding="utf-8") == own_text and notices == [], (changes, notices)
+        assert uninstall_module.uninstall(home) == ([], [])
+    else:
+        # Nothing but the section, as in the file the user had before the first install
+        # (a_legacy_backup_holding_the_section): it is kept, and the note says why.
+        assert legacy.read_bytes() == held, (changes, notices)
+        assert [n for n in notices if legacy.name in n] == [
+            f"CLAUDE.md is a link to {legacy.name}, your file from before the first install, and holds "
+            "nothing but the Ideal-Umbrella section; left as is"], notices
+
+
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+@pytest.mark.parametrize("how", ["env", "home"])
+def test_a_config_dir_that_cannot_be_looked_at_is_a_one_line_error(install_module, uninstall_module, tmp_path,
+                                                                   monkeypatch, capsys, script, how):
+    # Review 14, finding E2: the dangling-link check in target() asked exists() of each folder
+    # above the path, outside main()'s try; a folder the user may not search gave a traceback.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    link_or_skip(tmp_path / "link", tmp_path / "locked")
+    (tmp_path / "locked").mkdir()
+    config = tmp_path / "link" / "cfg"
+    real_exists = Path.exists
+
+    def exists(self, *args, **kwargs):
+        if "locked" in str(self) or "link" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_exists(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "exists", exists)
+    if how == "env":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+        args = []
+    else:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        args = ["--home", str(config)]
+    module = install_module if script == "install" else uninstall_module
+    assert module.main(args) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and "Permission denied" in err, err
+
+
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+def test_an_empty_home_argument_is_refused(install_module, uninstall_module, tmp_path, monkeypatch, capsys,
+                                           script):
+    # Review 14, finding E7: `--home ""` (a script's unset variable) was taken as no --home, so
+    # the run changed the real config with no word.
+    home = tmp_path / "home"
+    seed(home, {})
+    install_module.install(home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
+    module = install_module if script == "install" else uninstall_module
+    assert module.main(["--home", ""]) == 1
+    err = capsys.readouterr().err
+    assert "--home is empty" in err and "nothing written" in err, err
+    assert {p: p.read_bytes() for p in home.rglob("*") if p.is_file()} == before
+
+
+def tree(folder):
+    """Every entry under folder, links as links (not followed), files with their bytes."""
+    out = {}
+    for root, dirs, files in os.walk(folder):
+        for name in dirs + files:
+            p = Path(root) / name
+            out[p] = (("link", os.readlink(p)) if p.is_symlink() else ("dir",) if p.is_dir()
+                      else ("file", p.read_bytes()))
+    return out
+
+
+@pytest.mark.parametrize("kind", ["no-record-section", "no-record-rules", "whole-file-restore"])
+def test_a_dry_run_lists_what_the_real_run_does_and_writes_nothing(install_module, uninstall_module, tmp_path,
+                                                                   kind):
+    # Review 14, finding E6: no test looked at these dry-run lines, and the dry-run snapshot
+    # saw only files, so a dry run that removed the state link passed.
+    home = tmp_path / "home"
+    seed(home, {})
+    claude = home / ".claude"
+    if kind == "whole-file-restore":
+        a_whole_file_record(install_module, home)
+    else:
+        if kind == "no-record-section":
+            (claude / "CLAUDE.md").write_text("mine\n", encoding="utf-8")
+        install_module.install(home)
+        if kind == "no-record-rules":
+            (claude / "CLAUDE.md").write_text(TEMPLATE_MD, encoding="utf-8")
+        (claude / "ballast" / "install-record.json").unlink()
+        for name in claude.glob("CLAUDE.md.bak-*"):
+            name.unlink()
+    (tmp_path / "state").mkdir()
+    link_or_skip(claude / "ballast" / "state", tmp_path / "state")
+    before = tree(home)
+    dry, _ = uninstall_module.uninstall(home, dry_run=True)
+    assert tree(home) == before
+    real, _ = uninstall_module.uninstall(home)
+    real = [re.sub(r" \(copy kept as [^)]*\)$", " (a backup is kept)", c) for c in real
+            if not c.startswith("settings backup: ")]
+    assert dry == real
+    assert "state link removed" in dry and any(c.startswith("CLAUDE.md") for c in dry), dry
