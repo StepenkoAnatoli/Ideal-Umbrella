@@ -197,9 +197,10 @@ def test_an_unset_home_is_taken_from_the_passwd_entry(install_module, tmp_path, 
     import pwd
     home = tmp_path / "home"
     home.mkdir()
-    entry = pwd.getpwuid(os.getuid())
-    monkeypatch.setattr(pwd, "getpwuid", lambda uid: type(entry)((*entry[:5], str(home), *entry[6:])))
-    monkeypatch.delenv("HOME")
+    # Built from scratch: the user running the tests may have no passwd entry (review 19, T1).
+    entry = pwd.struct_passwd(("u", "x", os.getuid(), os.getgid(), "", str(home), "/bin/sh"))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: entry)
+    monkeypatch.delenv("HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     assert install_module.main([]) == 0
     assert settings_file(home).is_file()

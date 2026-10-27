@@ -1378,9 +1378,10 @@ def test_an_empty_home_in_the_passwd_entry_is_refused(install_module, uninstall_
     # Review 18, L2: with no HOME, Path.home() reads the passwd entry and takes an empty home
     # field there for "/", so the run acted on /.claude; Claude Code reads a relative .claude.
     import pwd
-    entry = pwd.getpwuid(os.getuid())
-    monkeypatch.setattr(pwd, "getpwuid", lambda uid: type(entry)((*entry[:5], "", *entry[6:])))
-    monkeypatch.delenv("HOME")
+    # Built from scratch: the user running the tests may have no passwd entry (review 19, T1).
+    entry = pwd.struct_passwd(("u", "x", os.getuid(), os.getgid(), "", "", "/bin/sh"))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: entry)
+    monkeypatch.delenv("HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     argv = how.split() if how != "plain" else []
