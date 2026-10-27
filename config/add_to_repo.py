@@ -153,26 +153,32 @@ def _check_json(data, path):
                 stack.append((item, depth + 1))
 
 
-def _bad_byte(raw, e):
+def _bad_byte(path, e):
     """Where the byte that is not UTF-8 is in the file: utf-8-sig counts from after a BOM."""
-    bom = 3 if raw.startswith(b"\xef\xbb\xbf") else 0
+    try:
+        with open(path, "rb") as f:
+            bom = 3 if f.read(3) == b"\xef\xbb\xbf" else 0
+    except OSError:
+        bom = 0
     return f"{e.reason} at byte {e.start + bom}"
 
 
 def _read_json(path):
-    """Read a JSON object; a file that is not UTF-8, not JSON, not an object or not writable
-    back is a ValueError naming the file, which main() reports as one line before anything is
-    written."""
-    with open(path, "rb") as f:
-        raw = f.read()
+    """Read a JSON object; a file that cannot be read, is not UTF-8, not JSON, not an object or
+    not writable back is a ValueError naming the file, which main() reports as one line before
+    anything is written."""
     try:
-        data = json.loads(raw.decode("utf-8-sig"))
+        # Text mode: bare CR and CRLF line ends are line ends in a JSON error's position.
+        with open(path, encoding="utf-8-sig") as f:
+            data = json.load(f)
     except UnicodeDecodeError as e:
-        raise ValueError(f"{path} is not UTF-8 ({_bad_byte(raw, e)}); save it as UTF-8 first") from None
+        raise ValueError(f"{path} is not UTF-8 ({_bad_byte(path, e)}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
     except RecursionError:
         raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     _check_json(data, path)

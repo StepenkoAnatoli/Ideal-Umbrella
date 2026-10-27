@@ -409,3 +409,24 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, bom):
     result = run(repo)
     assert result.returncode == 1
     assert f"at byte {len(bom) + body.index(0xE9)})" in result.stderr, result.stderr
+
+
+def test_a_settings_file_that_cannot_be_read_stops_before_anything_is_written(tmp_path):
+    # Review 23, F1 other hits: settings.json was read outside any OSError catch, so the error
+    # was a bare [Errno] without "nothing written".
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "settings.json").mkdir(parents=True)
+    result = run(repo)
+    assert result.returncode == 1
+    assert "cannot read" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "[Errno" not in result.stderr, result.stderr
+
+
+def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(tmp_path):
+    # Review 23, I1: reading bytes kept bare CRs, so a JSON error on line 3 was reported on line 1.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_bytes(b'{\r"a": 1,\r"b": }\r')
+    result = run(repo)
+    assert result.returncode == 1
+    assert "line 3" in result.stderr, result.stderr

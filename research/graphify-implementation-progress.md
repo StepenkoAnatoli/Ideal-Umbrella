@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 23 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 24 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -28,7 +28,8 @@
 - Review pass 20 (fresh agent, default model after the Fable limit; head 989169b): 3 low, 2 info; fixed class-wide in the commit after 989169b; record `research/review-findings-graphify-989169b.md`. Main changes: the install record is read with `utf-8-sig` and its errors say fix it, never delete it (`RECORD_ADVICE`); tests for every `--verify-only` failure line and add_to_repo's link and mode writes; ledger and add_to_repo comments. Mutants (scratchpad `fix20/mut.py`) v01, v06, v07, v10, v12, v13, v16-v19, o08, o12, u07, b01, b02 killed; o13, u02, u03, i01 equivalent or root-only.
 - Review pass 21 (fresh agent, default model after the Fable limit; head 195c85a): 3 low, 1 info; fixed class-wide in the commit after 195c85a; record `research/review-findings-graphify-195c85a.md`. Main changes: `_merge_record` drops a kept pre-install value when the run adds the key again (a hand delete stays deleted); a UTF-16 record is called not UTF-8; the dangling-link error says put the target back, never remove; the BOM test checks the record's values are used. Mutants (scratchpad `fix21/mut.py`) l1, l2, l3i, l3a, i1 killed; settings fuzzer 0 of 2000.
 - Review pass 22 (fresh agent, default model after the Fable limit; head 3eae041): 0 behaviour defects; 1 low (test gap), 2 info; fixed class-wide in the commit after 3eae041; record `research/review-findings-graphify-3eae041.md`. Main changes: the advice tests assert the advice that must be there; the not-UTF-8 offset counts a BOM in install, add_to_repo, keyline_lint, keyline_check and verify-tokens; the hand-delete test covers a record without `installed`. Mutants (scratchpad `fix22/mut.py`) n01-n03, n05, n06, b1-b3, k1-k3 killed.
-- Next: review pass 23 (fresh agent; brief as scratchpad `brief23.txt`, Fable first, default model on a 429).
+- Review pass 23 (fresh agent, default model after the Fable limit; head 67f2a7b): 1 medium (a pass-22 regression), 1 info; fixed class-wide in the commit after 67f2a7b; record `research/review-findings-graphify-67f2a7b.md`. Main changes: `read_record` and both `_read_json` read in text mode inside one try with `except OSError` ("cannot read ...; nothing written"; `--verify-only` no longer stops on an unreadable record); `_bad_byte(path, e)` reopens the file for the BOM; bare-CR line numbers in JSON errors are right again. Mutants (scratchpad `fix23/mut.py`) o1-o3, c1-c3, b1, b2 killed.
+- Next: review pass 24 (fresh agent; brief as scratchpad `brief24.txt`, Fable first, default model on a 429).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -51,5 +52,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 23 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
+- Review pass 24 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).

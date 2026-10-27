@@ -511,7 +511,8 @@ def test_the_error_for_a_bad_record_does_not_advise_deleting_it(install_module, 
 
 def test_an_os_error_before_any_step_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys):
     # Review 4, info E2: settings.json replaced by a folder fails the first read, and the
-    # message said the undo stopped part way although nothing was done.
+    # message said the undo stopped part way although nothing was done. Review 23: it is the
+    # read error, which says nothing was written.
     home = tmp_path / "home"
     install_module.install(home)
     settings_file(home).unlink()
@@ -519,7 +520,7 @@ def test_an_os_error_before_any_step_does_not_say_part_way(install_module, unins
 
     assert uninstall_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert err.startswith("Error:") and "run uninstall again" in err
+    assert err.startswith("Error: cannot read") and "nothing written" in err
     assert "part way" not in err and "Done before the error" not in err
 
 
@@ -1574,3 +1575,81 @@ def test_a_dry_run_lists_what_the_real_run_does_and_writes_nothing(install_modul
             if not c.startswith("settings backup: ")]
     assert dry == real
     assert "state link removed" in dry and any(c.startswith("CLAUDE.md") for c in dry), dry
+
+
+def _unreadable(path, how, monkeypatch):
+    """Make path unreadable: a folder in its place (EISDIR; PermissionError on Windows), or an
+    open that is refused (a 0600 file left by a sudo run, which root in CI could still read)."""
+    if how == "folder":
+        if path.exists():
+            path.unlink()
+        path.mkdir(parents=True)
+        return
+    import builtins
+    real_open = builtins.open
+
+    def refuse(file, mode="r", *args, **kwargs):
+        if str(file) == str(path) and "r" in mode:
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, mode, *args, **kwargs)
+    monkeypatch.setattr(builtins, "open", refuse)
+
+
+@pytest.mark.parametrize("how", ["folder", "denied"])
+@pytest.mark.parametrize("run", ["install", "uninstall"])
+def test_a_record_that_cannot_be_read_stops_before_anything_is_written(install_module, uninstall_module, tmp_path,
+                                                                       capsys, monkeypatch, run, how):
+    # Review 23, F1: the pass-22 read opened the record outside its try, so the "cannot read"
+    # handler was dead and the error was a bare [Errno] without "nothing written".
+    home = tmp_path / "home"
+    install_module.install(home)
+    before = settings_file(home).read_bytes()
+    _unreadable(home / ".claude" / "ballast" / "install-record.json", how, monkeypatch)
+    module = install_module if run == "install" else uninstall_module
+    assert module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "nothing written" in err and "[Errno" not in err, err
+    assert settings_file(home).read_bytes() == before
+
+
+@pytest.mark.parametrize("how", ["folder", "denied"])
+def test_verify_only_does_not_stop_on_a_record_that_cannot_be_read(install_module, tmp_path, capsys, monkeypatch,
+                                                                   how):
+    # Review 23, F1: the record is checked by install and uninstall, not by --verify-only; an
+    # OSError from it made verification stop with exit 1 and no report.
+    home = tmp_path / "home"
+    install_module.install(home)
+    _unreadable(home / ".claude" / "ballast" / "install-record.json", how, monkeypatch)
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 0, capsys.readouterr().err
+
+
+@pytest.mark.parametrize("how", ["folder", "denied"])
+@pytest.mark.parametrize("run", ["install", "uninstall"])
+def test_a_settings_file_that_cannot_be_read_stops_before_anything_is_written(install_module, uninstall_module,
+                                                                              tmp_path, capsys, monkeypatch, run,
+                                                                              how):
+    # Review 23, F1 other hits: settings.json was read outside any OSError catch, so the error
+    # was a bare [Errno] without "nothing written".
+    home = tmp_path / "home"
+    install_module.install(home)
+    _unreadable(settings_file(home), how, monkeypatch)
+    module = install_module if run == "install" else uninstall_module
+    assert module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "nothing written" in err and "[Errno" not in err, err
+
+
+@pytest.mark.parametrize("which", ["settings", "record"])
+def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(install_module, tmp_path, capsys, which):
+    # Review 23, I1: reading bytes kept bare CRs (classic Mac line ends), so a JSON error on
+    # line 3 was reported on line 1; text mode reads them as line ends.
+    home = tmp_path / "home"
+    if which == "record":
+        install_module.install(home)
+        path = home / ".claude" / "ballast" / "install-record.json"
+    else:
+        path = settings_file(home)
+        path.parent.mkdir(parents=True)
+    path.write_bytes(b'{\r"a": 1,\r"b": }\r')
+    assert install_module.main(["--home", str(home)]) == 1
+    assert "line 3" in capsys.readouterr().err
