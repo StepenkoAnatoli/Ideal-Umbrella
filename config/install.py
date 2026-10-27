@@ -2,8 +2,10 @@
 """Ideal-Umbrella: install user-level settings, hook, and CLAUDE.md.
 
 Idempotent: running again updates only what changed. Existing keys, other hook
-entries, sibling hooks and permission rules are preserved. A differing
-CLAUDE.md is backed up before it is replaced. The hook command records the
+entries, sibling hooks and permission rules are preserved. In CLAUDE.md only the
+lines between two marker lines are the installer's; the rest of the file is the
+user's and is never changed (the file is backed up before the section is added,
+and before a section the user edited is replaced). The hook command records the
 Python executable that ran the installer, so it does not depend on `python3`
 being on PATH.
 
@@ -12,7 +14,8 @@ Usage:
 
 What it does:
   1. Merges config/user-settings.json into <home>/.claude/settings.json
-  2. Copies config/CLAUDE.md to <home>/.claude/CLAUDE.md (backup on change)
+  2. Adds config/CLAUDE.md to <home>/.claude/CLAUDE.md as a marked section, or
+     updates that section (the text outside it is left as it is)
   3. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
   4. Verifies the files and prints a command to run in a new session.
 
@@ -34,6 +37,11 @@ HERE = Path(__file__).resolve().parent
 USER_SETTINGS = HERE / "user-settings.json"
 CLAUDE_MD = HERE / "CLAUDE.md"
 HOOK_SRC = HERE.parent / "hooks" / "context_check.py"
+
+# The installer's part of ~/.claude/CLAUDE.md lies between these two lines. A whole line each,
+# not a heading: config/CLAUDE.md itself has two H1 headings.
+SECTION_BEGIN = "<!-- Ideal-Umbrella rules: begin -->"
+SECTION_END = "<!-- Ideal-Umbrella rules: end -->"
 
 REQUIRED_TOOLS = (
     "Artifact",
@@ -306,9 +314,11 @@ def _write_json(path, data):
 
 
 def _read_text(path):
-    """Read a UTF-8 file; any failure is a ValueError naming the file."""
+    """Read a UTF-8 file with its line ends as they are; any failure is a ValueError naming
+    the file."""
     try:
-        return path.read_text(encoding="utf-8")
+        with open(path, encoding="utf-8", newline="") as f:
+            return f.read()
     except UnicodeDecodeError as e:
         raise ValueError(f"{path} is not UTF-8 ({e}); save it as UTF-8 first") from e
     except OSError as e:
@@ -324,6 +334,113 @@ def _read_bytes(path):
 
 def text_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _lf(text):
+    return text.replace("\r\n", "\n")
+
+
+def section_text(rules):
+    """The marked section holding rules, with LF line ends."""
+    rules = _lf(rules)
+    if rules and not rules.endswith("\n"):
+        rules += "\n"
+    return f"{SECTION_BEGIN}\n{rules}{SECTION_END}\n"
+
+
+def find_section(text):
+    """Where the Ideal-Umbrella section is in text: (start, body_start, body_end, end) as
+    offsets, from the begin marker line to past the end marker line's line break; None when
+    text has no marker line. A marker is a whole line (trailing whitespace ignored), so a line
+    that only mentions one is not one. A marker without its pair, a second section, or an end
+    before the begin is a ValueError: guessing where the section ends could delete the
+    user's text."""
+    begins, ends = [], []
+    offset = 0
+    for number, line in enumerate(text.split("\n"), 1):
+        bare = line.rstrip()
+        if number == 1:
+            bare = bare.lstrip("\ufeff")
+        after = min(offset + len(line) + 1, len(text))
+        if bare == SECTION_BEGIN:
+            begins.append((number, offset, after))
+        elif bare == SECTION_END:
+            ends.append((number, offset, after))
+        offset += len(line) + 1
+    if not begins and not ends:
+        return None
+    if len(begins) != 1 or len(ends) != 1 or ends[0][0] < begins[0][0]:
+        def lines(found):
+            return ", ".join(str(n) for n, _, _ in found) or "none"
+        raise ValueError(f"the Ideal-Umbrella marker lines are not one begin line followed by one end "
+                         f"line (begin on line {lines(begins)}, end on line {lines(ends)}); "
+                         "fix them by hand first")
+    return begins[0][1], begins[0][2], ends[0][1], ends[0][2]
+
+
+def section_body(text, found):
+    """The rules between the marker lines found by find_section, with LF line ends."""
+    return _lf(text[found[1]:found[2]])
+
+
+def plan_claude_md(current, rules, old):
+    """What install does to CLAUDE.md; reads nothing and writes nothing.
+
+    current is the file's text (None when there is none), rules the template, old the
+    record's claude_md entry from an earlier install. Returns None when the section is
+    already the template, else a dict: text (the whole new file), entry (for the record),
+    backup ("user" for the file before the section is added, "edited" for a section the
+    user changed, None) and change (the line to report). Raises ValueError for broken
+    markers.
+    """
+    old = old if isinstance(old, dict) else None
+    old_format = old is not None and "format" not in old   # the whole-file installer's entry
+    section = section_text(rules)
+    entry = {"format": "section", "sha256": text_hash(section), "created": False, "joined": ""}
+    if old_format and old.get("backup"):
+        entry["legacy_backup"] = old["backup"]
+    elif old is not None and not old_format:
+        entry.update({k: old[k] for k in ("created", "legacy_backup", "safety_backup") if k in old})
+    if current is None:
+        entry["created"] = True
+        return {"text": section, "entry": entry, "backup": None, "change": "CLAUDE.md written"}
+
+    newline = "\r\n" if "\r\n" in current else "\n"
+    ours = section.replace("\n", newline)
+    found = find_section(current)
+    if found:
+        start, _, _, end = found
+        present = section_text(section_body(current, found))
+        if present == section:
+            return None
+        still_ours = not old_format and old is not None and old.get("sha256") == text_hash(present)
+        if not old_format and old is not None:
+            entry["joined"] = old.get("joined", "")
+        return {"text": current[:start] + ours + current[end:], "entry": entry,
+                "backup": None if still_ours else "edited", "change": "CLAUDE.md section updated"}
+
+    if old_format and old.get("sha256") == text_hash(_lf(current)):
+        # The whole file is what the whole-file installer wrote: it becomes the section, and
+        # the file it replaced (if any) is still the one an uninstall puts back.
+        entry["created"] = old.get("backup") is None
+        return {"text": ours, "entry": entry, "backup": None,
+                "change": "CLAUDE.md converted to a marked section"}
+
+    copy = _lf(rules)
+    copy = (copy if copy.endswith("\n") else copy + "\n").replace("\n", newline)
+    at = current.find(copy)
+    if copy.strip() and at >= 0 and current.find(copy, at + 1) < 0 and (at == 0 or current[at - 1] == "\n"):
+        # An unmarked copy of the rules (left by the whole-file installer, or copied by hand) is
+        # wrapped in the marker lines, not added a second time. A hand copy is the user's, so
+        # uninstall takes only the marker lines away again.
+        entry["wrapped"] = not old_format
+        text = current[:at] + SECTION_BEGIN + newline + copy + SECTION_END + newline + current[at + len(copy):]
+        return {"text": text, "entry": entry, "backup": "user", "change": "CLAUDE.md rules marked as a section"}
+
+    if current:
+        entry["joined"] = ("" if current.endswith("\n") else newline) + newline
+    return {"text": current + entry["joined"] + ours, "entry": entry,
+            "backup": "user" if current else None, "change": "CLAUDE.md section added"}
 
 
 def read_record(path):
@@ -411,8 +528,11 @@ def install(home, force=False, progress=None, config_dir=None):
     template = _read_json(USER_SETTINGS)
     old_record = read_record(paths["record"]) or {}
     claude_md = _read_text(CLAUDE_MD)
-    claude_md_exists = paths["claude_md"].exists()
-    current_md = _read_text(paths["claude_md"]) if claude_md_exists else None
+    current_md = _read_text(paths["claude_md"]) if paths["claude_md"].exists() else None
+    try:
+        md_plan = plan_claude_md(current_md, claude_md, old_record.get("claude_md"))
+    except ValueError as e:
+        raise ValueError(f"{paths['claude_md']}: {e}") from None
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
@@ -425,34 +545,25 @@ def install(home, force=False, progress=None, config_dir=None):
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
         progress.append(changes[-1])
 
-    if current_md != claude_md:
-        paths["claude_md"].parent.mkdir(parents=True, exist_ok=True)
-        old_md = old_record.get("claude_md")
-        # A file still holding what an earlier install wrote is the installer's own: no backup
-        # of it (nothing would restore one), and the first backup stays the one to restore.
-        still_ours = (isinstance(old_md, dict) and current_md is not None
-                      and old_md.get("sha256") == text_hash(current_md))
-        backup = None
-        if claude_md_exists and not still_ours:
+    if md_plan is not None:
+        entry = md_plan["entry"]
+        if md_plan["backup"]:
             backup = _backup(paths["claude_md"])
             changes.append(f"CLAUDE.md backup: {backup.name}")
             progress.append(changes[-1])
-        # Keep the first backup when the file is still what an earlier install wrote. If the
-        # user edited it since, their edits are what an uninstall should put back.
-        if isinstance(old_md, dict) and (current_md is None or "sha256" not in old_md or still_ours):
-            record["claude_md"] = dict(old_md, sha256=text_hash(claude_md))
-        else:
-            record["claude_md"] = {"backup": backup.name if backup else None, "sha256": text_hash(claude_md)}
-            if isinstance(old_md, dict) and backup is not None:
-                notices.append(f"CLAUDE.md had edits made after the last install; uninstall will restore {backup.name}")
-        _write_bytes(paths["claude_md"], claude_md.encode("utf-8"))
-        changes.append(f"CLAUDE.md {'updated' if claude_md_exists else 'written'}")
+            if md_plan["backup"] == "edited":
+                notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {backup.name}")
+            else:
+                entry.setdefault("safety_backup", backup.name)
+        _write_bytes(paths["claude_md"], md_plan["text"].encode("utf-8"))
+        changes.append(md_plan["change"])
         progress.append(changes[-1])
+        record["claude_md"] = entry
         # Record the CLAUDE.md change now, before settings.json: if that write fails, the next
-        # install would otherwise see a file that already matches, record nothing for it, and
-        # the undo would never restore the backup. The settings values are recorded only once
+        # install would otherwise see a section that already matches, record nothing for it,
+        # and the undo would never remove it. The settings values are recorded only once
         # settings.json holds them.
-        _write_json(paths["record"], _merge_record(old_record, {"claude_md": record["claude_md"]}))
+        _write_json(paths["record"], _merge_record(old_record, {"claude_md": entry}))
 
     if setting_changes:
         if paths["settings"].exists():
@@ -564,10 +675,20 @@ def verify(home, config_dir=None):
                             "double quotes of the hook command; if the hook does not run, install "
                             "from a home path without them")
 
+    # Only the marked section is the installer's; text outside it is the user's.
     if not paths["claude_md"].exists():
         issues.append(f"Missing: {paths['claude_md']}")
-    elif paths["claude_md"].read_text(encoding="utf-8", errors="replace") != _read_text(CLAUDE_MD):
-        issues.append("CLAUDE.md content differs from config/CLAUDE.md")
+    else:
+        text = paths["claude_md"].read_bytes().decode("utf-8", errors="replace")
+        try:
+            found = find_section(text)
+        except ValueError as e:
+            issues.append(f"CLAUDE.md: {e}")
+        else:
+            if found is None:
+                issues.append("CLAUDE.md has no Ideal-Umbrella section; run install.py")
+            elif section_text(section_body(text, found)) != section_text(_read_text(CLAUDE_MD)):
+                issues.append("the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md")
 
     if not paths["hook"].exists():
         issues.append(f"Missing: {paths['hook']}")

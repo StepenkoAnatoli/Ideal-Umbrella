@@ -56,9 +56,9 @@ def test_install_preserves_user_data_and_is_idempotent(install_module, tmp_path)
     assert sys.executable in ours_hooks[0]["command"]
     assert ours_hooks[0]["timeout"] == 30
 
-    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == (
-        ROOT / "config" / "CLAUDE.md"
-    ).read_text(encoding="utf-8")
+    # The user's own rules stay; the template is added below them as a marked section.
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n\n" + install_module.section_text(
+        (ROOT / "config" / "CLAUDE.md").read_text(encoding="utf-8"))
     backups = list(claude.glob("CLAUDE.md.bak-*"))
     assert backups and backups[0].read_text(encoding="utf-8") == "my own rules\n"
     assert list(claude.glob("settings.json.bak-*"))
@@ -531,9 +531,9 @@ def test_write_bytes_removes_the_temp_file_when_the_rename_fails(install_module,
 
 
 def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it(install_module, tmp_path, monkeypatch):
-    # CLAUDE.md was replaced and backed up, then the settings write failed and no record was
-    # written; the next install saw a CLAUDE.md that already matched, recorded nothing for it,
-    # and uninstall never restored the user's file from the first backup.
+    # CLAUDE.md was changed, then the settings write failed and no record was written; the
+    # next install saw a CLAUDE.md that already matched, recorded nothing for it, and uninstall
+    # never undid the CLAUDE.md change.
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -553,7 +553,7 @@ def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it
     install_module.install(home)
     uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     changes, notices = uninstall_module.uninstall(home)
-    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
 
 
@@ -569,7 +569,7 @@ def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_f
     newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
     monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
     changes, _ = install_module.install(home)
-    assert "CLAUDE.md updated" in changes
+    assert "CLAUDE.md section updated" in changes
     assert not any(c.startswith("CLAUDE.md backup:") for c in changes), changes
     backups = sorted(claude.glob("CLAUDE.md.bak-*"))
     assert len(backups) == 1

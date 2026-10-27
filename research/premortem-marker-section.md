@@ -1,0 +1,29 @@
+# Premortem: marker-delimited section in ~/.claude/CLAUDE.md (2026-10-27)
+
+Change: `config/install.py` stops replacing `~/.claude/CLAUDE.md` wholesale and manages only a
+section between two exact marker lines; `config/uninstall.py` removes only that section;
+`--verify-only` compares only that section. Written before the code, as the brief asks
+(`first-pass:premortem` is not installed in this session, so this is done by hand).
+
+"It is a month later and the change hurt someone. What happened?"
+
+| # | Failure story | Likelihood | Guard (test name in tests/test_install.py or tests/test_uninstall.py) |
+|---|---|---|---|
+| 1 | The section boundary is the next `# ` heading (graphify's design); `config/CLAUDE.md` itself has two H1 headings, so install found half a section and appended a second copy every run. | certain with heading markers | Explicit begin/end comment lines, not headings. `test_reinstall_is_idempotent_with_user_text` |
+| 2 | A user line that merely contains the marker text (a note quoting it) was taken as the marker and their text between was deleted (graphify issue #2062: substring match). | medium | Whole-line match only. `test_a_line_that_mentions_the_marker_is_not_one` |
+| 3 | A file with a begin marker and no end marker (user deleted a line) made install delete from the marker to EOF. | medium | Unbalanced, repeated or reversed markers are an error before anything is written; verify reports it. `test_broken_markers_stop_install_before_any_write`, uninstall twin |
+| 4 | Users of the old whole-file install re-ran install: the file had no markers, so install appended a second copy of the rules under the first. | high (every existing user) | Old-format record whose sha256 equals the file: the whole file is ours, replaced by the section, and the old backup is kept as `legacy_backup`. `test_old_whole_file_install_is_migrated` |
+| 5 | After migration, uninstall no longer restored the backup the old install made, so the user's original CLAUDE.md stayed in a `.bak` file forever. | high | Uninstall restores `legacy_backup` when nothing but the section is left. `test_uninstall_after_migration_restores_the_old_backup` |
+| 6 | Install appended with a blank line; uninstall removed the section but not the blank line, so every install/uninstall cycle grew the file. | high | The separator added is recorded (`joined`) and removed. `test_install_then_uninstall_restores_user_text_byte_for_byte` |
+| 7 | A CRLF file got LF section lines, then compared as "edited" on the next run (backup every run). | medium (Windows) | Section written with the file's line ending; comparisons and hashes on LF-normalised text. `test_crlf_file_keeps_crlf_and_stays_idempotent` |
+| 8 | A user edited inside the section; install silently overwrote their edit. | medium | Edited section (hash differs from the record) is backed up before it is replaced, with a notice. `test_edited_section_is_backed_up_before_replace` |
+| 9 | Uninstall removed a section the user had edited. | medium | Section whose hash differs from the record is left with a notice. `test_uninstall_leaves_an_edited_section` |
+| 10 | Uninstall deleted a CLAUDE.md that existed before install and was empty, or deleted user text. | low | Delete only when the install created the file (`created`) and nothing but whitespace is left. `test_uninstall_deletes_only_a_file_install_created` |
+| 11 | Halfway state: CLAUDE.md written, settings.json write failed, record not written; the next install saw the section as present and unrecorded, and uninstall left it as "not ours". | medium | The record entry is still written right after CLAUDE.md, before settings.json (existing order kept). Existing `test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it`, updated |
+| 12 | `--verify-only` passed on an old whole-file install, so users never migrated; or failed on any user line. | medium | Verify needs the section; text outside it is ignored. `test_verify_ignores_user_text_outside_the_section`, `test_verify_fails_without_a_section` |
+| 13 | Section at EOF without a trailing newline was seen as edited. | low | Canonical form adds the final newline before comparing. `test_section_without_final_newline_is_ours` |
+| 14 | A marker line with trailing spaces (editor) stopped matching. | low | Trailing whitespace ignored on marker lines. Covered by #2 test |
+| 15 | The marker lines cost tokens in every session. | certain, small | Two short HTML comment lines, about 16 tokens at most; stated in the README. |
+
+Not changed on purpose: `config/cloud-setup.sh` still writes the whole file with `cat >`, because
+a cloud machine starts empty and is discarded; the drift test keeps it equal to the template.

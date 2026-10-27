@@ -4,15 +4,17 @@
 Puts back the settings values that were there before the install, removes only the
 permissions.deny tools and the hook entry the installer added, deletes the copied hook with
 the state folder and log it wrote (<home>/.claude/ballast/state/, context_check.log), and
-restores the CLAUDE.md backup (or removes a CLAUDE.md the installer created).
-settings.json is backed up before it is rewritten.
+removes the marked Ideal-Umbrella section from CLAUDE.md (the rest of the file stays; a file
+left with nothing but that section is deleted if the install created it, or replaced by the
+backup an earlier whole-file install made). settings.json is backed up before it is rewritten.
 
 It works from <home>/.claude/ballast/install-record.json, which install.py writes, and
 compares against the values the install wrote (not the current templates). Afterwards the
 record is kept as a marker, so running uninstall again changes nothing. Without a record
 (installs made before it existed) it removes the two keys only if they still hold the
 template values and the Ideal-Umbrella hook is installed, keeps a backup of CLAUDE.md
-before deleting it, removes the hook, and leaves permissions.deny alone.
+before removing the section (or the whole file, from a whole-file install), removes the
+hook, and leaves permissions.deny alone.
 
 A value you changed after installing is left as it is and reported.
 
@@ -169,6 +171,71 @@ def _backup_of(claude_md, name):
         return None
 
 
+def _rest_without_section(current, found, entry):
+    """CLAUDE.md as it was before the install added its section: the marker lines go, and
+    unless the install only wrapped a copy the user had, the rules between them and the
+    separator the install put before them (when the section is still at the end)."""
+    start, body_start, body_end, end = found
+    if entry.get("wrapped") is True:
+        return current[:start] + current[body_start:body_end] + current[end:]
+    before, after = current[:start], current[end:]
+    joined = entry.get("joined")
+    if not after and isinstance(joined, str) and joined and before.endswith(joined):
+        before = before[:-len(joined)]
+    return before + after
+
+
+def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
+    """Remove the section install added to CLAUDE.md; return True when the file is left as
+    is with the record entry kept, so a later run can still undo it."""
+    legacy = entry.get("legacy_backup")
+    legacy_path = _backup_of(claude_md, legacy) if legacy else None
+    if found is None:
+        notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
+                       + (f" (your file from before the first install is in {legacy})"
+                          if legacy_path and legacy_path.exists() else ""))
+        return False
+    if install.text_hash(install.section_text(install.section_body(current, found))) != entry.get("sha256"):
+        notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is")
+        return True
+    if not utf8:
+        # The text was decoded with replacement characters; writing it back would change the
+        # bytes that are not UTF-8.
+        notices.append("CLAUDE.md is not UTF-8; left as is with its Ideal-Umbrella section")
+        return True
+    rest = _rest_without_section(current, found, entry)
+    if not rest.strip():
+        if legacy:
+            if legacy_path is None or not legacy_path.exists():
+                # The install replaced a file of yours and its backup is gone: removing the
+                # section would leave nothing of it, so keep the file and say so.
+                notices.append(f"CLAUDE.md left as is: the backup {legacy} it should be restored from is missing")
+                return True
+
+            def restore():
+                # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
+                # link; a copy that fails part way must not leave a truncated file.
+                install._write_bytes(claude_md, legacy_path.read_bytes())
+                legacy_path.unlink()
+            apply(f"CLAUDE.md restored from {legacy}", restore)
+            return False
+        if entry.get("created") is True:
+            apply("CLAUDE.md deleted", claude_md.unlink)
+            return False
+    data = rest.encode("utf-8")
+    safety = _backup_of(claude_md, entry.get("safety_backup"))
+
+    def write():
+        install._write_bytes(claude_md, data)
+        # The copy install made before adding the section holds these same bytes now.
+        if safety is not None and safety.is_file() and safety.read_bytes() == data:
+            safety.unlink()
+    apply("CLAUDE.md: Ideal-Umbrella section removed", write)
+    if legacy_path is not None and legacy_path.exists():
+        notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
+    return False
+
+
 def uninstall(home, dry_run=False, progress=None, config_dir=None):
     """Undo the install; return (changes, notices). Each change is appended to `progress`
     (when given) once it is done, so an OSError part way can still name the backups made."""
@@ -182,16 +249,30 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         changes.append(change)
         progress.append(change)
 
+    def apply(change, action):
+        if dry_run:
+            changes.append(change)
+        else:
+            action()
+            done(change)
+
     # Read everything first, so a read error leaves every file as it was.
     settings = install._read_json(paths["settings"]) if paths["settings"].exists() else None
     template = install._read_json(install.USER_SETTINGS)
     claude_md = paths["claude_md"]
     # A CLAUDE.md that is not UTF-8 cannot be the one install wrote; decoding it with
     # replacement characters makes it compare as "not ours" instead of blocking the undo.
+    # Line ends are kept as they are, so the text outside the section is written back unchanged.
     try:
-        current_md = claude_md.read_text(encoding="utf-8", errors="replace") if claude_md.exists() else None
+        raw_md = claude_md.read_bytes() if claude_md.exists() else None
     except OSError as e:
         raise ValueError(f"cannot read {claude_md} ({e.strerror or e})") from e
+    current_md = raw_md.decode("utf-8", errors="replace") if raw_md is not None else None
+    md_utf8 = raw_md is not None and current_md.encode("utf-8") == raw_md
+    try:
+        found = install.find_section(current_md) if current_md is not None else None
+    except ValueError as e:
+        raise ValueError(f"{claude_md}: {e}") from None
     template_md = install._read_text(install.CLAUDE_MD)
     evidence = paths["hook"].exists() or (settings is not None and has_our_hook(settings))
 
@@ -235,11 +316,42 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
 
     entry = (record or {}).get("claude_md")
     claude_md_left = False
-    if current_md is not None:
+    if current_md is None:
+        pass
+    elif isinstance(entry, dict) and entry.get("format") == "section":
+        claude_md_left = _undo_section(claude_md, current_md, md_utf8, found, entry, apply, notices)
+    elif found is not None and not isinstance(entry, dict):
+        ours = install.section_text(install.section_body(current_md, found)) == install.section_text(template_md)
+        if record is not None:
+            if ours:
+                # The record says this install never wrote the section (it was already there),
+                # so it is the user's own: say so rather than pass over it in silence.
+                notices.append("CLAUDE.md's Ideal-Umbrella section matches the template but was not "
+                               "written by this install; left as is")
+        elif evidence and not ours:
+            notices.append("the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md; left as is")
+        elif evidence and not md_utf8:
+            notices.append("CLAUDE.md is not UTF-8; left as is with its Ideal-Umbrella section")
+        elif evidence:
+            # Without a record it may be the user's own copy: keep one.
+            rest = _rest_without_section(current_md, found, {})
+            if dry_run:
+                changes.append("CLAUDE.md: Ideal-Umbrella section removed (a backup is kept)")
+            else:
+                backup = install._backup(claude_md)
+                if rest.strip():
+                    install._write_bytes(claude_md, rest.encode("utf-8"))
+                    done(f"CLAUDE.md: Ideal-Umbrella section removed (copy kept as {backup.name})")
+                else:
+                    claude_md.unlink()
+                    done(f"CLAUDE.md deleted (copy kept as {backup.name})")
+    else:
+        # A record of the whole-file installer (or none, from before records existed): the
+        # whole file was the rules.
         if isinstance(entry, dict) and entry.get("sha256"):
-            ours = install.text_hash(current_md) == entry["sha256"]
+            ours = install.text_hash(install._lf(current_md)) == entry["sha256"]
         else:
-            ours = current_md == template_md
+            ours = install._lf(current_md) == install._lf(template_md)
         backup = _backup_of(claude_md, entry.get("backup") if isinstance(entry, dict) else None)
         if not ours:
             claude_md_left = True

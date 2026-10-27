@@ -24,6 +24,18 @@ def read_settings(home):
     return json.loads(settings_file(home).read_text(encoding="utf-8"))
 
 
+def whole_file_install(install_module, home, backup):
+    """What the installer before the marked section left: CLAUDE.md is the template as a whole
+    file, and the record names the backup of the user's earlier file (None: the install
+    created CLAUDE.md) with the hash of the whole file."""
+    install_module.install(home)
+    (home / ".claude" / "CLAUDE.md").write_text(TEMPLATE_MD, encoding="utf-8")
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"] = {"backup": backup, "sha256": install_module.text_hash(TEMPLATE_MD)}
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
 def seed(home, settings, claude_md=None):
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -272,23 +284,21 @@ def test_reinstall_keeps_a_value_the_user_set_after_install(uninstall_module, tm
 
 
 def test_missing_claude_md_backup_keeps_the_file(install_module, uninstall_module, tmp_path):
-    # The install replaced the user's CLAUDE.md and recorded the backup name. If that backup is
-    # gone, deleting the installed file would leave the user with nothing: keep it and say so.
+    # The whole-file install replaced the user's CLAUDE.md and recorded the backup name. If that
+    # backup is gone, deleting the installed file would leave the user with nothing: keep it
+    # and say so. (tests/test_claude_md_section.py has the same case after the migration.)
     home = tmp_path / "home"
-    seed(home, {}, claude_md="my own rules\n")
-    install_module.install(home, force=True)
+    name = "CLAUDE.md.bak-20250101-000000"
+    whole_file_install(install_module, home, name)
     claude = home / ".claude"
-    backups = list(claude.glob("CLAUDE.md.bak-*"))
-    assert len(backups) == 1
-    backups[0].unlink()
 
     changes, notices = uninstall_module.uninstall(home)
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
     assert not any("CLAUDE.md deleted" in change for change in changes)
-    assert any("CLAUDE.md left as is" in notice and backups[0].name in notice for notice in notices)
+    assert any("CLAUDE.md left as is" in notice and name in notice for notice in notices)
     record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
     assert record["uninstalled"] is True
-    assert record["claude_md"]["backup"] == backups[0].name
+    assert record["claude_md"]["backup"] == name
 
 
 def test_unreadable_record_is_not_overwritten(install_module, uninstall_module, tmp_path, capsys):
@@ -331,10 +341,11 @@ def test_os_error_mid_undo_is_reported_not_raised(install_module, uninstall_modu
 
 def test_record_without_claude_md_entry_keeps_the_file_and_says_so(install_module, uninstall_module, tmp_path):
     # A record without a claude_md entry means the install never wrote CLAUDE.md (it already
-    # matched the template), so the file is the user's own. It used to be passed over in
-    # silence; now the uninstall says why it stays.
+    # held the section, added by hand), so the section is the user's own. It used to be passed
+    # over in silence; now the uninstall says why it stays.
     home = tmp_path / "home"
-    seed(home, {}, claude_md=TEMPLATE_MD)
+    by_hand = "mine\n\n" + install_module.section_text(TEMPLATE_MD)
+    seed(home, {}, claude_md=by_hand)
     install_module.install(home)
     assert "claude_md" not in json.loads(
         (home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
@@ -342,17 +353,12 @@ def test_record_without_claude_md_entry_keeps_the_file_and_says_so(install_modul
     changes, notices = uninstall_module.uninstall(home)
     assert not any("CLAUDE.md" in c for c in changes), changes
     assert any("not written by this install" in n for n in notices), notices
-    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == by_hand
 
 
 def test_non_string_backup_name_in_record_does_not_crash(install_module, uninstall_module, tmp_path):
     home = tmp_path / "home"
-    seed(home, {}, claude_md="mine\n")
-    install_module.install(home)
-    record_path = home / ".claude" / "ballast" / "install-record.json"
-    record = json.loads(record_path.read_text(encoding="utf-8"))
-    record["claude_md"]["backup"] = 1
-    record_path.write_text(json.dumps(record), encoding="utf-8")
+    whole_file_install(install_module, home, 1)
 
     changes, notices = uninstall_module.uninstall(home)
     assert "CLAUDE.md deleted" in changes, (changes, notices)
@@ -386,6 +392,7 @@ def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, unins
     seed(home, {}, claude_md="my own rules\n")
     install_module.install(home)
     claude_md = home / ".claude" / "CLAUDE.md"
+    installed = claude_md.read_text(encoding="utf-8")
     real_copyfile, real_replace = shutil.copyfile, os.replace
 
     def truncating_copyfile(src, dst, *args, **kwargs):
@@ -404,7 +411,7 @@ def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, unins
     monkeypatch.setattr(os, "replace", failing_replace)
     with pytest.raises(OSError):
         uninstall_module.uninstall(home)
-    assert claude_md.read_text(encoding="utf-8") == TEMPLATE_MD
+    assert claude_md.read_text(encoding="utf-8") == installed
     assert list((home / ".claude").glob("CLAUDE.md.bak-*"))
 
 
@@ -413,12 +420,7 @@ def test_backup_name_with_a_separator_in_record_does_not_crash(install_module, u
     # Path.with_name raised ValueError on such a name after settings.json was already rewritten,
     # and main() then said "nothing written".
     home = tmp_path / "home"
-    seed(home, {}, claude_md="mine\n")
-    install_module.install(home)
-    record_path = home / ".claude" / "ballast" / "install-record.json"
-    record = json.loads(record_path.read_text(encoding="utf-8"))
-    record["claude_md"]["backup"] = name
-    record_path.write_text(json.dumps(record), encoding="utf-8")
+    whole_file_install(install_module, home, name)
     changes, notices = uninstall_module.uninstall(home)
     assert "CLAUDE.md deleted" in changes, (changes, notices)
 
