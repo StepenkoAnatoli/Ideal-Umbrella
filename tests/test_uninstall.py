@@ -1334,23 +1334,62 @@ def test_a_home_that_is_a_link_to_nothing_is_a_one_line_error(install_module, un
     assert not (tmp_path / "mnt").exists()
 
 
+def confine(monkeypatch, tmp_path, *modules):
+    """Fail the test before any write when a run would act outside tmp_path: a refusal that
+    regresses must not install into the real /.claude when the tests run as root (review 17, K5)."""
+    for module in modules:
+        real = module.layout
+
+        def layout(home, config_dir=None, real=real):
+            paths = real(home, config_dir)
+            assert Path(os.path.abspath(paths["claude"])).is_relative_to(tmp_path), paths["claude"]
+            return paths
+        monkeypatch.setattr(module, "layout", layout)
+
+
+@pytest.mark.parametrize("how", ["plain", "--home ~", "config ~/cfg"])
 @pytest.mark.parametrize("variable", ["HOME", "USERPROFILE"])
 @pytest.mark.parametrize("value", ["", "relative"])
 @pytest.mark.parametrize("script", ["install", "uninstall"])
 def test_an_empty_or_relative_home_variable_is_refused(install_module, uninstall_module, tmp_path, monkeypatch,
-                                                       capsys, script, value, variable):
+                                                       capsys, script, value, variable, how):
     # Review 16, finding G5: HOME="" was taken as "/" (and USERPROFILE="" on Windows as the
     # current folder), so the run acted on /.claude; Claude Code reads a relative .claude there.
+    # Review 17, K3: the same home reached through "~" in --home or CLAUDE_CONFIG_DIR.
     if (variable == "HOME") == (os.name == "nt"):
         pytest.skip("Path.home() reads HOME on POSIX and USERPROFILE on Windows")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(variable, value)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    argv = ["--home", "~"] if how == "--home ~" else []
+    if how == "config ~/cfg":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path("~", "cfg")))
+    module = install_module if script == "install" else uninstall_module
+    confine(monkeypatch, tmp_path, install_module, uninstall_module.install)
+    assert module.main(argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
+    assert f"{variable} is" in err and "--home" in err, err
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", ["cfg", "./~other/cfg"])
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+def test_a_relative_claude_config_dir_is_refused(install_module, uninstall_module, tmp_path, monkeypatch, capsys,
+                                                 script, value):
+    # Review 17, K3: a relative CLAUDE_CONFIG_DIR was taken from the folder the installer ran in,
+    # but Claude Code and the hook read it from each project folder; "./~other/cfg" also went to
+    # that user's home (pathlib drops the "./", K2).
+    real_expanduser = Path.expanduser
+    monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / "other"
+                        if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", value)
     module = install_module if script == "install" else uninstall_module
     assert module.main([]) == 1
     err = capsys.readouterr().err
     assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
-    assert f"{variable} is" in err and "--home" in err, err
+    assert "CLAUDE_CONFIG_DIR" in err and "absolute" in err, err
     assert list(tmp_path.iterdir()) == []
 
 

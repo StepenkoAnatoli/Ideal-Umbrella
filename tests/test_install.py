@@ -160,26 +160,49 @@ def test_failed_install_writes_nothing(install_module, tmp_path, capsys):
     assert not (claude / "ballast").exists()
 
 
-@pytest.mark.parametrize("home_arg", [".", "~", "~other", None])
+@pytest.mark.parametrize("home_arg", [".", "~", "~other", None, "~/sub", "./~other"])
 def test_relative_home_gives_absolute_hook_path(install_module, tmp_path, monkeypatch, home_arg):
     # None: no --home and a HOME with ".." in it; "~other": another user's home that exists
     # (review 16: the HOME is resolved as --home is, and only a "~name" that is not there is refused).
+    # "~/sub": a folder not made yet in your own home (review 17, K4). "./~other": a folder named
+    # "~other" here, not that user's home; pathlib drops the "./" (review 17, K2).
     monkeypatch.chdir(tmp_path)
     (tmp_path / "x").mkdir()
     home = tmp_path / "x" / ".." if home_arg is None else tmp_path
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    real_expanduser = Path.expanduser
     if home_arg == "~other":
-        real_expanduser = Path.expanduser
         monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path.joinpath(*self.parts[1:])
+                            if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    if home_arg == "./~other":
+        (tmp_path / "~other").mkdir()
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / "x"
                             if self.parts and self.parts[0] == "~other" else real_expanduser(self))
     assert install_module.main([] if home_arg is None else ["--home", home_arg]) == 0
 
-    settings = json.loads(settings_file(tmp_path).read_text(encoding="utf-8"))
+    home = tmp_path / {"~/sub": "sub", "./~other": "~other"}.get(home_arg, "")
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    assert str((tmp_path / ".claude" / "ballast" / "context_check.py").resolve()) in command
+    assert str((home / ".claude" / "ballast" / "context_check.py").resolve()) in command
     assert str(tmp_path / "x" / "..") not in command
+    assert list((tmp_path / "x").iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the passwd entry is POSIX")
+def test_an_unset_home_is_taken_from_the_passwd_entry(install_module, tmp_path, monkeypatch):
+    # Review 17, K4: cron, env -i and systemd units run with no HOME; Path.home() then reads the
+    # passwd entry, which is where Claude Code looks too. Only an empty HOME is refused.
+    import pwd
+    home = tmp_path / "home"
+    home.mkdir()
+    entry = pwd.getpwuid(os.getuid())
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: type(entry)((*entry[:5], str(home), *entry[6:])))
+    monkeypatch.delenv("HOME")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert install_module.main([]) == 0
+    assert settings_file(home).is_file()
 
 
 def test_symlinked_settings_stay_symlinks(install_module, tmp_path):

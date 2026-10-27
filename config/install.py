@@ -86,38 +86,56 @@ def target(home_arg):
         return _absolute(home_arg), None
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     if config:
+        if not config.startswith("~") and not Path(config).is_absolute():
+            # Taken from the folder the installer runs in, but Claude Code and the hook read it
+            # from each project folder.
+            raise ValueError("CLAUDE_CONFIG_DIR is not an absolute path; set it to one")
         # layout() does not use the home then, so a home that cannot be found does not matter;
         # --home would install into <home>/.claude, which Claude Code does not read.
         return None, _absolute(config)
-    variable = "USERPROFILE" if os.name == "nt" else "HOME"
     try:
         home = Path.home()
     except RuntimeError:
         # No HOME and no passwd entry for this user (some containers and CI images).
         raise ValueError("cannot find your home folder; give it with --home") from None
-    if os.environ.get(variable) == "" or not home.is_absolute():
-        # Path.home() takes an empty HOME for "/" and an empty or relative one for the current
-        # folder; Claude Code would read a relative .claude, so neither is where it looks.
-        raise ValueError(f"{variable} is empty or not an absolute path; give the home with --home")
     # Through _absolute, as --home: a HOME that is a symlink to a missing folder (an unmounted
     # volume) must reach refuse_dangling() as a link, not be resolved and created.
-    return _absolute(home), None
+    return _absolute(_own_home(home)), None
+
+
+HOME_VARIABLE = "USERPROFILE" if os.name == "nt" else "HOME"
+
+
+def _own_home(home):
+    """home, the result of Path.home() or of "~", unless the variable it comes from is empty or
+    relative: Path.home() takes an empty HOME for "/" and an empty or relative one for the
+    current folder, and Claude Code would read a relative .claude, so neither is where it looks."""
+    if os.environ.get(HOME_VARIABLE) == "" or not home.is_absolute():
+        raise ValueError(f"{HOME_VARIABLE} is empty or not an absolute path; give the home with --home")
+    return home
 
 
 def _absolute(path):
     """path made absolute and resolved, except when it or a folder above it is a symlink to a
     missing target: resolving would drop the link, and refuse_dangling() could no longer see it."""
-    given = Path(path)
-    try:
-        path = given.expanduser()
-        head = given.parts[0] if given.parts else ""
-        if head.startswith("~") and not Path(head).expanduser().is_dir():
+    raw = os.fspath(path)
+    if not raw.startswith("~"):
+        # Not expanded: "./~name" is a folder named "~name", but pathlib drops the "./".
+        path = Path(raw)
+    else:
+        head = Path(raw).parts[0]
+        try:
+            home = Path(head).expanduser()
+            path = Path(raw).expanduser()
+        except RuntimeError:
+            # "~name" for a user that does not exist (bash leaves it as typed), or "~" with no home.
+            raise ValueError(f"cannot find the home folder in {raw}") from None
+        if head == "~":
+            _own_home(home)
+        if not home.is_dir():
             # A home folder that is not there. On Windows "~name" is the folder beside your own
-            # home whether or not that user exists, so it is not refused by expanduser().
-            raise RuntimeError
-    except RuntimeError:
-        # "~name" for a user that does not exist (bash leaves it as typed), or "~" with no home.
-        raise ValueError(f"cannot find the home folder in {given}") from None
+            # home whether or not that user exists, so expanduser() does not refuse it.
+            raise ValueError(f"cannot find the home folder in {raw}")
     if any(_is_link(p) and not p.exists() for p in (path, *path.parents)):
         return Path(os.path.abspath(path))
     return path.resolve()

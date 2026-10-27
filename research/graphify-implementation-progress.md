@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 17 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 18 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -21,7 +21,9 @@
 - a57d553: the linked hand-section test writes bytes (Windows `write_text` gives CRLF); CI green.
 - Review pass 15 (fresh agent, default model after the Fable limit; head 4bbd9d2): 1 low, 3 info; fixed class-wide in the commit after a57d553; record `research/review-findings-graphify-4bbd9d2.md`. Main changes: `target()`/`_absolute()` turn `RuntimeError` from `Path.home()`/`expanduser()` (no such user, no home) into a one-line `ValueError`; tests kill mutants t02, t12, t14, t15 (scratchpad `fix15/mut.py`, also u01, u02).
 - Review pass 16 (fresh agent, default model after the Fable limit; head 21bbc98): 3 low, 3 info; fixed class-wide in the commit after 21bbc98; record `research/review-findings-graphify-21bbc98.md`. Main changes: `target()` needs no home when `CLAUDE_CONFIG_DIR` is set, refuses an empty or relative `HOME`/`USERPROFILE`, and passes `HOME` through `_absolute()` (dangling or looping `HOME` stops before any write); `_absolute()` refuses a `~`/`~name` whose home folder is not a directory (Windows maps `~name` beside your home). Mutants (scratchpad `fix16/mut.py`) s01, s02, h01-h03, h05-h07 killed; h04 Windows-only.
-- Next: review pass 17 (fresh agent; brief as scratchpad `brief16.txt` plus `-21bbc98.md`).
+- Review pass 17 (fresh agent, default model after the Fable limit; head 1d18910): 2 low, 2 info; fixed class-wide in the commit after 1d18910; record `research/review-findings-graphify-1d18910.md`. Main changes: `_absolute()` expands only a raw leading `~` (`./~name` is a folder); `_own_home()` checks `Path.home()` and a bare `~` alike; a relative `CLAUDE_CONFIG_DIR` is refused; `confine()` keeps the refusal tests inside `tmp_path`. Mutants (scratchpad `fix17/mut.py`) k01-k09, r01, r03 killed; r02, r05 (near-)equivalent.
+- A stray `/.claude` in the container (from a pass-16 mutant run as root) could not be removed by the agent (safety check); the user may delete it. It is not in the repo.
+- Next: review pass 18 (fresh agent; brief as scratchpad `brief17.txt` plus `-1d18910.md`).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -44,5 +46,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 17 and later, then merge.
+- Review pass 18 and later, then merge.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
