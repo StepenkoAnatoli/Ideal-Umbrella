@@ -31,9 +31,20 @@ def _is(path, kind):
         raise
 
 
+def _listed_file(path):
+    """True for a regular file, False for a link that leads nowhere (to a missing target, or
+    a loop). Not found otherwise is raised, not passed over: the walk has just listed the name,
+    and on Windows a path past MAX_PATH says "not found" while it is there."""
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError as e:
+        if e.errno == errno.ELOOP or (isinstance(e, FileNotFoundError) and os.path.islink(path)):
+            return False
+        raise
+
+
 def _raise(error):
-    if not isinstance(error, FileNotFoundError):   # a folder gone during the walk holds nothing
-        raise error
+    raise error   # a folder that is not found is raised too: see _listed_file
 
 
 def transcripts(folder):
@@ -42,7 +53,7 @@ def transcripts(folder):
     for root, _, names in os.walk(folder, onerror=_raise):
         for name in names:
             path = Path(root) / name
-            if os.path.normcase(name).endswith(".jsonl") and _is(path, stat.S_ISREG):   # as rglob
+            if os.path.normcase(name).endswith(".jsonl") and _listed_file(path):   # as rglob
                 yield path
 
 

@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from conftest import link_or_skip, loop_or_skip, refuse_listing, refuse_looks_inside, write_jsonl
+from conftest import link_or_skip, loop_or_skip, not_found_at, refuse_listing, refuse_looks_inside, write_jsonl
 
 
 def test_prices_5m_and_1h_writes_separately(usage_breakdown, tmp_path):
@@ -194,3 +194,25 @@ def test_a_symlink_loop_named_like_a_transcript_is_passed_over(usage_breakdown, 
     loop_or_skip(tmp_path / "loop.jsonl")
     assert usage_breakdown.main([str(tmp_path)]) == 0
     assert "1 transcripts, 2 API responses" in capsys.readouterr().out
+
+
+def test_a_listed_transcript_that_is_not_found_says_cannot_read(usage_breakdown, tmp_path, capsys, monkeypatch):
+    # Review 28, L1: pass 27 passed over a listed transcript that os.stat said was not found,
+    # as one removed after the listing. On Windows a path past MAX_PATH says the same while it
+    # is there, and its usage was left out of the report.
+    _responses(tmp_path / "a.jsonl", 1)
+    _responses(tmp_path / "b.jsonl", 2)
+    not_found_at(tmp_path / "b.jsonl", monkeypatch)
+    with pytest.raises(SystemExit) as exit_:
+        usage_breakdown.main([str(tmp_path)])
+    assert f"cannot read {tmp_path / 'b.jsonl'}" in str(exit_.value.code), exit_.value.code
+    assert capsys.readouterr().out == ""
+
+
+def test_a_link_to_a_missing_transcript_is_passed_over(usage_breakdown, tmp_path, capsys):
+    # Review 28, L1: a listed name that is not found is "cannot read" unless it is a link to
+    # a missing target, which holds no usage; nothing pinned that exception.
+    _responses(tmp_path / "a.jsonl", 1)
+    link_or_skip(tmp_path / "b.jsonl", tmp_path / "missing.jsonl")
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 API responses")

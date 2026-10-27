@@ -61,7 +61,7 @@ showed that both scripts count it.
 
 ## Info
 
-1. **A folder removed during the walk** (Claude Code cleaning up old sessions while the script runs):
+1. **A folder removed during the walk** (Claude Code cleaning up old sessions while the script runs). *Superseded by pass 28 (`-1ebdbbc.md`, L1): on Windows a path past MAX_PATH also says "not found", so this change dropped transcripts silently; it was reverted.*
    - unused_tools stopped with "cannot read <sub> (No such file or directory)". A folder that is gone holds no transcripts, so `_raise` now passes over `FileNotFoundError`.
    - measure said "skip (cannot read: No such file or directory)". It now says "skip (no longer there)", as it does for a file, in a named `_unlisted` onerror.
    - Tests: `test_a_folder_gone_during_the_walk_holds_no_transcripts` (unused_tools) and `test_a_folder_gone_during_the_walk_is_no_longer_there` (measure), both failing first.
@@ -77,4 +77,5 @@ showed that both scripts count it.
 
 The listing rules each script keeps (rglob's for unused_tools, glob's for usage_breakdown) are now
 pinned by tests, including the Windows case rule, so a rewrite of either listing has to keep them. A
-folder or link that holds no transcript (gone, or a loop) is passed over the same way in every walk.
+link that holds no transcript (a loop) is passed over the same way in every walk; pass 28 made a
+listed name that is "not found" an error again, except a link to a missing target.

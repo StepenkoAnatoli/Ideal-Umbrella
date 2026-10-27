@@ -137,11 +137,12 @@ def transcripts(folder):
             path = os.path.join(folder, name)
             try:
                 st = os.stat(path)
-            except (FileNotFoundError, NotADirectoryError):
-                continue
             except OSError as e:
-                if e.errno == errno.ELOOP:
-                    continue   # a symlink loop leads nowhere, like a link to a missing target
+                # A link that leads nowhere (to a missing target, or a loop) is passed over.
+                # Not found otherwise is raised: the name has just been listed, and on Windows a
+                # path past MAX_PATH says "not found" while it is there.
+                if e.errno == errno.ELOOP or (isinstance(e, FileNotFoundError) and os.path.islink(path)):
+                    continue
                 raise
             if stat.S_ISREG(st.st_mode):
                 yield path, st.st_size

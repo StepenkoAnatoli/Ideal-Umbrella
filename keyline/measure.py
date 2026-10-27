@@ -24,8 +24,7 @@ SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
 def _unlisted(e):
     """os.walk's onerror: a folder the walk cannot list is named, as a file it cannot read is."""
-    why = "no longer there" if isinstance(e, FileNotFoundError) else f"cannot read: {e.strerror or e}"
-    print(f"skip ({why}): {e.filename}", file=sys.stderr)
+    print(f"skip (cannot read: {e.strerror or e}): {e.filename}", file=sys.stderr)
 
 
 def files_in(arg):
@@ -72,10 +71,13 @@ def main(argv):
                 # a missing target would fail it. The stat itself fails in a folder that lists
                 # its names but cannot be searched (mode 0444); os.stat, as in files_in.
                 why = None if stat.S_ISREG(os.stat(p).st_mode) else "not a regular file"
-            except FileNotFoundError:
-                why = "symlink to a missing target" if os.path.islink(p) else "no longer there"
             except OSError as e:
-                why = f"cannot read: {e.strerror or e}"
+                # Not "no longer there" for a name the walk has just listed: on Windows a path
+                # past MAX_PATH says "not found" while it is there.
+                if isinstance(e, FileNotFoundError) and os.path.islink(p):
+                    why = "symlink to a missing target"
+                else:
+                    why = f"cannot read: {e.strerror or e}"
             if why:
                 print(f"skip ({why}): {p}", file=sys.stderr)
                 continue

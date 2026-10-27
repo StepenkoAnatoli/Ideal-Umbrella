@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT, load_module, python_314_pathlib, refuse_listing, refuse_looks_inside
+from conftest import ROOT, load_module, not_found_at, python_314_pathlib, refuse_listing, refuse_looks_inside
 
 
 def test_missing_tiktoken_gives_an_install_hint():
@@ -29,7 +29,8 @@ def test_unreadable_file_is_skipped_not_a_traceback(tmp_path):
     result = subprocess.run([sys.executable, "-I", str(ROOT / "keyline" / "measure.py"), str(tmp_path)],
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stderr
-    assert "Traceback" not in result.stderr and "skip" in result.stderr and "gone.txt" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert f"skip (symlink to a missing target): {link}" in result.stderr, result.stderr   # Review 28, L1
     assert "good.txt" in result.stdout
 
 
@@ -139,40 +140,58 @@ def test_an_argument_through_a_file_is_no_such_file(tmp_path, capsys):
     assert "no such file or folder" in err and "cannot read" not in err, err
 
 
-def test_a_file_gone_during_the_walk_is_no_longer_there(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("how", ["gone", "too long"])
+def test_a_walked_file_that_is_not_found_says_cannot_read(tmp_path, capsys, monkeypatch, how):
     # Review 26, C3: nothing failed when a walked file removed before its stat was called a
-    # "symlink to a missing target".
+    # "symlink to a missing target". Review 28, L1: it was then "no longer there", which is
+    # not true on Windows for a path past MAX_PATH, which raises the same "not found".
     pytest.importorskip("tiktoken")
     measure = load_module("measure", "keyline/measure.py")
     (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
-    real_walk = os.walk
+    missing = tmp_path / "missing.txt"
+    if how == "gone":
+        real_walk = os.walk
 
-    def walk(top, *args, **kwargs):
-        for root, dirs, names in real_walk(top, *args, **kwargs):
-            yield root, dirs, names + ["gone.txt"]
-    monkeypatch.setattr(measure.os, "walk", walk)
+        def walk(top, *args, **kwargs):
+            for root, dirs, names in real_walk(top, *args, **kwargs):
+                yield root, dirs, names + ["missing.txt"]
+        monkeypatch.setattr(measure.os, "walk", walk)
+    else:
+        missing.write_text("hello\n", encoding="utf-8")
+        not_found_at(missing, monkeypatch)
     assert measure.main([str(tmp_path)]) == 0
     captured = capsys.readouterr()
-    assert f"skip (no longer there): {tmp_path / 'gone.txt'}" in captured.err, captured
-    assert "good.txt" in captured.out
+    assert "skip (cannot read: " in captured.err and f"): {missing}" in captured.err, captured
+    assert "no longer there" not in captured.err and "symlink" not in captured.err, captured
+    assert "good.txt" in captured.out and "missing.txt" not in captured.out
 
 
-def test_a_folder_gone_during_the_walk_is_no_longer_there(tmp_path, capsys, monkeypatch):
-    # Review 27, I1: a folder removed during the walk was "cannot read: No such file or
-    # directory"; a file removed the same way is "no longer there".
+def test_a_folder_that_is_not_found_during_the_walk_says_cannot_read(tmp_path, capsys, monkeypatch):
+    # Review 28, L1: pass 27 called a folder whose listing said "not found" "no longer there";
+    # on Windows a path past MAX_PATH says the same while it is there.
     pytest.importorskip("tiktoken")
     measure = load_module("measure", "keyline/measure.py")
     (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
     sub = tmp_path / "sub"
     sub.mkdir()
-    real = os.scandir
-
-    def scandir(path="."):
-        if os.path.normcase(os.path.normpath(os.fspath(path))) == os.path.normcase(os.path.normpath(sub)):
-            raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
-        return real(path)
-    monkeypatch.setattr(os, "scandir", scandir)
+    (sub / "hidden.txt").write_text("hello\n", encoding="utf-8")
+    not_found_at(sub, monkeypatch)
     assert measure.main([str(tmp_path)]) == 0
     captured = capsys.readouterr()
-    assert f"skip (no longer there): {sub}" in captured.err, captured
-    assert "good.txt" in captured.out
+    assert f"skip (cannot read: No such file or directory): {sub}" in captured.err, captured
+    assert "good.txt" in captured.out and "hidden.txt" not in captured.out
+
+
+def test_hidden_cache_and_dependency_folders_are_not_walked(tmp_path, capsys):
+    # Review 28, L2: nothing failed when a hidden folder, or one in SKIP_DIRS, was walked.
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    for folder in (".git", "cache", "__pycache__", "node_modules"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "x.txt").write_text("hello\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "y.txt").write_text("hello\n", encoding="utf-8")
+    assert measure.main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert "y.txt" in captured.out and "x.txt" not in captured.out, captured
+    assert captured.err == "", captured

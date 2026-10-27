@@ -171,3 +171,20 @@ def refuse_listing(folder, monkeypatch):
         for name in ("scandir", "listdir"):
             if hasattr(accessor, name):
                 monkeypatch.setattr(accessor, name, staticmethod(wrap(getattr(accessor, name))))
+
+
+def not_found_at(path, monkeypatch):
+    """A file or folder that is there, but every stat or listing of it says it is not: on
+    Windows, without LongPathsEnabled, a path past MAX_PATH (260 characters) raises
+    FileNotFoundError, as a removed one does, so "not found" for a name a listing just gave
+    does not mean it is gone."""
+    target = os.path.normcase(os.path.normpath(os.fspath(path)))
+
+    def wrap(real):
+        def look(p=".", *args, **kwargs):
+            if isinstance(p, (str, os.PathLike)) and os.path.normcase(os.path.normpath(os.fspath(p))) == target:
+                raise FileNotFoundError(2, "No such file or directory", os.fspath(p))
+            return real(p, *args, **kwargs)
+        return look
+    for name in ("stat", "scandir", "listdir"):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name)))

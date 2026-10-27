@@ -3,7 +3,7 @@ import pytest
 import os
 import sys
 
-from conftest import ROOT, link_or_skip, load_module, loop_or_skip, python_314_pathlib, refuse_listing, refuse_looks_inside, write_jsonl
+from conftest import ROOT, link_or_skip, load_module, loop_or_skip, not_found_at, python_314_pathlib, refuse_listing, refuse_looks_inside, write_jsonl
 
 
 @pytest.fixture
@@ -144,19 +144,17 @@ def test_a_symlink_loop_named_like_a_transcript_is_passed_over(unused_tools, tmp
     assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")
 
 
-def test_a_folder_gone_during_the_walk_holds_no_transcripts(unused_tools, tmp_path, capsys, monkeypatch):
-    # Review 27, I1: a subfolder removed between listing its parent and listing it (Claude Code
-    # cleaning up old sessions) stopped the run with "cannot read <sub>"; a file removed the
-    # same way was already passed over.
+@pytest.mark.parametrize("which", ["file", "folder"])
+def test_a_listed_name_that_is_not_found_says_cannot_read(unused_tools, tmp_path, capsys, monkeypatch, which):
+    # Review 28, L1: pass 27 passed over a listed file or folder that os.stat or os.scandir
+    # said was not found, as one removed during the walk. On Windows a path past MAX_PATH
+    # says the same while it is there, and its transcripts went uncounted with exit 0.
     write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
     sub = tmp_path / "sub"
     sub.mkdir()
-    real = os.scandir
-
-    def scandir(path="."):
-        if os.path.normcase(os.path.normpath(os.fspath(path))) == os.path.normcase(os.path.normpath(sub)):
-            raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
-        return real(path)
-    monkeypatch.setattr(os, "scandir", scandir)
-    assert unused_tools.main([str(tmp_path)]) == 0
-    assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")
+    write_jsonl(sub / "u.jsonl", _calls("Edit"))
+    hidden = sub / "u.jsonl" if which == "file" else sub
+    not_found_at(hidden, monkeypatch)
+    assert unused_tools.main([str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert f"cannot read {hidden}" in err, err
