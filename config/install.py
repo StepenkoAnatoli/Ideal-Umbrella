@@ -85,11 +85,12 @@ def target(home_arg):
         # Claude Code runs from the project folder.
         return _absolute(home_arg), None
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    if config:
-        if not config.startswith("~") and not Path(config).is_absolute():
-            # Taken from the folder the installer runs in, but Claude Code and the hook read it
-            # from each project folder.
-            raise ValueError("CLAUDE_CONFIG_DIR is not an absolute path; set it to one")
+    if config is not None:
+        if not Path(config).is_absolute():
+            # Claude Code takes the value as it is: it does not expand "~", it does not take an
+            # empty value for unset, and it reads a relative one from each project folder.
+            raise ValueError(f"CLAUDE_CONFIG_DIR={config!r} is empty or not an absolute path, and Claude Code "
+                             "does not expand ~; set it to an absolute path or unset it")
         # layout() does not use the home then, so a home that cannot be found does not matter;
         # --home would install into <home>/.claude, which Claude Code does not read.
         return None, _absolute(config)
@@ -107,11 +108,19 @@ HOME_VARIABLE = "USERPROFILE" if os.name == "nt" else "HOME"
 
 
 def _own_home(home):
-    """home, the result of Path.home() or of "~", unless the variable it comes from is empty or
-    relative: Path.home() takes an empty HOME for "/" and an empty or relative one for the
-    current folder, and Claude Code would read a relative .claude, so neither is where it looks."""
-    if os.environ.get(HOME_VARIABLE) == "" or not home.is_absolute():
-        raise ValueError(f"{HOME_VARIABLE} is empty or not an absolute path; give the home with --home")
+    """home, the result of Path.home() or of "~", unless the value it comes from is empty or
+    relative: Path.home() takes an empty HOME (or, with no HOME, an empty home in the passwd
+    entry) for "/" and an empty or relative one for the current folder, and Claude Code would
+    read a relative .claude, so neither is where it looks."""
+    source, value = HOME_VARIABLE, os.environ.get(HOME_VARIABLE)
+    if value is None and os.name != "nt":
+        import pwd
+        try:
+            source, value = "the home in your passwd entry", pwd.getpwuid(os.getuid()).pw_dir
+        except KeyError:
+            pass
+    if value == "" or not home.is_absolute():
+        raise ValueError(f"{source} is empty or not an absolute path; give the home with --home")
     return home
 
 

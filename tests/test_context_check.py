@@ -196,8 +196,8 @@ def test_compaction_above_threshold_starts_the_bands_again(tmp_path):
 
 def test_state_dir_follows_claude_config_dir(context_check, monkeypatch, tmp_path):
     # Claude Code keeps its files in CLAUDE_CONFIG_DIR when it is set; the hook used ~/.claude.
-    # The value is read as install.py reads it (~ expanded, made absolute), so a quoted
-    # "~/cfg" does not put the state under a folder named "~" in every project.
+    # A quoted "~/cfg" (install refuses it; Claude Code does not expand it) is expanded, so the
+    # state does not land under a folder named "~" in every project.
     monkeypatch.delenv("IDEAL_UMBRELLA_STATE_DIR", raising=False)
     monkeypatch.delenv("IDEAL_UMBRELLA_LOG", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))

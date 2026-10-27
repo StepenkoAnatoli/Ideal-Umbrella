@@ -1257,13 +1257,14 @@ def test_an_empty_home_argument_is_refused(install_module, uninstall_module, tmp
 
 
 
-@pytest.mark.parametrize("case", ["home", "env", "no-home"])
+@pytest.mark.parametrize("case", ["home", "no-home"])
 @pytest.mark.parametrize("script", ["install", "uninstall"])
 def test_a_home_that_cannot_be_found_is_a_one_line_error(install_module, uninstall_module, tmp_path, monkeypatch,
                                                          capsys, script, case):
     # Review 15, finding F1: `--home '~nosuchuser'`, CLAUDE_CONFIG_DIR='~nosuchuser/cfg', or a
     # user with no HOME and no passwd entry made Path.expanduser() or Path.home() raise
-    # RuntimeError, which neither main caught: a traceback, not a one-line error.
+    # RuntimeError, which neither main caught: a traceback, not a one-line error. (A "~" in
+    # CLAUDE_CONFIG_DIR is refused before it is expanded since review 18, L1.)
     real_expanduser = Path.expanduser
 
     def expanduser(self):
@@ -1280,8 +1281,6 @@ def test_a_home_that_cannot_be_found_is_a_one_line_error(install_module, uninsta
     argv = []
     if case == "home":
         argv = ["--home", "~nosuchuser"]
-    elif case == "env":
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", "~nosuchuser/cfg")
     else:
         monkeypatch.setattr(Path, "home", classmethod(no_home))
     module = install_module if script == "install" else uninstall_module
@@ -1347,7 +1346,7 @@ def confine(monkeypatch, tmp_path, *modules):
         monkeypatch.setattr(module, "layout", layout)
 
 
-@pytest.mark.parametrize("how", ["plain", "--home ~", "config ~/cfg"])
+@pytest.mark.parametrize("how", ["plain", "--home ~"])
 @pytest.mark.parametrize("variable", ["HOME", "USERPROFILE"])
 @pytest.mark.parametrize("value", ["", "relative"])
 @pytest.mark.parametrize("script", ["install", "uninstall"])
@@ -1355,15 +1354,13 @@ def test_an_empty_or_relative_home_variable_is_refused(install_module, uninstall
                                                        capsys, script, value, variable, how):
     # Review 16, finding G5: HOME="" was taken as "/" (and USERPROFILE="" on Windows as the
     # current folder), so the run acted on /.claude; Claude Code reads a relative .claude there.
-    # Review 17, K3: the same home reached through "~" in --home or CLAUDE_CONFIG_DIR.
+    # Review 17, K3: the same home reached through "~" in --home.
     if (variable == "HOME") == (os.name == "nt"):
         pytest.skip("Path.home() reads HOME on POSIX and USERPROFILE on Windows")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv(variable, value)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     argv = ["--home", "~"] if how == "--home ~" else []
-    if how == "config ~/cfg":
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path("~", "cfg")))
     module = install_module if script == "install" else uninstall_module
     confine(monkeypatch, tmp_path, install_module, uninstall_module.install)
     assert module.main(argv) == 1
@@ -1373,32 +1370,62 @@ def test_an_empty_or_relative_home_variable_is_refused(install_module, uninstall
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("value", ["cfg", "./~other/cfg"])
+@pytest.mark.skipif(os.name == "nt", reason="the passwd entry is POSIX only")
+@pytest.mark.parametrize("how", ["plain", "--home ~", "--home ~/sub"])
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+def test_an_empty_home_in_the_passwd_entry_is_refused(install_module, uninstall_module, tmp_path, monkeypatch,
+                                                      capsys, script, how):
+    # Review 18, L2: with no HOME, Path.home() reads the passwd entry and takes an empty home
+    # field there for "/", so the run acted on /.claude; Claude Code reads a relative .claude.
+    import pwd
+    entry = pwd.getpwuid(os.getuid())
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: type(entry)((*entry[:5], "", *entry[6:])))
+    monkeypatch.delenv("HOME")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    argv = how.split() if how != "plain" else []
+    module = install_module if script == "install" else uninstall_module
+    confine(monkeypatch, tmp_path, install_module, uninstall_module.install)
+    assert module.main(argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
+    assert "passwd" in err and "--home" in err, err
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("value", ["cfg", "./~other/cfg", "~/cfg", "~other/cfg", ""])
 @pytest.mark.parametrize("script", ["install", "uninstall"])
 def test_a_relative_claude_config_dir_is_refused(install_module, uninstall_module, tmp_path, monkeypatch, capsys,
                                                  script, value):
     # Review 17, K3: a relative CLAUDE_CONFIG_DIR was taken from the folder the installer ran in,
     # but Claude Code and the hook read it from each project folder; "./~other/cfg" also went to
     # that user's home (pathlib drops the "./", K2).
+    # Review 18, L1: Claude Code takes the value as it is: it does not expand "~" and does not
+    # take an empty value for unset, so "~/cfg" and "" were installed where it does not read.
     real_expanduser = Path.expanduser
     monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / "other"
                         if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    (tmp_path / "other").mkdir()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", value)
     module = install_module if script == "install" else uninstall_module
+    confine(monkeypatch, tmp_path, install_module, uninstall_module.install)
     assert module.main([]) == 1
     err = capsys.readouterr().err
     assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
     assert "CLAUDE_CONFIG_DIR" in err and "absolute" in err, err
-    assert list(tmp_path.iterdir()) == []
+    assert sorted(p.name for p in tmp_path.rglob("*")) == ["home", "other"]
 
 
-@pytest.mark.parametrize("where", ["home", "env"])
 @pytest.mark.parametrize("script", ["install", "uninstall"])
 def test_a_home_of_another_user_that_is_not_there_is_refused(install_module, uninstall_module, tmp_path,
-                                                            monkeypatch, capsys, script, where):
+                                                            monkeypatch, capsys, script):
     # Review 16, finding G4: on Windows "~name" expands to a folder beside your own home
     # (C:\Users\name) whether or not that user exists, so a typo was installed into, not refused.
+    # Review 18, T1: your own home is there, so only the other user's missing home can stop it.
     real_expanduser = Path.expanduser
     users = tmp_path / "Users"
 
@@ -1407,20 +1434,32 @@ def test_a_home_of_another_user_that_is_not_there_is_refused(install_module, uni
             return users.joinpath("nosuchuser", *self.parts[1:])
         return real_expanduser(self)
     monkeypatch.setattr(Path, "expanduser", expanduser)
+    (tmp_path / "home").mkdir()
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    argv = []
-    if where == "home":
-        argv = ["--home", "~nosuchuser"]
-    else:
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(Path("~nosuchuser", "cfg")))
     module = install_module if script == "install" else uninstall_module
-    assert module.main(argv) == 1
+    assert module.main(["--home", "~nosuchuser"]) == 1
     err = capsys.readouterr().err
     assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
     assert "~nosuchuser" in err and "home folder" in err, err
     assert not users.exists()
+
+
+@pytest.mark.parametrize("script", ["install", "uninstall"])
+def test_your_own_home_that_is_not_there_is_refused(install_module, uninstall_module, tmp_path, monkeypatch,
+                                                    capsys, script):
+    # Review 18, T1: a bare "~" whose home folder is missing is refused on purpose, but no test
+    # held it: install created the missing home.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    module = install_module if script == "install" else uninstall_module
+    assert module.main(["--home", "~"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and err.count("\n") == 1 and "nothing written" in err, err
+    assert "home folder" in err, err
+    assert list(tmp_path.iterdir()) == []
 
 def tree(folder):
     """Every entry under folder, links as links (not followed), files with their bytes."""
