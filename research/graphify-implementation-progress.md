@@ -4,7 +4,8 @@
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
 - Done and pushed: item 2 drift tests (3f30b51), item 3 pyflakes + Python 3.10/3.13 CI (3f30b51), item 4 CONTRIBUTING / PR template / hook security model (06c3224), item 1 first half, marker section in `~/.claude/CLAUDE.md` (a9b35d3; premortem `research/premortem-marker-section.md`), item 5 `scripts/ledger.py` + `research/measurements.jsonl` (c7c3fa2), item 7 `add_to_repo.py --handoff-at` with object-valued template keys merged key by key (a59ed16). PR #27 body updated.
 - Review pass 1 (fresh fable agent, head 5a18f22): 9 findings, all fixed class-wide with failing-first tests; record `research/review-findings-graphify-5a18f22.md`. Includes source rule 6 (every json.load/loads handles RecursionError) and backup reuse in `install._backup`.
-- Next: review pass 2 with a NEW fresh fable agent on the fixed head; repeat until a pass finds nothing; then merge on green CI.
+- CI green on c7a2de5 (fixes of pass 1). Review pass 2 (fresh fable agent) running; its report goes to the session scratchpad `review2-findings.md` (lost if the container goes; then start pass 2 again).
+- Next: fix pass-2 findings like pass 1 (record in `research/review-findings-graphify-c7a2de5.md`); repeat with a NEW agent until a pass finds nothing; then merge on green CI.
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
