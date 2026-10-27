@@ -246,10 +246,11 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                 notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
         return False
 
-    if _is_file(safety) and safety.read_bytes() == on_disk:
+    if _is_file(safety) and safety.read_bytes() == on_disk and not _is_target(safety, claude_md):
         # The install recorded its section and made this backup, then stopped before its
         # CLAUDE.md write (or the user put the file back as it was): the file is the backup,
-        # and a section in it is one the user had before the install.
+        # and a section in it is one the user had before the install. A CLAUDE.md linked to
+        # this backup is no copy of it: the section in it is taken out through the link.
         return leave()
     if found is None:
         if safety is not None and not (safety.exists() or safety.is_symlink()):

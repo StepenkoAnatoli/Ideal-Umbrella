@@ -90,8 +90,14 @@ def test_a_byte_order_mark_before_the_first_line_is_not_an_unreadable_line(ledge
     # Review 12: PowerShell 5 appending to an empty file Notepad saved with a UTF-8 BOM.
     b"\xef\xbb\xbf" + '{"fixed_tokens": 71396}\r\n'.encode("utf-16"),
     b"\xef\xbb\xbf" + '{"fixed_tokens": 71396}\r\n'.encode("utf-16-le"),
+    # Review 13, finding D1: the BOM in big-endian order (PowerShell 7 -Encoding bigendianutf32,
+    # bigendianunicode); its own bytes fit none of the character layouts.
+    '\ufeff{"fixed_tokens": 71396}\n'.encode("utf-32-be"),
+    '\ufeff{"fixed_tokens": 71396}\r\n'.encode("utf-16-be"),
+    b"\xef\xbb\xbf" + '\ufeff{"fixed_tokens": 71396}\n'.encode("utf-32-be"),
 ], ids=["utf-16-bom", "utf-16-be", "utf-16-le", "utf-32", "utf-32-be", "utf-16-bom-only",
-        "utf8-bom-then-utf-16-bom", "utf8-bom-then-utf-16-le"])
+        "utf8-bom-then-utf-16-bom", "utf8-bom-then-utf-16-le", "utf-32-be-bom", "utf-16-be-bom",
+        "utf8-bom-then-utf-32-be-bom"])
 def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger, tmp_path, capsys, data):
     # Review 9, finding L3: a UTF-8 line appended to a UTF-16 file left a file neither
     # encoding decodes.

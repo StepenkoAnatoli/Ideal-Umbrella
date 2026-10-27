@@ -80,9 +80,18 @@ def target(home_arg):
     if home_arg:
         # A relative or literal "~" home would put a relative path in the hook command, which
         # Claude Code runs from the project folder.
-        return Path(home_arg).expanduser().resolve(), None
+        return _absolute(home_arg), None
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path.home().resolve(), (Path(config).expanduser().resolve() if config else None)
+    return Path.home().resolve(), (_absolute(config) if config else None)
+
+
+def _absolute(path):
+    """path made absolute and resolved, except when it or a folder above it is a symlink to a
+    missing target: resolving would drop the link, and refuse_dangling() could no longer see it."""
+    path = Path(path).expanduser()
+    if any(_is_link(p) and not p.exists() for p in (path, *path.parents)):
+        return Path(os.path.abspath(path))
+    return path.resolve()
 
 
 def quote(value):
@@ -303,7 +312,7 @@ def _backup_name(path):
         # Not the file itself: path linked to a backup (put back with `ln -s`) holds its bytes,
         # and the install then writes through the link into what it takes for the copy.
         if ours.fullmatch(earlier.name) and earlier.is_file() and not earlier.is_symlink() \
-                and earlier.read_bytes() == data and not same_file(earlier, path):
+                and _holds(earlier, data) and not same_file(earlier, path):
             return earlier
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
@@ -312,6 +321,15 @@ def _backup_name(path):
         backup = path.with_name(f"{path.name}.bak-{stamp}-{n}")
         n += 1
     return backup
+
+
+def _holds(path, data):
+    """True when path holds data; False when it cannot be read (an old backup left
+    root-owned by a sudo run is no match, and must not stop every install)."""
+    try:
+        return path.read_bytes() == data
+    except OSError:
+        return False
 
 
 def backup_of(path, name):
@@ -394,11 +412,13 @@ def same_file(a, b):
 
 
 def refuse_dangling(paths):
-    """Raise ValueError for a symlink whose target is missing (a dotfiles folder moved or not
-    mounted): read as a missing file, it would be written over, or its undo dropped."""
+    """Raise ValueError when one of paths, or a folder above it, is a symlink whose target is
+    missing (a dotfiles folder moved or not mounted): read as a missing file, it would be
+    written over (into the missing target), or its undo dropped."""
     for path in paths:
-        if _is_link(path) and not path.exists():
-            raise ValueError(f"{path} is a symlink to a missing target; fix or remove it first")
+        for part in (path, *path.parents):
+            if _is_link(part) and not part.exists():
+                raise ValueError(f"{part} is a symlink to a missing target; fix or remove it first")
 
 
 def _is_link(path):

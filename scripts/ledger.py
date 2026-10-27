@@ -65,7 +65,7 @@ def _wide(data):
     appending to a file Notepad made). NULs alone, or after a short line, are no encoding: a
     torn append after a power loss reads as a run of them."""
     head = data[3:] if data.startswith(b"\xef\xbb\xbf") else data
-    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+    if head.startswith((b"\xff\xfe", b"\xfe\xff", b"\x00\x00\xfe\xff")):   # UTF-32 LE starts as UTF-16 LE
         return True
     for width, at in ((2, 0), (2, 1), (4, 0), (4, 3)):
         units = head[:2 * width]

@@ -300,7 +300,8 @@ def _add(repo, force, progress=None, handoff_at=None):
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
-    for p in (path, target):
+    # The folders too: a .claude linked into a moved folder would be created at its target.
+    for p in (path, target, claude_dir, os.path.dirname(target)):
         if _is_link(p) and not os.path.exists(p):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}

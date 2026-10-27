@@ -765,3 +765,103 @@ def test_a_settings_file_linked_to_an_earlier_backup_gets_a_backup_of_its_own(in
     install_module.install(home)
     copies = [b for b in claude.glob("settings.json.bak-*") if b != earlier]
     assert [b.read_text(encoding="utf-8") for b in copies] == ['{"model": "mine"}']
+
+
+@pytest.mark.parametrize("name", ["settings", "claude", "ballast"])
+def test_a_dangling_settings_or_folder_link_stops_install_before_anything_is_written(install_module, tmp_path,
+                                                                                     capsys, name):
+    # Review 13, finding D2 (and mutant x01 for settings.json): only the last part of each path
+    # was checked, so a ~/.claude or ballast folder linked into a moved dotfiles folder was
+    # created at the missing target and written there.
+    home = tmp_path / "home"
+    paths = install_module.layout(home)
+    link = {"settings": paths["settings"], "claude": paths["claude"], "ballast": paths["record"].parent}[name]
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link_or_skip(link, tmp_path / "missing")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+def test_a_dangling_claude_config_dir_stops_install_before_anything_is_written(install_module, tmp_path,
+                                                                               monkeypatch, capsys):
+    # Review 13, finding D2 (D): CLAUDE_CONFIG_DIR was resolved first, so the link was gone by
+    # the time of the check and the install wrote into the missing target.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    config = tmp_path / "cfg"
+    link_or_skip(config, tmp_path / "missing")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    assert install_module.main([]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("how", ["env", "home"])
+def test_a_config_dir_under_a_dangling_folder_link_stops_install(install_module, tmp_path, monkeypatch,
+                                                                 capsys, how):
+    # Review 13, mutant y3: the dangling link is a folder above the config dir, not the dir itself.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    link_or_skip(tmp_path / "link", tmp_path / "missing")
+    if how == "env":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "link" / "cfg"))
+        args = []
+    else:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        args = ["--home", str(tmp_path / "link" / "h")]
+    assert install_module.main(args) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+def test_a_symlinked_claude_md_reuses_the_backup_of_a_run_that_failed(install_module, tmp_path, monkeypatch):
+    # Review 13, mutant x23: a run that failed after its backup, then a rerun, with CLAUDE.md
+    # linked into dotfiles: the rerun reuses the backup with the same bytes, not a second one.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    link_or_skip(claude / "CLAUDE.md", dotfiles / "CLAUDE.md")
+    write = install_module._write_bytes
+
+    def fail_claude_md(path, data):
+        if Path(path).resolve() == (dotfiles / "CLAUDE.md").resolve():
+            raise OSError(28, "No space left on device")
+        write(path, data)
+    monkeypatch.setattr(install_module, "_write_bytes", fail_claude_md)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_bytes", write)
+    install_module.install(home)
+    assert len(list(claude.glob("CLAUDE.md.bak-*"))) == 1
+
+
+def test_an_unreadable_old_backup_does_not_stop_the_install(install_module, tmp_path, monkeypatch):
+    # Review 13, finding D5: a backup left unreadable (root-owned by a sudo run) stopped every
+    # install while looking for one to reuse; it is no match.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    old = claude / "CLAUDE.md.bak-20250101-000000"
+    old.write_text("older notes\n", encoding="utf-8")
+    read = Path.read_bytes
+
+    def refuse(self):
+        if self.name == old.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read(self)
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    install_module.install(home)
+    backups = sorted(b.name for b in claude.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 2 and old.name in backups

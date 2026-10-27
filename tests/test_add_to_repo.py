@@ -147,6 +147,23 @@ def test_non_utf8_settings_say_so(tmp_path):
     assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
 
 
+@pytest.mark.parametrize("relative", [".claude", ".claude/hooks"])
+def test_a_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, relative):
+    # Review 13, finding D2: only the files were checked, so a .claude or hooks folder linked
+    # into a moved folder was created at the missing target and written there.
+    repo = tmp_path / "repo"
+    link = repo / relative
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(tmp_path / "gone")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert not (tmp_path / "gone").exists()
+
+
 @pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
 def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
     # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two

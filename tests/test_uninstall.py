@@ -987,7 +987,9 @@ def test_a_folder_named_as_a_backup_is_neither_read_nor_named(install_module, un
     assert not any(backup.name in s for s in changes + notices), (changes, notices)
 
 
-@pytest.mark.parametrize("name", ["settings", "claude_md", "hook", "record"])
+# Review 13, finding D2: the ~/.claude and ballast folders too (a dangling ballast link read as
+# no record, so the no-record undo dropped a replaced value for good).
+@pytest.mark.parametrize("name", ["settings", "claude_md", "hook", "record", "claude", "ballast"])
 def test_a_dangling_symlink_stops_uninstall_before_anything_is_written(install_module, uninstall_module, tmp_path,
                                                                        capsys, name):
     # Review 12, finding C5: a dotfiles folder moved or not mounted. Uninstall took the link for
@@ -996,7 +998,8 @@ def test_a_dangling_symlink_stops_uninstall_before_anything_is_written(install_m
     home = tmp_path / "home"
     seed(home, {}, "my own notes\n")
     install_module.install(home)
-    path = install_module.layout(home)[name]
+    layout = install_module.layout(home)
+    path = layout["record"].parent if name == "ballast" else layout[name]
     dotfiles = tmp_path / "dotfiles"
     dotfiles.mkdir()
     path.replace(dotfiles / path.name)
@@ -1096,3 +1099,20 @@ def test_a_dry_run_of_one_backup_in_two_roles_lists_the_real_run_changes_once(in
     real, _ = uninstall_module.uninstall(home)
     dry, real = ([c for c in changes if legacy.name in c] for changes in (dry, real))
     assert dry == real and len(real) == 1 and not legacy.exists(), (dry, real)
+
+
+def test_a_claude_md_linked_to_its_recorded_backup_holding_the_section_has_the_section_removed(
+        install_module, uninstall_module, tmp_path):
+    # Review 13, finding D3: the record from before review 12's fix names the link's target as
+    # the copy from before the section, and the section was written into it. Uninstall took the
+    # file for that copy, left the section and dropped the record entry, with no word.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    backup = a_section_install(install_module, home)
+    backup.write_bytes(md.read_bytes())
+    md.unlink()
+    link_or_skip(md, backup.name)
+    uninstall_module.uninstall(home)
+    assert md.is_symlink() and backup.read_text(encoding="utf-8") == "my own notes\n"
+    assert uninstall_module.uninstall(home) == ([], [])
