@@ -248,6 +248,106 @@ def test_symlinks_survive_uninstall(install_module, uninstall_module, tmp_path):
     assert (dotfiles / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
 
 
+@pytest.mark.parametrize("backup", ["CLAUDE.md.bak-20250101-000000", None], ids=["restored", "created"])
+def test_the_copy_made_before_the_section_is_named_when_the_file_is_restored_or_deleted(
+        install_module, uninstall_module, tmp_path, backup):
+    # Review 10, finding L3: an upgrade from the whole-file installer after the user rewrote
+    # CLAUDE.md, then deleted their text so only the section was left. Uninstall restored the
+    # whole-file installer's backup (or deleted the file it had created) and returned before it
+    # looked at the copy made before the section was added: that copy stayed, never named.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    whole_file_install(install_module, home, backup)
+    for name in claude.glob("CLAUDE.md.bak-*"):
+        name.unlink()
+    if backup:
+        (claude / backup).write_text("mine\n", encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("my notes\n", encoding="utf-8")
+    install_module.install(home)
+    text = (claude / "CLAUDE.md").read_text(encoding="utf-8")
+    (claude / "CLAUDE.md").write_text(text[text.index("<!--"):], encoding="utf-8")
+
+    changes, notices = uninstall_module.uninstall(home)
+    if backup:
+        assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+    else:
+        assert not (claude / "CLAUDE.md").exists()
+    (kept,) = claude.glob("CLAUDE.md.bak-*")
+    assert kept.read_text(encoding="utf-8") == "my notes\n"
+    assert any(kept.name in n for n in notices), (changes, notices)
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_the_copy_made_before_the_section_is_deleted_when_the_file_is_restored_to_the_same_bytes(
+        install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    whole_file_install(install_module, home, "CLAUDE.md.bak-20250101-000000")
+    for name in claude.glob("CLAUDE.md.bak-*"):
+        name.unlink()
+    (claude / "CLAUDE.md.bak-20250101-000000").write_text("mine\n", encoding="utf-8")
+    (claude / "CLAUDE.md").write_text("mine\n", encoding="utf-8")
+    install_module.install(home)
+    text = (claude / "CLAUDE.md").read_text(encoding="utf-8")
+    (claude / "CLAUDE.md").write_text(text[text.index("<!--"):], encoding="utf-8")
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "mine\n"
+    assert not list(claude.glob("CLAUDE.md.bak-*")), (changes, notices)
+    assert not any("kept in" in n for n in notices), notices
+
+
+def a_created_section(install_module, home):
+    install_module.install(home)
+
+
+def a_created_whole_file(install_module, home):
+    whole_file_install(install_module, home, None)
+
+
+def a_section_without_a_record(install_module, home):
+    install_module.install(home)
+    (home / ".claude" / "ballast" / "install-record.json").unlink()
+
+
+def a_whole_file_without_a_record(install_module, home):
+    install_module.install(home)
+    (home / ".claude" / "ballast" / "install-record.json").unlink()
+    (home / ".claude" / "CLAUDE.md").write_text(TEMPLATE_MD, encoding="utf-8")
+
+
+@pytest.mark.parametrize("make", [a_created_section, a_created_whole_file, a_section_without_a_record,
+                                  a_whole_file_without_a_record], ids=lambda make: make.__name__)
+def test_a_symlinked_claude_md_that_holds_only_the_rules_is_emptied_through_the_link(
+        install_module, uninstall_module, tmp_path, make):
+    # Review 10, finding L4: the install created CLAUDE.md and the user moved it into dotfiles,
+    # linked back. Uninstall deleted the link and left the rules in the dotfiles copy, which the
+    # next stow brought back for good. The install writes through such a link; so does uninstall.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    seed(home, {})
+    make(install_module, home)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (claude / "CLAUDE.md").replace(dotfiles / "CLAUDE.md")
+    installed = (dotfiles / "CLAUDE.md").read_bytes()
+    try:
+        (claude / "CLAUDE.md").symlink_to(dotfiles / "CLAUDE.md")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+    changes, notices = uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").is_symlink(), (changes, notices)
+    assert (dotfiles / "CLAUDE.md").read_bytes() == b"", (changes, notices)
+    assert any("CLAUDE.md emptied" in c and "link" in c for c in changes), changes
+    # Without a record the file may be the user's own copy, so one is kept, as for a file.
+    kept = [b.read_bytes() for b in claude.glob("CLAUDE.md.bak-*")]
+    assert kept == ([installed] if "without_a_record" in make.__name__ else []), changes
+    assert uninstall_module.uninstall(home)[0] == []
+
+
 def test_malformed_hook_entry_survives_uninstall(install_module, uninstall_module, tmp_path):
     home = tmp_path / "home"
     seed(home, {"hooks": {"UserPromptSubmit": [{"hooks": ["echo hi"]}]}})

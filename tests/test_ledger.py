@@ -84,7 +84,9 @@ def test_a_byte_order_mark_before_the_first_line_is_not_an_unreadable_line(ledge
     '{"fixed_tokens": 71396}\r\n'.encode("utf-16"),       # PowerShell 5 Out-File, > and >>
     '{"fixed_tokens": 71396}\r\n'.encode("utf-16-be"),    # no BOM
     '{"fixed_tokens": 71396}\n'.encode("utf-32"),
-], ids=["utf-16-bom", "utf-16-be", "utf-32"])
+    '{"fixed_tokens": 71396}\n'.encode("utf-32-be"),   # no BOM
+    b"\xff\xfe",                                        # an empty file PowerShell 5 made
+], ids=["utf-16-bom", "utf-16-be", "utf-32", "utf-32-be", "utf-16-bom-only"])
 def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger, tmp_path, capsys, data):
     # Review 9, finding L3: a UTF-8 line appended to a UTF-16 file left a file neither
     # encoding decodes.
@@ -95,6 +97,34 @@ def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger,
         err = capsys.readouterr().err
         assert err.startswith("error: ") and "UTF-8" in err and len(err.splitlines()) == 1, err
     assert path.read_bytes() == data
+
+
+@pytest.mark.parametrize("data", [
+    b'{"date": "2026-10-19", "fixed_tokens": 71396}\n' + b"\x00" * 48,
+    b'{"date": "2026-10-19", "fixed_tokens": 71396}\n' + b"\x00" * 48 + b"\n",
+    b'{"date": "2026-10-19", "fixed_tokens": 71396}\n{"date": "2026-10' + b"\x00" * 40,
+], ids=["nul-tail", "nul-line", "torn-then-nul"])
+def test_a_torn_append_filled_with_nul_bytes_is_an_unreadable_line(ledger, tmp_path, capsys, data):
+    # Review 10, finding L2: after a power loss a file can keep its new size with the block never
+    # written, so the torn line reads as NUL bytes. Since review 9 any NUL stopped every run with
+    # "UTF-16 or UTF-32", a cause that was false and that saving as UTF-8 did not remove.
+    path = tmp_path / "m.jsonl"
+    path.write_bytes(data)
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "72000", "--date", "2026-10-27"]) == 0
+    out = capsys.readouterr().out
+    assert "1 unreadable line(s) skipped" in out
+    assert "fixed_tokens: 71,396 -> 72,000" in out
+    assert path.read_bytes() == data + (b"" if data.endswith(b"\n") else b"\n") \
+        + b'{"date": "2026-10-27", "fixed_tokens": 72000}\n'
+
+
+def test_a_file_of_nul_bytes_only_is_an_unreadable_line(ledger, tmp_path, capsys):
+    # The first append torn in the same way.
+    path = tmp_path / "m.jsonl"
+    path.write_bytes(b"\x00" * 64)
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "72000"]) == 0
+    out = capsys.readouterr().out
+    assert "1 unreadable line(s) skipped" in out and "first line" in out
 
 
 def test_crlf_and_non_utf8_bytes_in_the_file_do_not_stop_the_run(ledger, tmp_path, capsys):

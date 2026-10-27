@@ -45,7 +45,9 @@ L1. Finding: the user changed their own text after the install, so uninstall kee
     fails each write and delete in turn. The two runs together must name the kept copy. 4 cases
     failed before the fix.
     Other hits:
-    - The legacy (whole-file installer) backup is already named in the same branch.
+    - The legacy (whole-file installer) backup is already named in the same branch. Corrected by
+      review 10 (L1): only when that branch is reached; after an upgrade with a rewritten file the
+      rerun took another branch and named nothing.
     - The `hand_section` branch names its copy.
     - An edited section keeps the record entry, so the rerun gives the same note again.
     - Settings notices are worked out again from the record, which is written last.

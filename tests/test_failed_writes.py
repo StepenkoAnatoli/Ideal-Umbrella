@@ -271,19 +271,47 @@ def test_a_rerun_of_an_uninstall_that_failed_part_way_finishes_it(uninstall_modu
 
 
 
-@pytest.mark.parametrize("number", range(STEPS))
-def test_a_kept_backup_is_named_when_an_uninstall_that_failed_part_way_is_finished(uninstall_module, tmp_path,
-                                                                                    monkeypatch, number):
+def own_text_changed(inst, home, tmp_path, monkeypatch):
     # Review 9, finding L1: the user changed their own text after the install, so the copy from
-    # before it is kept. A run that stopped after its CLAUDE.md step (the settings.json write,
-    # the hook delete, the record write) never printed the note naming it, and the rerun said
-    # only "no Ideal-Umbrella section", so the copy was left with no word about it.
-    inst = uninstall_module.install
-    home = tmp_path / "home"
+    # before it is kept.
     seed(home)
     inst.install(home)
     md = claude(home) / "CLAUDE.md"
     md.write_bytes(md.read_bytes().replace(b"mine\n", b"mine, changed\n", 1))
+    return b"mine, changed\n"
+
+
+def a_rewritten_whole_file_install(inst, home, tmp_path, monkeypatch):
+    # Review 10, finding L1: an upgrade from the whole-file installer after the user rewrote
+    # CLAUDE.md. The record then holds the whole-file installer's backup and the copy made
+    # before the section was added; a run that stopped after the CLAUDE.md step left the first
+    # with no word about it.
+    from_the_whole_file_installer(inst, home, tmp_path, monkeypatch)
+    (claude(home) / "CLAUDE.md").write_bytes(b"my notes\n")
+    inst.install(home)
+    return b"my notes\n"
+
+
+def a_wrapped_whole_file_install(inst, home, tmp_path, monkeypatch):
+    # The user added lines to the whole-file install, so the upgrade wraps its rules in place
+    # (no copy is made before the section, as the rules were the installer's).
+    from_the_whole_file_installer(inst, home, tmp_path, monkeypatch)
+    (claude(home) / "CLAUDE.md").write_bytes(("my notes\n" + RULES).encode("utf-8"))
+    inst.install(home)
+    return b"my notes\n"
+
+
+@pytest.mark.parametrize("number", range(STEPS))
+@pytest.mark.parametrize("run", [own_text_changed, a_rewritten_whole_file_install, a_wrapped_whole_file_install],
+                         ids=lambda run: run.__name__)
+def test_a_kept_backup_is_named_when_an_uninstall_that_failed_part_way_is_finished(uninstall_module, tmp_path,
+                                                                                    monkeypatch, run, number):
+    # A run that stopped after its CLAUDE.md step (the settings.json write, the hook delete, the
+    # record write) never printed its notes, and the rerun said only "no Ideal-Umbrella
+    # section": a backup holding the user's file was left with no word about it.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    after = run(inst, home, tmp_path, monkeypatch)
     said = []
     stop = fail_step(monkeypatch, inst, number)
     try:
@@ -292,10 +320,28 @@ def test_a_kept_backup_is_named_when_an_uninstall_that_failed_part_way_is_finish
         pass
     stop()
     said += uninstall_module.uninstall(home)[1]
-    assert md.read_bytes() == b"mine, changed\n"
+    assert (claude(home) / "CLAUDE.md").read_bytes() == after
     kept = list(claude(home).glob("CLAUDE.md.bak-*"))
     assert [b.read_bytes() for b in kept] == [b"mine\n"]
     assert any(kept[0].name in n for n in said), said
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_folder_named_as_the_kept_backup_is_not_named(uninstall_module, tmp_path):
+    # Review 10, finding I2: only a file can hold the user's CLAUDE.md.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    seed(home)
+    inst.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(b"mine, changed\n")
+    (backup,) = claude(home).glob("CLAUDE.md.bak-*")
+    backup.unlink()
+    backup.mkdir()
+    _, notices = uninstall_module.uninstall(home)
+    assert not any(backup.name in n for n in notices), notices
+    assert backup.is_dir()
+
 
 # Review 7, finding L2: with no install record, the hook file and the hook entry are the only
 # evidence of an install. Uninstall removed both before its CLAUDE.md step, so a rerun after a
