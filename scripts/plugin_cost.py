@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -91,7 +92,16 @@ def main(argv=None):
         return 2
     out = Path(argv[0])
     app_dir = Path(argv[1]) if len(argv) == 2 else default_app_dir()
-    if not app_dir.is_dir():
+    try:
+        # os.stat, not is_dir(): that raises on 3.13 and says False on 3.14 for a folder it
+        # cannot look at.
+        is_dir = stat.S_ISDIR(os.stat(app_dir).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_dir = False
+    except OSError as e:
+        print(f"Error: cannot read {app_dir} ({e.strerror or e})", file=sys.stderr)
+        return 1
+    if not is_dir:
         print(f"Error: {app_dir} is not a folder (pass the Claude app folder as the second argument)",
               file=sys.stderr)
         return 1

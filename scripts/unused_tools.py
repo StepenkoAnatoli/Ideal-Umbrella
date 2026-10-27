@@ -9,16 +9,27 @@ Transcripts are the *.jsonl files Claude Code writes under ~/.claude/projects.
 import argparse
 import collections
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
 USER_SETTINGS = Path(__file__).resolve().parents[1] / "config" / "user-settings.json"
 
 
+def _is(path, kind):
+    """kind(mode) for a path that is there, False for one that is not; any other OSError (a
+    folder that cannot be searched) is raised: on Python 3.14 is_file() and is_dir() say False."""
+    try:
+        return kind(os.stat(path).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+
+
 def tool_calls(folder):
     """Return (number of transcripts, Counter of tool names)."""
     called = collections.Counter()
-    files = sorted(p for p in Path(folder).rglob("*.jsonl") if p.is_file())
+    files = sorted(p for p in Path(folder).rglob("*.jsonl") if _is(p, stat.S_ISREG))
     for path in files:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -46,10 +57,15 @@ def main(argv=None):
         # -I ignores PYTHONUTF8: set UTF-8 output here
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
-    if not Path(args.dir).is_dir():
-        print(f"error: {args.dir} is not a folder", file=sys.stderr)
-        return 2
-    sessions, called = tool_calls(args.dir)
+    try:
+        if not _is(args.dir, stat.S_ISDIR):
+            print(f"error: {args.dir} is not a folder", file=sys.stderr)
+            return 2
+        sessions, called = tool_calls(args.dir)
+    except OSError as e:
+        # A transcript that cannot be read would leave its tool calls out of the count.
+        print(f"error: cannot read {e.filename or args.dir} ({e.strerror or e})", file=sys.stderr)
+        return 1
     if not sessions:
         print(f"error: no *.jsonl transcripts under {args.dir}", file=sys.stderr)
         return 1

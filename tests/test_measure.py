@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 
 def test_missing_tiktoken_gives_an_install_hint():
@@ -82,3 +82,30 @@ def test_an_argument_that_cannot_be_stated_is_one_line_not_a_traceback(tmp_path)
         sub.chmod(0o755)
     assert result.returncode == 2
     assert "Traceback" not in result.stderr and "cannot read" in result.stderr and "hidden.txt" in result.stderr
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("walked", [False, True], ids=["argument", "walked"])
+def test_a_file_in_a_folder_that_cannot_be_searched_says_cannot_read(tmp_path, capsys, monkeypatch, pathlib_kind,
+                                                                    walked):
+    # Review 24, F1 other hits: on Python 3.14 is_file() and is_dir() say False for a file in a
+    # folder that cannot be searched, so measure said "no such file or folder" for an argument
+    # and "not a regular file" for a walked file; this runs as root too, unlike the tests above.
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "hidden.txt").write_text("hello\n", encoding="utf-8")
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(sub, monkeypatch)
+    if walked:
+        assert measure.main([str(tmp_path)]) == 0
+        captured = capsys.readouterr()
+        assert "skip (cannot read: Permission denied)" in captured.err and "hidden.txt" in captured.err, captured
+        assert "good.txt" in captured.out
+    else:
+        assert measure.main([str(sub / "hidden.txt")]) == 2
+        err = capsys.readouterr().err
+        assert "cannot read" in err and "hidden.txt" in err and "no such file" not in err, err

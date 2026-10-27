@@ -1,4 +1,6 @@
-from conftest import ROOT, load_module
+import pytest
+
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 
 def test_fixture_path_points_at_keyline_tests():
@@ -88,3 +90,24 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, capsys, mo
         bad.write_bytes(bom + b"caf\xe9\n")
         module.main(["--api-key", "k", "--model", "m", str(bad)])
         assert f"not UTF-8 (invalid continuation byte at byte {len(bom) + 3})" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys, monkeypatch, pathlib_kind):
+    # Review 24, F1 other hits: on 3.14 exists() says False for a file in a folder that cannot
+    # be searched, which was reported as "not found".
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    hidden = tmp_path / "blocked" / "hidden.txt"
+    hidden.parent.mkdir()
+    hidden.write_text("hello\n", encoding="utf-8")
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(hidden.parent, monkeypatch)
+    module.main(["--api-key", "k", "--model", "m", str(hidden), str(good)])
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err and "not found" not in out.err, out.err
+    assert "Error reading" in out.err and "hidden.txt" in out.err and "good.txt" in out.out

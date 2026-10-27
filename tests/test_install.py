@@ -374,18 +374,44 @@ def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
     assert settings_file(home).read_text(encoding="utf-8") == settings_before
 
 
+DEEP = '{"a": ' + "[" * 100000 + "]" * 100000 + "}"
+
+
 @pytest.mark.parametrize("name", ["settings", "record"])
 def test_json_nested_too_deep_is_a_one_line_error(install_module, tmp_path, capsys, name):
     # json.load raises RecursionError, not ValueError, for a file nested thousands of levels
-    # deep; it used to end the install with a traceback instead of the one-line error.
+    # deep; it used to end the install with a traceback instead of the one-line error. Whether
+    # it does depends on the stack (3.14 parses 100000 levels with a big one), so either the
+    # RecursionError message or the depth check's message is right here.
     home = tmp_path / "home"
     install_module.install(home)
     path = install_module.layout(home)[name]
-    path.write_text("[" * 100000, encoding="utf-8")
+    path.write_text(DEEP, encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err or "nested more than 100 levels deep" in err, err
+    assert "nothing written" in err and "Traceback" not in err
+    assert path.read_text(encoding="utf-8") == DEEP
+
+
+@pytest.mark.parametrize("name", ["settings", "record"])
+def test_a_recursion_error_while_reading_is_a_one_line_error(install_module, tmp_path, capsys, monkeypatch,
+                                                            name):
+    # The RecursionError branch on any stack: json.load raises it for this one file.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)[name]
+    real = json.load
+
+    def load(f, *args, **kwargs):
+        if os.path.samefile(f.name, path):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(f, *args, **kwargs)
+
+    monkeypatch.setattr(install_module.json, "load", load)
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
     assert "nested too deeply" in err and "nothing written" in err and "Traceback" not in err
-    assert path.read_text(encoding="utf-8") == "[" * 100000
 
 
 def test_record_that_is_not_an_object_is_an_error(install_module, tmp_path):

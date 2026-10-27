@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT, load_module
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 HOOK = ROOT / "keyline" / "keyline_hook.py"
 
@@ -100,22 +100,20 @@ def test_watch_patterns_do_not_lift_the_suffix_rule(keyline_hook, tmp_path, monk
     assert doc.count("suffix rule still applies") == 2
 
 
-def test_a_file_that_cannot_be_stated_is_one_line_not_a_traceback(keyline_hook, tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_a_file_that_cannot_be_stated_is_one_line_not_a_traceback(keyline_hook, tmp_path, monkeypatch, capsys,
+                                                                  pathlib_kind):
     # path.is_file() on a file in a folder that cannot be searched raises PermissionError;
-    # it was outside every handler in main().
-    from pathlib import Path
+    # it was outside every handler in main(). Review 24, F1 other hits: on Python 3.14 it says
+    # False instead, and the note was passed over without a word.
     note = tmp_path / "notes" / "todo.md"
     note.parent.mkdir()
     note.write_text("# My todo\n", encoding="utf-8")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
-    real_is_file = Path.is_file
-
-    def is_file(self, *a, **k):
-        if self == note:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_is_file(self, *a, **k)
-    monkeypatch.setattr(Path, "is_file", is_file)
     event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(note)}}
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(note.parent, monkeypatch)
     assert run_main(keyline_hook, monkeypatch, event) == 1
     err = capsys.readouterr().err
     assert "Traceback" not in err and "cannot read" in err and "todo.md" in err

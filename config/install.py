@@ -126,7 +126,9 @@ def _own_home(home):
 
 def _absolute(path):
     """path made absolute and resolved, except when it or a folder above it is a symlink to a
-    missing target: resolving would drop the link, and refuse_dangling() could no longer see it."""
+    missing target: resolving would drop the link, and refuse_dangling() could no longer see it.
+    It runs before the gate, so it looks only through _look: a path it cannot look at is a
+    ValueError, not "no home" or a bare [Errno 13]."""
     raw = os.fspath(path)
     if not raw.startswith("~"):
         # Not expanded: "./~name" is a folder named "~name", but pathlib drops the "./".
@@ -141,11 +143,12 @@ def _absolute(path):
             raise ValueError(f"cannot find the home folder in {raw}") from None
         if head == "~":
             _own_home(home)
-        if not home.is_dir():
+        found = _look(home, follow=True)   # one that cannot be looked at is not "not there"
+        if found is None or not stat.S_ISDIR(found.st_mode):
             # A home folder that is not there. On Windows "~name" is the folder beside your own
             # home whether or not that user exists, so expanduser() does not refuse it.
             raise ValueError(f"cannot find the home folder in {raw}")
-    if any(_is_link(p) and not p.exists() for p in (path, *path.parents)):
+    if next(_dangling([path]), None) is not None:
         return Path(os.path.abspath(path))
     return path.resolve()
 

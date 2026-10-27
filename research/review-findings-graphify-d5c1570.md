@@ -60,7 +60,8 @@ F1. Finding: from Python 3.14, pathlib's `exists()`, `is_file()`, `is_dir()` and
 
     Other hits: add_to_repo's link check used `os.path.exists()` the same way; it now uses its
     own `_look` (test in `tests/test_add_to_repo.py`). `install.target()`'s link handling runs
-    after the gate. The `exists()` calls in `install`, `uninstall` and `verify` now come after
+    after the gate (corrected in pass 25, D: it ran before the gate and used `exists()` and
+    `is_dir()`; it now looks only through `_look`). The `exists()` calls in `install`, `uninstall` and `verify` now come after
     the gate. `hooks/context_check.py` treats any OSError as "no state" by design (a hook must
     never block a prompt).
 

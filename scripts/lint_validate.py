@@ -10,6 +10,7 @@ import glob
 import importlib.util
 import io
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -46,12 +47,19 @@ def main(argv=None):
         return 2
     old_path = Path(argv[0])
     folder = Path(argv[1]) if len(argv) == 2 else ROOT.parent
-    if not old_path.is_file():
-        print(f"Error: {old_path} is not a file", file=sys.stderr)
-        return 1
-    if not folder.is_dir():
-        print(f"Error: {folder} is not a folder", file=sys.stderr)
-        return 1
+    # os.stat, not is_file()/is_dir(): those raise on 3.13 and say False on 3.14 for a path in
+    # a folder that cannot be searched.
+    for path, kind, is_kind in ((old_path, "file", stat.S_ISREG), (folder, "folder", stat.S_ISDIR)):
+        try:
+            ok = is_kind(os.stat(path).st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            ok = False
+        except OSError as e:
+            print(f"Error: cannot read {path} ({e.strerror or e})", file=sys.stderr)
+            return 1
+        if not ok:
+            print(f"Error: {path} is not a {kind}", file=sys.stderr)
+            return 1
 
     sys.path.insert(0, str(ROOT / "keyline"))
     import keyline_lint as new

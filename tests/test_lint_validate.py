@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import ROOT, load_module
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 
 @pytest.fixture
@@ -29,3 +29,24 @@ def test_runs_against_a_given_corpus_folder(lint_validate, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "corpus: 1 files" in out
     assert "old rule: " in out
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("which", ["file", "folder"])
+def test_a_path_that_cannot_be_looked_at_says_cannot_read(lint_validate, tmp_path, capsys, monkeypatch, which,
+                                                          pathlib_kind):
+    # Review 24, F1 other hits: on 3.13 is_file() raised PermissionError (a traceback); on 3.14
+    # it says False, and a file in a folder that cannot be searched was "not a file".
+    blocked = tmp_path / "blocked"
+    (blocked / "corpus").mkdir(parents=True)
+    old = blocked / "old.py" if which == "file" else ROOT / "keyline" / "keyline_lint.py"
+    if which == "file":
+        old.write_text("", encoding="utf-8")
+    folder = blocked / "corpus" if which == "folder" else tmp_path
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(blocked, monkeypatch)
+    assert lint_validate.main([str(old), str(folder)]) == 1
+    err = capsys.readouterr().err
+    assert f"cannot read {old if which == 'file' else folder}" in err, err
+    assert "not a file" not in err and "not a folder" not in err

@@ -112,12 +112,12 @@ def main(argv=None):
     ratios_cl100k = []
 
     for path in files:
-        if not path.exists():
-            print(f"Warning: {path} not found, skipping", file=sys.stderr)
-            continue
-
         try:
             text = path.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            # Not exists(): on Python 3.14 that says False for a file it cannot look at.
+            print(f"Warning: {path} not found, skipping", file=sys.stderr)
+            continue
         except OSError as e:
             print(f"Error reading {path}: {e}", file=sys.stderr)
             continue

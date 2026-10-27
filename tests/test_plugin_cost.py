@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from conftest import load_module
+from conftest import load_module, python_314_pathlib, refuse_looks_inside
 
 
 @pytest.fixture
@@ -74,3 +74,18 @@ def test_a_description_with_a_special_token_or_a_bom_is_counted(plugin_cost, tmp
     assert plugin_cost.desc_of(plugin / "skills" / "bom" / "SKILL.md") == "Reads files with a byte order mark"
     assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path)]) == 0
     assert "1 plugins, 2 skills/commands" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_an_app_folder_that_cannot_be_looked_at_says_cannot_read(plugin_cost, tmp_path, capsys, monkeypatch,
+                                                                 pathlib_kind):
+    # Review 24, F1 other hits: on 3.13 is_dir() raised PermissionError (a traceback); on 3.14
+    # it says False, and the folder was "not a folder".
+    app = tmp_path / "blocked" / "app"
+    app.mkdir(parents=True)
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(tmp_path / "blocked", monkeypatch)
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(app)]) == 1
+    err = capsys.readouterr().err
+    assert f"cannot read {app}" in err and "not a folder" not in err, err

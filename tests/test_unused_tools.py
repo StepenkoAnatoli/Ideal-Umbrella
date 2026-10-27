@@ -1,6 +1,6 @@
 import pytest
 
-from conftest import load_module, write_jsonl
+from conftest import load_module, python_314_pathlib, refuse_looks_inside, write_jsonl
 
 
 @pytest.fixture
@@ -43,3 +43,26 @@ def test_a_folder_named_like_a_transcript_is_skipped(unused_tools, tmp_path, cap
     write_jsonl(tmp_path / "t.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Read"}]}}])
     assert unused_tools.main([str(tmp_path)]) == 0
     assert "Read" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("where", ["argument", "walked"])
+def test_a_transcript_that_cannot_be_looked_at_says_cannot_read(unused_tools, tmp_path, capsys, monkeypatch, where,
+                                                                pathlib_kind):
+    # Review 24, F1 other hits: on 3.13 the stat raised PermissionError (a traceback); on 3.14
+    # is_dir() said "not a folder" for the argument and is_file() passed a transcript over, so
+    # its tool calls went uncounted and a tool it called could be listed as unused.
+    write_jsonl(tmp_path / "a.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Read"}]}}])
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    write_jsonl(blocked / "b.jsonl", [{"message": {"content": [{"type": "tool_use", "name": "Artifact"}]}}])
+    if where == "argument":
+        (blocked / "dir").mkdir()
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(blocked, monkeypatch)
+    arg = blocked / "dir" if where == "argument" else tmp_path
+    assert unused_tools.main([str(arg)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "not a folder" not in err, err
+    assert str(arg if where == "argument" else blocked / "b.jsonl") in err, err

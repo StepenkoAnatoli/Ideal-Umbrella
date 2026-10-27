@@ -8,6 +8,7 @@ line endings and a trailing newline are counted). These are OpenAI tokenizers: a
 Claude's tokenizer, which is not public.
 """
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -22,10 +23,13 @@ SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
 
 def files_in(arg):
+    # os.stat, not is_file()/is_dir(): on Python 3.14 those say False for a path that cannot be
+    # looked at (in a folder that cannot be searched), which read as "no such file or folder".
     p = Path(arg)
-    if p.is_file():
+    mode = os.stat(p).st_mode
+    if stat.S_ISREG(mode):
         return [p]
-    if p.is_dir():
+    if stat.S_ISDIR(mode):
         out = []
         for root, dirs, names in os.walk(p):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
@@ -49,7 +53,7 @@ def main(argv):
     for arg in argv:
         try:
             paths = files_in(arg)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
         except OSError as e:
@@ -60,10 +64,10 @@ def main(argv):
             try:
                 # A named pipe or socket in a walked folder would block the read; a symlink to
                 # a missing target would fail it. The stat itself fails in a folder that lists
-                # its names but cannot be searched (mode 0444).
-                regular = p.is_file()
-                why = None if regular else ("symlink to a missing target" if p.is_symlink()
-                                            else "not a regular file")
+                # its names but cannot be searched (mode 0444); os.stat, as in files_in.
+                why = None if stat.S_ISREG(os.stat(p).st_mode) else "not a regular file"
+            except FileNotFoundError:
+                why = "symlink to a missing target" if os.path.islink(p) else "no longer there"
             except OSError as e:
                 why = f"cannot read: {e.strerror or e}"
             if why:

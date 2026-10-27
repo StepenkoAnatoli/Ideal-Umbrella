@@ -1,14 +1,13 @@
 import json
 import os
 import re
-import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, load_module
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 UNINSTALL = ROOT / "config" / "uninstall.py"
 TEMPLATE_MD = (ROOT / "config" / "CLAUDE.md").read_text(encoding="utf-8")
@@ -813,9 +812,9 @@ def test_a_record_field_of_the_wrong_type_stops_uninstall_with_one_line(install_
     assert "Traceback" not in err and "nothing written" in err and field in err
 
 
-def link_or_skip(link, target):
+def link_or_skip(link, target, target_is_directory=False):
     try:
-        link.symlink_to(target)
+        link.symlink_to(target, target_is_directory=target_is_directory)
     except OSError:
         pytest.skip("cannot create symlinks here")
 
@@ -1656,52 +1655,6 @@ def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(install_mo
     assert "line 3" in capsys.readouterr().err
 
 
-def _python_314_pathlib(monkeypatch):
-    """pathlib as in Python 3.14: exists() and the is_*() checks say False for a path they
-    cannot look at, where 3.13 and earlier raise."""
-    monkeypatch.setattr(Path, "exists", lambda self, *, follow_symlinks=True: os.path.exists(self)
-                        if follow_symlinks else os.path.lexists(self))
-    monkeypatch.setattr(Path, "is_file", lambda self, *, follow_symlinks=True: os.path.isfile(self))
-    monkeypatch.setattr(Path, "is_dir", lambda self, *, follow_symlinks=True: os.path.isdir(self))
-    monkeypatch.setattr(Path, "is_symlink", lambda self: os.path.islink(self))
-
-
-def _unsearchable(folder, monkeypatch):
-    """Make folder one that may not be searched (a root 0700 folder left by a sudo install):
-    every look at a path inside it is refused, the folder itself can still be seen."""
-    import builtins
-    inside = os.fspath(folder) + os.sep
-
-    real_lstat = os.lstat
-
-    def target(path):
-        """Where a look that follows links ends up: a link into the folder is refused too."""
-        for _ in range(40):
-            try:
-                if not stat.S_ISLNK(real_lstat(path).st_mode):
-                    return path
-            except OSError:
-                return path
-            path = os.path.join(os.path.dirname(path), os.readlink(path))
-        return path
-
-    def refused(path, follow):
-        if not isinstance(path, (str, os.PathLike)):
-            return False
-        path = os.fspath(path)
-        return path.startswith(inside) or (follow and target(path).startswith(inside))
-
-    def wrap(real, follow):
-        def look(path, *args, **kwargs):
-            if refused(path, follow and kwargs.get("follow_symlinks", True)):
-                raise PermissionError(13, "Permission denied", os.fspath(path))
-            return real(path, *args, **kwargs)
-        return look
-    for name, follow in (("stat", True), ("lstat", False), ("open", True), ("scandir", True), ("listdir", True)):
-        monkeypatch.setattr(os, name, wrap(getattr(os, name), follow))
-    monkeypatch.setattr(builtins, "open", wrap(builtins.open, True))
-
-
 @pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
 @pytest.mark.parametrize("folder", ["ballast", "claude"])
 @pytest.mark.parametrize("run", ["install", "uninstall", "verify"])
@@ -1718,8 +1671,8 @@ def test_a_folder_that_cannot_be_searched_stops_before_anything_is_written(insta
     before = {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()}
     blocked = home / ".claude" / "ballast" if folder == "ballast" else home / ".claude"
     if pathlib_kind == "3.14":
-        _python_314_pathlib(monkeypatch)
-    _unsearchable(blocked, monkeypatch)
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(blocked, monkeypatch)
     module = uninstall_module if run == "uninstall" else install_module
     argv = ["--home", str(home)] + (["--verify-only"] if run == "verify" else [])
     assert module.main(argv) == 1
@@ -1757,12 +1710,62 @@ def test_a_link_into_a_folder_that_cannot_be_searched_is_not_called_missing(inst
     settings_file(home).replace(dotfiles / "settings.json")
     link_or_skip(settings_file(home), dotfiles / "settings.json")
     if pathlib_kind == "3.14":
-        _python_314_pathlib(monkeypatch)
-    _unsearchable(dotfiles, monkeypatch)
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(dotfiles, monkeypatch)
     for module in (install_module, uninstall_module):
         assert module.main(["--home", str(home)]) == 1
         err = capsys.readouterr().err
         assert "cannot look at" in err and "missing target" not in err and "nothing written" in err, err
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("name", ["settings", "claude_md"])
+def test_verify_says_cannot_look_at_for_a_link_into_a_folder_that_cannot_be_searched(install_module, tmp_path, capsys,
+                                                                                    monkeypatch, name, pathlib_kind):
+    # Review 25, E: no test covered the verify gate for a linked settings.json or CLAUDE.md;
+    # without it 3.14 said "Missing:" and 3.13 a bare [Errno 13].
+    home = tmp_path / "home"
+    install_module.install(home)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    path = install_module.layout(home)[name]
+    path.replace(dotfiles / path.name)
+    link_or_skip(path, dotfiles / path.name)
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(dotfiles, monkeypatch)
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    captured = capsys.readouterr()
+    assert "cannot look at" in captured.err and "[Errno" not in captured.err, captured
+    assert "Missing" not in captured.out + captured.err, captured
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+@pytest.mark.parametrize("how", ["--home link", "~"])
+def test_a_home_that_cannot_be_looked_at_says_cannot_look_at(install_module, uninstall_module, tmp_path, capsys,
+                                                             monkeypatch, how, pathlib_kind):
+    # Review 25, D: _absolute() ran before the gate and used exists() and is_dir(): on 3.13 a
+    # --home link into a folder that cannot be searched gave a bare [Errno 13], and on 3.14 a
+    # "~" home there was "cannot find the home folder".
+    dotfiles = tmp_path / "dotfiles"
+    real_home = dotfiles / "home"
+    real_home.mkdir(parents=True)
+    if how == "~":
+        monkeypatch.setenv(install_module.HOME_VARIABLE, str(real_home))
+        home_arg = "~"
+    else:
+        link_or_skip(tmp_path / "homelink", real_home, target_is_directory=True)
+        home_arg = str(tmp_path / "homelink")
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(dotfiles, monkeypatch)
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", home_arg]) == 1
+        err = capsys.readouterr().err
+        assert "cannot look at" in err and "[Errno" not in err and "cannot find" not in err, err
+        assert "nothing written" in err, err
+    monkeypatch.undo()
+    assert list(real_home.iterdir()) == []
 
 
 def test_an_os_error_at_the_first_write_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys,

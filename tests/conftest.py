@@ -53,3 +53,67 @@ def install_module():
 def write_jsonl(path, events):
     path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
     return path
+
+
+def python_314_pathlib(monkeypatch):
+    """pathlib as in Python 3.14: exists() and the is_*() checks say False for a path they
+    cannot look at, where 3.13 and earlier raise."""
+    from pathlib import Path
+    monkeypatch.setattr(Path, "exists", lambda self, *, follow_symlinks=True: os.path.exists(self)
+                        if follow_symlinks else os.path.lexists(self))
+    monkeypatch.setattr(Path, "is_file", lambda self, *, follow_symlinks=True: os.path.isfile(self))
+    monkeypatch.setattr(Path, "is_dir", lambda self, *, follow_symlinks=True: os.path.isdir(self))
+    monkeypatch.setattr(Path, "is_symlink", lambda self: os.path.islink(self))
+
+
+def refuse_looks_inside(folder, monkeypatch):
+    """A folder that lists its names but may not be searched (mode 0444, or root's 0700 seen
+    by a user, a sudo install): every look at a path inside it is refused, and so is a look
+    that follows a link into it; the folder itself can be listed. Runs as root and on Windows,
+    where file modes do not refuse anything."""
+    import builtins
+    import io
+    import pathlib
+    import stat
+    inside = os.path.normcase(os.fspath(folder)) + os.sep
+    real_lstat, real_readlink = os.lstat, os.readlink
+
+    def target(path):
+        """Where a look that follows links ends up."""
+        for _ in range(40):
+            try:
+                if not stat.S_ISLNK(real_lstat(path).st_mode):
+                    return path
+            except OSError:
+                return path
+            linked = real_readlink(path)
+            # Windows: the target of an absolute link reads back as \\?\C:\... or \\?\UNC\...
+            if os.name == "nt" and linked.startswith("\\\\?\\"):
+                linked = linked[4:]
+                if linked.startswith("UNC\\"):
+                    linked = "\\" + linked[3:]
+            path = os.path.join(os.path.dirname(path), linked)
+        return path
+
+    def under(path):
+        # normpath: 3.14's glob lists the folder as "folder/", which is allowed.
+        return os.path.normcase(os.path.normpath(path)).startswith(inside)
+
+    def wrap(real, follow):
+        def look(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)):
+                path_ = os.fspath(path)
+                if under(path_) or (follow and kwargs.get("follow_symlinks", True) and under(target(path_))):
+                    raise PermissionError(13, "Permission denied", path_)
+            return real(path, *args, **kwargs)
+        return look
+    for name, follow in (("stat", True), ("lstat", False), ("open", True), ("scandir", True), ("listdir", True)):
+        monkeypatch.setattr(os, name, wrap(getattr(os, name), follow))
+    monkeypatch.setattr(builtins, "open", wrap(builtins.open, True))
+    monkeypatch.setattr(io, "open", wrap(io.open, True))   # pathlib's read_text and read_bytes
+    accessor = getattr(pathlib, "_NormalAccessor", None)   # 3.10 pathlib kept its own references
+    if accessor is not None:
+        for name, follow in (("stat", True), ("lstat", False), ("open", True), ("scandir", True),
+                             ("listdir", True)):
+            if hasattr(accessor, name):
+                monkeypatch.setattr(accessor, name, staticmethod(wrap(getattr(accessor, name), follow)))

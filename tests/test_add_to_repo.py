@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT
+from conftest import ROOT, refuse_looks_inside
 
 ADD = ROOT / "config" / "add_to_repo.py"
 TEMPLATE = json.loads((ROOT / "config" / "repo-settings.json").read_text(encoding="utf-8"))
@@ -82,10 +82,34 @@ def test_non_object_json_is_rejected_without_writing(tmp_path):
 def test_json_nested_too_deep_is_rejected_without_writing(tmp_path):
     repo = tmp_path / "repo"
     (repo / ".claude").mkdir(parents=True)
-    (repo / ".claude" / "settings.json").write_text("[" * 100000, encoding="utf-8")
+    # Closed nesting inside an object: 3.14 parses 100000 levels with a big stack, so either
+    # the RecursionError message or the depth check's message is right here.
+    (repo / ".claude" / "settings.json").write_text('{"a": ' + "[" * 100000 + "]" * 100000 + "}",
+                                                    encoding="utf-8")
     result = run(repo)
     assert result.returncode == 1
-    assert "nested too deeply" in result.stderr and "Traceback" not in result.stderr
+    assert "nested too deeply" in result.stderr or "nested more than 100 levels deep" in result.stderr
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_a_recursion_error_while_reading_is_a_one_line_error(add_to_repo, tmp_path, capsys, monkeypatch):
+    # The RecursionError branch on any stack: json.load raises it for the repo's settings.json.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    path = repo / ".claude" / "settings.json"
+    path.write_text("{}", encoding="utf-8")
+    real = json.load
+
+    def load(f, *args, **kwargs):
+        if os.path.samefile(f.name, path):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(f, *args, **kwargs)
+
+    monkeypatch.setattr(add_to_repo.json, "load", load)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err and "nothing written" in err and "Traceback" not in err
     assert not (repo / ".claude" / "hooks").exists()
 
 
@@ -457,24 +481,45 @@ def test_a_source_hook_that_cannot_be_read_stops_before_anything_is_written(add_
 def test_a_folder_that_cannot_be_searched_stops_before_anything_is_written(add_to_repo, tmp_path, capsys, monkeypatch):
     # Review 24, F1 other hits: os.path.exists() says False for a hook it cannot look at (a
     # folder only root may search), so the user's own hook would be taken for none.
-    import builtins
     repo = tmp_path / "repo"
     hooks = repo / ".claude" / "hooks"
     hooks.mkdir(parents=True)
     (hooks / "context_check.py").write_text("# my own hook\n", encoding="utf-8")
-    inside = os.fspath(hooks) + os.sep
-
-    def wrap(real):
-        def look(path, *args, **kwargs):
-            if isinstance(path, (str, os.PathLike)) and os.fspath(path).startswith(inside):
-                raise PermissionError(13, "Permission denied", os.fspath(path))
-            return real(path, *args, **kwargs)
-        return look
-    for name in ("stat", "lstat", "open"):
-        monkeypatch.setattr(os, name, wrap(getattr(os, name)))
-    monkeypatch.setattr(builtins, "open", wrap(builtins.open))
+    refuse_looks_inside(hooks, monkeypatch)
     assert add_to_repo.main([str(repo)]) == 1
     err = capsys.readouterr().err
     assert "cannot look at" in err and "nothing written" in err and "[Errno" not in err, err
     monkeypatch.undo()
     assert not (repo / ".claude" / "settings.json").exists()
+
+
+def test_a_settings_link_into_a_folder_that_cannot_be_searched_is_not_called_missing(add_to_repo, tmp_path, capsys,
+                                                                                    monkeypatch):
+    # Review 25, E (mutant b04): the target is there, it just cannot be looked at; "put the
+    # target back" would be wrong advice.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "settings.json").write_text("{}", encoding="utf-8")
+    try:
+        (repo / ".claude" / "settings.json").symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    refuse_looks_inside(dotfiles, monkeypatch)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "missing target" not in err and "nothing written" in err, err
+    monkeypatch.undo()
+    assert (dotfiles / "settings.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_a_repo_that_cannot_be_looked_at_says_so_not_usage(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 25, info 2: os.path.isdir() says False for a repo in a folder that cannot be
+    # searched, so the user got the usage line instead of the reason.
+    locked = tmp_path / "locked"
+    (locked / "repo").mkdir(parents=True)
+    refuse_looks_inside(locked, monkeypatch)
+    assert add_to_repo.main([str(locked / "repo")]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "nothing written" in err and "usage" not in err, err

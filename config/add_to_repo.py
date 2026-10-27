@@ -18,6 +18,7 @@ import errno
 import json
 import math
 import os
+import stat
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -300,7 +301,14 @@ def main(argv=None):
         handoff_at, argv = _take_handoff_at(argv)
     except ValueError as e:
         sys.exit(f"{e}\n{USAGE}")
-    if len(argv) != 1 or not os.path.isdir(argv[0]):
+    if len(argv) != 1:
+        sys.exit(USAGE)
+    try:
+        found = _look(argv[0], follow=True)
+    except ValueError as e:   # a folder only root may search is not "no repo"
+        print(f"Error: {e}; nothing written", file=sys.stderr)
+        return 1
+    if found is None or not stat.S_ISDIR(found.st_mode):
         sys.exit(USAGE)
     progress = []
     try:
