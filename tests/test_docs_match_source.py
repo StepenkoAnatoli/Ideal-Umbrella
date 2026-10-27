@@ -6,6 +6,8 @@
 3. The README table repeats the deny list and the two numeric keys of
    `config/user-settings.json`.
 4. Every command README "Tests" lists is a step in `.github/workflows/ci.yml`.
+5. README "Security model of the hook" repeats the hook timeout and three limits of
+   `hooks/context_check.py`.
 
 Each check is a function over text, and a test feeds it a drifted copy to show it catches the
 drift, so a parser that silently finds nothing cannot pass.
@@ -13,7 +15,7 @@ drift, so a parser that silently finds nothing cannot pass.
 import json
 import re
 
-from conftest import ROOT
+from conftest import ROOT, load_module
 
 CLOUD_LINE = ("- In a cloud session the machine is discarded when the session ends: commit and "
               "push the progress file before offering the fresh session.\n")
@@ -146,3 +148,44 @@ def test_readme_test_commands_run_in_ci():
 def test_a_command_ci_does_not_run_is_caught():
     workflow = read(".github/workflows/ci.yml").replace("python -I keyline/tests/run_tests.py", "true")
     assert commands_not_in_ci(read("README.md"), workflow) == ["python -I keyline/tests/run_tests.py"]
+
+
+def security_drift(markdown, settings_files, hook):
+    """What README "Security model of the hook" states that the sources do not."""
+    match = re.search(r"^### Security model of the hook\n(.*?)(?=^#{2,3} |\Z)", markdown, re.M | re.S)
+    assert match, "README has no '### Security model of the hook' section"
+    text = match.group(1)
+    stated = {
+        "timeout": re.search(r"has a (\d+) s timeout", text),
+        "tail_mb": re.search(r"last (\d+) MB of the transcript", text),
+        "state_days": re.search(r"removed after (\d+) days", text),
+        "log_mb": re.search(r"capped at about (\d+) MB", text),
+    }
+    stated = {key: int(match.group(1)) if match else None for key, match in stated.items()}
+    timeouts = {entry["timeout"] for settings in settings_files
+                for group in settings["hooks"]["UserPromptSubmit"] for entry in group["hooks"]}
+    actual = {
+        "timeout": timeouts.pop() if len(timeouts) == 1 else sorted(timeouts),
+        "tail_mb": hook.TAIL_BYTES // (1024 * 1024),
+        "state_days": hook.STATE_MAX_AGE // (24 * 3600),
+        "log_mb": hook.LOG_MAX_BYTES // (1024 * 1024),
+    }
+    return {key: (stated[key], actual[key]) for key in actual if stated[key] != actual[key]}
+
+
+def hook_sources():
+    settings = [json.loads(read(name)) for name in
+                ("config/user-settings.json", "config/repo-settings.json", ".claude/settings.json")]
+    return settings, load_module("context_check_docs", "hooks/context_check.py")
+
+
+def test_security_model_matches_the_hook():
+    settings, hook = hook_sources()
+    assert security_drift(read("README.md"), settings, hook) == {}
+
+
+def test_security_model_drift_is_caught():
+    settings, hook = hook_sources()
+    settings[1]["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] = 30
+    readme = read("README.md").replace("removed after 30 days", "removed after a while")
+    assert set(security_drift(readme, settings, hook)) == {"timeout", "state_days"}

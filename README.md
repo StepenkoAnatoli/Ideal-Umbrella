@@ -48,6 +48,10 @@ Then turn off the three app switches by hand: **Settings -> Claude Code -> Brows
 
 The install steps below reproduce the settings, `CLAUDE.md` and hook rows. The connectors, Browser and prompt-suggestion rows are app switches and must be set by hand; the table says which measured state each switch produced.
 
+### Security model of the hook
+
+`hooks/context_check.py` runs on every prompt you send, so it does as little as it can. It runs under `python -I` (no `PYTHON*` variables, no script folder on `sys.path`), uses the standard library only, starts no process and opens no network connection. It reads the hook event Claude Code sends on stdin and the last 4 MB of the transcript file that event names (`IDEAL_UMBRELLA_TAIL_BYTES`); the session id becomes a file name only after everything but letters, digits and `-` is dropped. It writes only a small state file per session under `~/.claude/ballast/state/` (removed after 30 days) and an error log, `~/.claude/ballast/context_check.log`, capped at about 1 MB (both follow `CLAUDE_CONFIG_DIR`). It never blocks a prompt: every error is caught and logged and the script exits 0, the installed command adds `|| exit 0` for a missing file or interpreter, and the hook entry has a 15 s timeout. The cloud copy written by `add_to_repo.py` exits at once unless `CLAUDE_CODE_REMOTE=true`.
+
 ## Install (automated)
 
 ```bash
@@ -140,6 +144,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
 - `scripts/` - measurement scripts (token counts, transcript breakdowns). `lint_validate.py` and `plugin_cost.py` take their input folder as an argument (defaults: the folder holding this repo, and the Claude app folder for your OS or `CLAUDE_APP_DIR`). `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts.
+- `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` - the rules every change follows and the PR checklist
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 
 ## Measured numbers
