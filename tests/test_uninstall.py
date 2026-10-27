@@ -441,15 +441,50 @@ def test_unreadable_record_is_not_overwritten(install_module, uninstall_module, 
 def test_a_record_saved_with_a_bom_is_read(install_module, uninstall_module, tmp_path, capsys, run):
     # Review 20, finding B1: an editor that saves UTF-8 with a BOM (Notepad before 2019,
     # PowerShell 5) made both runs stop, and the error advised deleting the record, which
-    # holds what uninstall puts back.
+    # holds what uninstall puts back. Review 21, I1: the record's contents must be used, not
+    # taken for no record.
     home = tmp_path / "home"
-    install_module.install(home)
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text('{"autoCompactWindow": 100000}', encoding="utf-8")
+    install_module.install(home, force=True)
     record = home / ".claude" / "ballast" / "install-record.json"
     record.write_bytes(b"\xef\xbb\xbf" + record.read_bytes())
     module = install_module if run == "install" else uninstall_module
     assert module.main(["--home", str(home)]) == 0, capsys.readouterr().err
-    if run == "uninstall":
+    if run == "install":
+        assert json.loads(record.read_text(encoding="utf-8-sig"))["replaced"] == {"autoCompactWindow": 100000}
+    else:
         assert not (home / ".claude" / "ballast" / "context_check.py").exists()
+        assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 100000}
+
+
+def test_a_record_saved_as_utf16_is_said_to_be_not_utf8(install_module, uninstall_module, tmp_path, capsys):
+    # Review 21, finding L2: PowerShell 5's `>` and Out-File save UTF-16; the record was called
+    # "not valid JSON" while settings.json in the same state is called "not UTF-8".
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = home / ".claude" / "ballast" / "install-record.json"
+    record.write_bytes(record.read_text(encoding="utf-8").encode("utf-16"))
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", str(home)]) == 1
+        err = capsys.readouterr().err
+        assert "is not UTF-8" in err and "not valid JSON" not in err and "delete it" not in err, err
+
+
+def test_a_key_deleted_by_hand_after_a_forced_install_stays_deleted(install_module, uninstall_module, tmp_path):
+    # Review 21, finding L1: the second install added the key again, but the record kept the
+    # first install's value as the one to put back, so uninstall brought back a value the
+    # user had deleted.
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text('{"autoCompactWindow": 100000, "mine": 1}', encoding="utf-8")
+    install_module.install(home, force=True)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    del settings["autoCompactWindow"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"mine": 1}
 
 
 @pytest.mark.parametrize("content", ["{broken", "[1]", '{"added_keys": 5}', '{"a": "\\ud800"}',
@@ -1044,7 +1079,7 @@ def test_a_dangling_symlink_stops_uninstall_before_anything_is_written(install_m
     before = {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()}
     assert uninstall_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "remove it" not in err and "nothing written" in err, err
     assert {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()} == before
     (tmp_path / "away").rename(dotfiles)
     uninstall_module.uninstall(home)

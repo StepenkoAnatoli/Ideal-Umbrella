@@ -304,7 +304,7 @@ def _add(repo, force, progress=None, handoff_at=None):
     # The folders too: a .claude linked into a moved folder would be created at its target.
     for p in (path, target, claude_dir, os.path.dirname(target)):
         if _is_link(p) and not os.path.exists(p):
-            raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
+            raise ValueError(f"{p} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     if handoff_at is not None:

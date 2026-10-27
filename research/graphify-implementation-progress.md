@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 21 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 22 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -26,7 +26,8 @@
 - Review pass 18 (fresh agent, default model after the Fable limit; head 8f56983): 1 low, 2 info; fixed class-wide in the commit after 8f56983; record `research/review-findings-graphify-8f56983.md`. Main changes: `target()` accepts only an absolute `CLAUDE_CONFIG_DIR` (Claude Code does not expand `~` and keeps an empty value; verified in its cli.js); `_own_home()` refuses an empty passwd home when `HOME` is unset; tests for your own missing home and the G4 test with your home present. Mutants (scratchpad `fix18/mut.py`) q01, q05, l01-l05 killed; q03, q09 equivalent.
 - Review pass 19 (fresh agent, default model after the Fable limit; head 4e19841): 1 low (docs), 1 info (test portability), no code defect; fixed in the commit after 4e19841; record `research/review-findings-graphify-4e19841.md`. Main changes: CHANGELOG/README lines on `CLAUDE_CONFIG_DIR` match the absolute-only rule; the passwd tests build their entry from scratch and run with no passwd entry or no `HOME`.
 - Review pass 20 (fresh agent, default model after the Fable limit; head 989169b): 3 low, 2 info; fixed class-wide in the commit after 989169b; record `research/review-findings-graphify-989169b.md`. Main changes: the install record is read with `utf-8-sig` and its errors say fix it, never delete it (`RECORD_ADVICE`); tests for every `--verify-only` failure line and add_to_repo's link and mode writes; ledger and add_to_repo comments. Mutants (scratchpad `fix20/mut.py`) v01, v06, v07, v10, v12, v13, v16-v19, o08, o12, u07, b01, b02 killed; o13, u02, u03, i01 equivalent or root-only.
-- Next: review pass 21 (fresh agent; brief as scratchpad `brief20.txt` plus `-989169b.md`).
+- Review pass 21 (fresh agent, default model after the Fable limit; head 195c85a): 3 low, 1 info; fixed class-wide in the commit after 195c85a; record `research/review-findings-graphify-195c85a.md`. Main changes: `_merge_record` drops a kept pre-install value when the run adds the key again (a hand delete stays deleted); a UTF-16 record is called not UTF-8; the dangling-link error says put the target back, never remove; the BOM test checks the record's values are used. Mutants (scratchpad `fix21/mut.py`) l1, l2, l3i, l3a, i1 killed; settings fuzzer 0 of 2000.
+- Next: review pass 22 (fresh agent; brief as scratchpad `brief22.txt`, Fable first, default model on a 429).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -49,5 +50,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 21 and later, then merge.
+- Review pass 22 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).

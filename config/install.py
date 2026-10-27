@@ -474,7 +474,7 @@ def refuse_dangling(paths):
     for path in paths:
         for part in (path, *path.parents):
             if _is_link(part) and not part.exists():
-                raise ValueError(f"{part} is a symlink to a missing target; fix or remove it first")
+                raise ValueError(f"{part} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
 
 
 def _is_link(path):
@@ -784,7 +784,8 @@ def _unfenced_copy(current, copy):
 
 
 # The record holds the values uninstall puts back, so deleting it is never the advice.
-RECORD_ADVICE = "fix it first (deleting it loses what uninstall puts back)"
+RECORD_KEPT = "(deleting it loses what uninstall puts back)"
+RECORD_ADVICE = f"fix it first {RECORD_KEPT}"
 
 
 def read_record(path):
@@ -800,6 +801,10 @@ def read_record(path):
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
+    except UnicodeDecodeError as e:
+        # PowerShell 5's `>` and Out-File save UTF-16; that is not a JSON error.
+        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first "
+                         f"{RECORD_KEPT}") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); {RECORD_ADVICE}") from e
     except RecursionError:
@@ -881,7 +886,8 @@ def _merge_record(old, new):
 
     What was there before the first install wins, so a second install never overwrites it,
     unless the user changed an installed value since: then their newer value is what an
-    uninstall puts back. Records from before "installed" existed keep first-wins.
+    uninstall puts back; a key they deleted since is one this run adds, and uninstall removes
+    it. Records from before "installed" existed keep first-wins.
     """
     old_installed = old.get("installed")
     tracked = list(old.get("added_keys", [])) + list(old.get("replaced", {}))
@@ -894,7 +900,12 @@ def _merge_record(old, new):
         replaced[key] = value
         if key in added:
             added.remove(key)
-    added += [k for k in new.get("added_keys", []) if k not in added and k not in replaced]
+    for key in new.get("added_keys", []):
+        # This run found the key missing, so a value kept from before the first install was
+        # deleted by hand since: uninstall must remove the key, not bring that value back.
+        replaced.pop(key, None)
+        if key not in added:
+            added.append(key)
     deny = list(old.get("deny_added", []))
     deny += [t for t in new.get("deny_added", []) if t not in deny]
     if old.get("uninstalled"):

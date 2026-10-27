@@ -160,7 +160,7 @@ def test_a_dangling_folder_link_is_reported_before_anything_is_written(tmp_path,
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 1
-    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "symlink to a missing target" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
     assert not (tmp_path / "gone").exists()
 
 
@@ -177,7 +177,7 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 1
-    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "symlink to a missing target" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
 
