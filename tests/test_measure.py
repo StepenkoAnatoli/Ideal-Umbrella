@@ -221,3 +221,27 @@ def test_a_link_is_a_missing_target_only_when_it_leads_nowhere(tmp_path, capsys,
     captured = capsys.readouterr()
     assert want in captured.err, captured
     assert "good.txt" in captured.out
+
+
+def test_links_are_followed_except_a_walked_link_to_a_folder(tmp_path, capsys):
+    # Review 30, L1: nothing failed when an argument that is a link, or a walked link to a file,
+    # stopped being followed, or when a walked link to a folder was followed (its files would be
+    # counted twice).
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.txt").write_text("hello\n", encoding="utf-8")
+    (tmp_path / "f.txt").write_text("hello\n", encoding="utf-8")
+    link_or_skip(real / "linkedfile.txt", tmp_path / "f.txt")
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "o.txt").write_text("hello\n", encoding="utf-8")
+    link_or_skip(real / "linkeddir", other, target_is_directory=True)
+    link_or_skip(tmp_path / "argfile.txt", tmp_path / "f.txt")
+    link_or_skip(tmp_path / "argdir", real, target_is_directory=True)
+    assert measure.main([str(tmp_path / "argdir"), str(tmp_path / "argfile.txt")]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "", captured
+    assert "a.txt" in captured.out and "linkedfile.txt" in captured.out and "argfile.txt" in captured.out, captured
+    assert "o.txt" not in captured.out, captured

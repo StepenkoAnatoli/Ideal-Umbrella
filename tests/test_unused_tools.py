@@ -116,9 +116,10 @@ def test_the_walk_keeps_rglobs_rules(unused_tools, tmp_path, capsys):
     write_jsonl(tmp_path / ".hidden" / "h.jsonl", _calls("Grep"))      # rglob reads hidden folders
     write_jsonl(tmp_path / "notes.jsonl.bak", _calls("Bash"))            # not *.jsonl
     write_jsonl(tmp_path / "U.JSONL", _calls("Glob"))                    # *.jsonl on Windows only
+    write_jsonl(tmp_path / ".d.jsonl", _calls("Write"))                  # rglob reads dot files (Review 30)
     assert unused_tools.main([str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    n = 3 if os.name == "nt" else 2
+    n = 4 if os.name == "nt" else 3
     assert out.startswith(f"{n} transcripts, {n} tool calls, {n} distinct tools"), out
     assert "Bash" not in out
 
@@ -196,3 +197,20 @@ def test_an_argument_that_leads_nowhere_is_not_a_folder(unused_tools, tmp_path, 
         arg = tmp_path / "afile" / "sub"
     assert unused_tools.main([str(arg)]) == 2
     assert f"{arg} is not a folder" in capsys.readouterr().err
+
+
+def test_a_linked_folder_argument_and_a_linked_transcript_are_followed(unused_tools, tmp_path, capsys):
+    # Review 30, L1: nothing failed when the argument check or the walk stopped following links
+    # (a ~/.claude/projects linked to another disk, a transcript linked in), as is_dir() and
+    # rglob's is_file() follow them.
+    real = tmp_path / "real"
+    real.mkdir()
+    write_jsonl(real / "t.jsonl", _calls("Read"))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    write_jsonl(outside / "o.jsonl", _calls("Edit"))
+    link_or_skip(real / "l.jsonl", outside / "o.jsonl")
+    link_or_skip(tmp_path / "linked", real, target_is_directory=True)
+    assert unused_tools.main([str(tmp_path / "linked")]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("2 transcripts, 2 tool calls, 2 distinct tools"), out
