@@ -1288,16 +1288,13 @@ def test_a_config_dir_that_cannot_be_looked_at_is_a_one_line_error(install_modul
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    link_or_skip(tmp_path / "link", tmp_path / "locked")
+    # The folder first: on Windows a link made to a missing target is a file link, which
+    # cannot be followed into a folder ("Access is denied").
     (tmp_path / "locked").mkdir()
+    link_or_skip(tmp_path / "link", tmp_path / "locked", target_is_directory=True)
     config = tmp_path / "link" / "cfg"
-    real_exists = Path.exists
-
-    def exists(self, *args, **kwargs):
-        if "locked" in str(self) or "link" in str(self):
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_exists(self, *args, **kwargs)
-    monkeypatch.setattr(Path, "exists", exists)
+    # Review 25: the check now looks with lstat/stat, not exists(), so refuse those.
+    refuse_looks_inside(tmp_path / "locked", monkeypatch)
     if how == "env":
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
         args = []
@@ -1307,7 +1304,8 @@ def test_a_config_dir_that_cannot_be_looked_at_is_a_one_line_error(install_modul
     module = install_module if script == "install" else uninstall_module
     assert module.main(args) == 1
     err = capsys.readouterr().err
-    assert err.startswith("Error: ") and "Permission denied" in err, err
+    assert err.startswith("Error: ") and "cannot look at" in err and "nothing written" in err, err
+    assert len(err.splitlines()) == 1, err
 
 
 @pytest.mark.parametrize("script", ["install", "uninstall"])

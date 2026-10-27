@@ -60,6 +60,7 @@ Mutants are in the session scratchpad, `fix25/mut.py`, and all of them are kille
 - It refuses `os.stat`, `lstat`, `open`, `scandir`, `listdir`, `builtins.open` and `io.open`; `io.open` is what pathlib's `read_text` and `read_bytes` use.
 - On 3.10 it also refuses pathlib's own `_NormalAccessor` references.
 - `python_314_pathlib(monkeypatch)` moved to conftest too.
+- Other hit, found by Windows CI on the first fix commit: the review-14 test `test_a_config_dir_that_cannot_be_looked_at_is_a_one_line_error` simulated the refusal by patching `Path.exists`, which `_absolute()` no longer calls after D. On Windows its file link to a folder made the real stat say "Access is denied", so the product printed a correct "cannot look at ...; nothing written" but the test expected the fake's text. The test now makes the folder first, links it as a folder, uses `refuse_looks_inside`, and asserts "cannot look at", "nothing written" and one line.
 
 ### B. ubuntu/3.14 CI was red: the nested-too-deep tests depended on the stack size
 
