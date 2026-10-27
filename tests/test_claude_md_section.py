@@ -1001,7 +1001,9 @@ def test_a_whole_file_install_with_crlf_is_still_recognised(install_module):
 
 def test_a_record_naming_a_backup_outside_the_folder_names_none(uninstall_module, tmp_path):
     # Path.with_name refuses most of these itself, but takes ".." (the folder above).
-    for name in ("../x", "sub/x", "", "..", "CLAUDE.md.bak-mine", "notes.md", 5):
+    # Review 6, info I2: digits outside ASCII are not the installer's (\\d matched them).
+    for name in ("../x", "sub/x", "", "..", "CLAUDE.md.bak-mine", "notes.md", 5,
+                 "CLAUDE.md.bak-" + "\u0662" * 8 + "-" + "\u0662" * 6):
         assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) is None
     for name in ("CLAUDE.md.bak-20250101-000000", "CLAUDE.md.bak-20250101-000000-2"):
         assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) == tmp_path / name
@@ -1028,3 +1030,39 @@ def test_a_file_of_the_users_a_record_names_is_never_deleted(install_module, uni
 def test_the_template_holds_no_fence_line(install_module):
     # Review 5, info I4: the fence rules assume the section holds no fence of its own.
     assert not any(line.lstrip(" ").startswith(("```", "~~~")) for line in RULES.splitlines())
+
+
+# Review 6, finding L2: four mutants survived the suite.
+def test_the_old_installers_backup_stays_when_the_user_rewrote_the_file(install_module, uninstall_module, tmp_path):
+    # n01: after the move from the whole-file installer the section was taken out by hand and
+    # the file rewritten; the old installer's backup differs from it and is the only copy of
+    # the user's original.
+    home = tmp_path / "home"
+    old_install(install_module, home, before="original\n")
+    install_module.install(home)
+    write_md(home, "rewritten by me\n")
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "rewritten by me\n"
+    assert (home / ".claude" / OLD_BACKUP).read_bytes() == b"original\n"
+
+
+@pytest.mark.parametrize("left", ["mine\n", None])
+def test_a_section_the_installer_adds_after_a_hand_section_is_gone_is_its_own(install_module, uninstall_module,
+                                                                              tmp_path, left):
+    # n12, n13: the user deleted their hand-added section (or the whole file); the next run
+    # adds or creates the section itself, so the record must stop calling it the user's.
+    home = tmp_path / "home"
+    write_md(home, f"mine\n{BEGIN}\n- older rules\n{END}\n")
+    install_module.install(home)
+    assert read_record(home)["claude_md"]["hand_section"] is True
+    if left is None:
+        md(home).unlink()
+    else:
+        write_md(home, left)
+    install_module.install(home)
+    assert "hand_section" not in read_record(home)["claude_md"]
+    uninstall_module.uninstall(home)
+    if left is None:
+        assert not md(home).exists()
+    else:
+        assert read_md(home) == left

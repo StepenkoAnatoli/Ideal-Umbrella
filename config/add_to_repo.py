@@ -320,6 +320,10 @@ def _add(repo, force, progress=None, handoff_at=None):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     hook_changed = source != old
+    # A read-only file is refused before the first write, not at its own write after the hook.
+    for p, written in ((target, hook_changed), (path, changes)):
+        if written and os.path.exists(p) and not os.access(p, os.W_OK):
+            raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", p)
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py written")

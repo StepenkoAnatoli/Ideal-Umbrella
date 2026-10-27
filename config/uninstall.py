@@ -208,7 +208,8 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         # The install recorded its section and made this backup, then stopped before its
         # CLAUDE.md write (or the user put the file back as it was): the file is the backup,
         # and a section in it is one the user had before the install.
-        apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)", safety.unlink)
+        apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)",
+              lambda: install.remove(safety))
         return False
     if found is None:
         if safety is not None and not (safety.exists() or safety.is_symlink()):
@@ -219,7 +220,8 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                 and legacy_path.read_bytes() == claude_md.read_bytes():
             # An earlier uninstall restored the file from this backup, then stopped before it
             # deleted the backup.
-            apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)", legacy_path.unlink)
+            apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)",
+                  lambda: install.remove(legacy_path))
         elif legacy and not (legacy_path is not None and (legacy_path.exists() or legacy_path.is_symlink())):
             # An earlier uninstall restored the file from this backup and deleted it, then
             # stopped before it wrote the record: nothing is left to undo.
@@ -247,7 +249,8 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                 and edited.read_bytes() == claude_md.read_bytes():
             # The install backed up the user's edits, then stopped before its CLAUDE.md write:
             # the file still holds those edits, so the copy names nothing that is not in it.
-            apply(f"CLAUDE.md backup {edited.name} deleted (CLAUDE.md holds the same bytes)", edited.unlink)
+            apply(f"CLAUDE.md backup {edited.name} deleted (CLAUDE.md holds the same bytes)",
+                  lambda: install.remove(edited))
         return True
     if not utf8:
         # The text was decoded with replacement characters; writing it back would change the
@@ -267,7 +270,7 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                 # Whole or not at all, and through a symlinked CLAUDE.md rather than over the
                 # link; a copy that fails part way must not leave a truncated file.
                 install._write_bytes(claude_md, legacy_path.read_bytes())
-                legacy_path.unlink()
+                install.remove(legacy_path)
             apply(f"CLAUDE.md restored from {legacy}", restore)
             return False
         if entry.get("created") is True:
@@ -284,7 +287,7 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         install._write_bytes(claude_md, data)
         # The copy install made before adding the section holds these same bytes now.
         if safety is not None and safety.is_file() and safety.read_bytes() == data:
-            safety.unlink()
+            install.remove(safety)
     apply("CLAUDE.md: Ideal-Umbrella section removed", write)
     if legacy_path is not None and legacy_path.exists():
         notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
@@ -348,7 +351,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if dry_run:
             changes.append("hook deleted")
         else:
-            paths["hook"].unlink()
+            install.remove(paths["hook"])
             done("hook deleted")
     # What the hook wrote while it ran: the per-session state files and its log. A state folder
     # that is a symlink, or a junction on Windows, is unlinked, not followed (shutil.rmtree
@@ -369,7 +372,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if dry_run:
             changes.append("log deleted")
         else:
-            paths["log"].unlink()
+            install.remove(paths["log"])
             done("log deleted")
 
     claude_md_left = False
@@ -426,7 +429,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 and backup.read_bytes() == raw_md:
             # An earlier uninstall restored the file from this backup, then stopped before it
             # deleted the backup (or the user copied it back by hand).
-            apply(f"CLAUDE.md backup {backup.name} deleted (CLAUDE.md holds the same bytes)", backup.unlink)
+            apply(f"CLAUDE.md backup {backup.name} deleted (CLAUDE.md holds the same bytes)",
+                  lambda: install.remove(backup))
         elif not ours and backup is not None and not (backup.exists() or backup.is_symlink()):
             # The file is not the one installed and there is no backup to give back: an earlier
             # uninstall restored it and stopped before it wrote the record, or the user replaced
@@ -445,7 +449,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 # link; a copy that fails part way must not leave a truncated file.
                 install._write_bytes(claude_md, backup.read_bytes())
                 done(f"CLAUDE.md restored from {backup.name}")
-                backup.unlink()
+                install.remove(backup)
         elif backup is not None:
             # The install replaced a file of yours and its backup is gone: deleting now would
             # lose the only copy left, so keep it and say so.

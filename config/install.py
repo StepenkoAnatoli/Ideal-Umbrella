@@ -33,6 +33,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -289,7 +290,7 @@ def _read_json(path):
 
 # Only names this installer gives a backup: a <name>.bak-something the user made by hand is
 # never taken for one of ours (and then deleted by uninstall).
-_BACKUP_NAME = r"\.bak-\d{8}-\d{6}(-\d+)?"
+_BACKUP_NAME = r"\.bak-[0-9]{8}-[0-9]{6}(-[0-9]+)?"  # [0-9], not \d, which also matches other scripts' digits
 
 
 def _backup_name(path):
@@ -330,7 +331,20 @@ def _backup(path, backup=None):
         # leave a truncated backup that no record names and no uninstall removes.
         _write_bytes(backup, data)
         shutil.copystat(path, backup)
+        # The backup is the installer's to delete: a read-only mode copied from a read-only
+        # file would stop every uninstall at it on Windows, which cannot delete such a file.
+        os.chmod(backup, backup.stat().st_mode | stat.S_IWUSR)
     return backup
+
+
+def remove(path):
+    """Delete a file of the installer's (a backup, the hook, the log). Windows cannot delete
+    a read-only file, so a read-only bit set by an earlier version, the user or a sync tool
+    is cleared first; a symlink is removed, and its target left as it is."""
+    path = Path(path)
+    if not path.is_symlink() and not os.access(path, os.W_OK):
+        os.chmod(path, path.stat().st_mode | stat.S_IWUSR)
+    path.unlink()
 
 
 def _new_temp(directory, prefix):
@@ -358,6 +372,13 @@ def _is_link(path):
     return bool(isjunction and isjunction(path))
 
 
+def refuse_read_only(path):
+    """Raise PermissionError when path (through a symlink) is a file that cannot be written."""
+    path = Path(path).resolve()
+    if path.exists() and not os.access(path, os.W_OK):
+        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
+
+
 def _write_bytes(path, data):
     """Write a user file whole or not at all: to a temp file beside it, then rename over it.
     A write that fails part way (disk full, a killed process) leaves the old file as it was
@@ -367,8 +388,7 @@ def _write_bytes(path, data):
     A hard-linked target becomes a new file: the other links keep the old content."""
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and not os.access(path, os.W_OK):
-        raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
+    refuse_read_only(path)
     fd, tmp = _new_temp(path.parent, f".{path.name}-")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -857,6 +877,13 @@ def install(home, force=False, progress=None, config_dir=None):
     # first install is skipped, a backup that equals the file is deleted).
     merged = _merge_record(old_record, record)
     changing = hook_changed or md_plan is not None or setting_changes
+    # A read-only file is refused before the first write, not at its own write after others.
+    for path, written in ((paths["record"], changing or "pending" in raw_record),
+                          (paths["hook"], hook_changed),
+                          (paths["claude_md"], md_plan is not None and md_plan["text"] is not None),
+                          (paths["settings"], setting_changes)):
+        if written:
+            refuse_read_only(path)
     if changing:
         _write_json(paths["record"], dict(merged, pending=old_record) if old_record else merged)
         progress.append("install record written")

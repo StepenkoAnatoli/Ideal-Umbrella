@@ -336,3 +336,11 @@ def test_a_handoff_value_padded_with_zeros_is_read_without_the_digit_limit(tmp_p
     result = run_with(repo, "--handoff-at", "0" * 5000 + "120000")
     assert result.returncode == 0, result.stderr[-300:]
     assert settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"] == "120000"
+
+
+@pytest.mark.parametrize("value, ok", [("9" * 15, True), ("1" + "0" * 15, False)])
+def test_the_handoff_value_takes_at_most_fifteen_digits(tmp_path, value, ok):
+    # Review 6, info I1 (n24): the limit itself was not tested.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", value)
+    assert (result.returncode == 0) is ok, result.stderr[-300:]
