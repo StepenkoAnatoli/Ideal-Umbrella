@@ -15,7 +15,7 @@ Ideal-Umbrella is small on purpose: settings, one rule file, one hook, installer
 - **User files are written whole or not at all** (temp file beside it, then rename), backed up before they are replaced, and recorded in the install record before the next write, as `config/install.py` does.
 - **Docs move with the code.** Update `README.md` and `CHANGELOG.md` in the same PR. Text that copies another file is tested against it (`tests/test_docs_match_source.py`); extend that test when you add a copy.
 - **Every number in the README names the script and command that produced it**, and a measurement worth tracking gets a line in `research/measurements.jsonl` (`scripts/ledger.py`).
-- **Notes and resume points** in `notes/` or `plans/` follow the keyline format (`keyline/README.md`).
+- **Resume points** live in `research/*-progress.md` (replace the resume point, don't append). Notes in `notes/` or `plans/`, the folders the keyline hook watches, follow the keyline format (`keyline/README.md`).
 
 ## Before you push
 Run every command in README "Tests" (pyflakes, pytest, the keyline suite, the JSON checks). CI runs the same list.

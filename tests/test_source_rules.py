@@ -27,6 +27,11 @@
    edit, a damaged file) raises RecursionError, not ValueError, so `except ValueError` let
    `scripts/ledger.py` end with a traceback (review 1 of the graphify branch, finding 5). The
    hook's `run()` reads stdin outside a `try` on purpose: its `main()` catches every Exception.
+7. In `config/`, a function that calls `json.load()` / `json.loads()` also calls
+   `_check_json()`. The installers write back what they read; a file nested deeper than
+   `json.dumps(indent=2)` can write, or holding a lone surrogate UTF-8 cannot encode, made the
+   write fail after the hook and CLAUDE.md were already written (review 2 of the graphify
+   branch, findings 6 and 7). Checking right after the read stops the run before any write.
 """
 import ast
 
@@ -150,6 +155,27 @@ def test_json_reads_handle_a_recursion_error():
             if _is_json_read(node) and not guarded and (relative, function) not in JSON_READS_CAUGHT_BY_CALLER:
                 bad.append(f"{relative}:{node.lineno}")
     assert not bad, "json.load/json.loads with no RecursionError handler:\n" + "\n".join(bad)
+
+
+def unchecked_json_reads(tree):
+    """Functions that call json.load/json.loads but not _check_json."""
+    bad = []
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        nodes = list(ast.walk(function))
+        reads = [n for n in nodes if _is_json_read(n)]
+        if reads and not any(isinstance(n, ast.Call) and _name(n.func) == "_check_json" for n in nodes):
+            bad.append((reads[0].lineno, function.name))
+    return bad
+
+
+def test_config_json_reads_are_checked_before_any_write():
+    bad = []
+    for path in sorted((ROOT / "config").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        bad += [f"{path.relative_to(ROOT).as_posix()}:{line} in {name}()" for line, name in unchecked_json_reads(tree)]
+    assert not bad, "json.load/json.loads in config/ without _check_json():\n" + "\n".join(bad)
 
 
 def test_scripts_that_print_set_utf8_stdout():

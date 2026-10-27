@@ -95,6 +95,10 @@ def undo_settings(settings, template, record, evidence=None):
             expected = template[key]
         else:
             continue
+        if key in replaced and settings[key] == replaced[key] and settings[key] != expected:
+            # The value from before the install is still there: the install recorded it, then
+            # stopped before its settings.json write. Nothing to undo.
+            continue
         if settings[key] != expected:
             notices.append(f"{key} is {settings[key]!r}, not the installed value; left as is")
             left.append(key)
@@ -196,9 +200,16 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
     legacy = entry.get("legacy_backup")
     legacy_path = _backup_of(claude_md, legacy) if legacy else None
     if found is None:
-        notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
-                       + (f" (your file from before the first install is in {legacy})"
-                          if legacy_path and legacy_path.exists() else ""))
+        safety = _backup_of(claude_md, entry.get("safety_backup"))
+        if safety is not None and safety.is_file() and not safety.is_symlink() \
+                and safety.read_bytes() == claude_md.read_bytes():
+            # The install recorded its section and made this backup, then stopped before its
+            # CLAUDE.md write (or the user took the section out by hand): the file is the backup.
+            apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)", safety.unlink)
+        else:
+            notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
+                           + (f" (your file from before the first install is in {legacy})"
+                              if legacy_path and legacy_path.exists() else ""))
         return False
     if install.text_hash(install.section_text(install.section_body(current, found))) != entry.get("sha256"):
         notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is")
@@ -275,7 +286,9 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     current_md = raw_md.decode("utf-8", errors="replace") if raw_md is not None else None
     md_utf8 = raw_md is not None and current_md.encode("utf-8") == raw_md
     try:
-        found = install.find_section(current_md) if current_md is not None else None
+        entry = (record or {}).get("claude_md")
+        recorded = entry.get("sha256") if isinstance(entry, dict) and entry.get("format") == "section" else None
+        found = install.find_section(current_md, recorded) if current_md is not None else None
     except ValueError as e:
         raise ValueError(f"{claude_md}: {e}") from None
     template_md = install._read_text(install.CLAUDE_MD)
@@ -319,10 +332,13 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             paths["log"].unlink()
             done("log deleted")
 
-    entry = (record or {}).get("claude_md")
     claude_md_left = False
     if current_md is None:
-        pass
+        section_entry = isinstance(entry, dict) and entry.get("format") == "section"
+        legacy = entry.get("legacy_backup") if section_entry else None
+        legacy_path = _backup_of(claude_md, legacy) if legacy else None
+        if legacy_path is not None and legacy_path.exists():
+            notices.append(f"CLAUDE.md is gone; your file from before the first install is still in {legacy}")
     elif isinstance(entry, dict) and entry.get("format") == "section":
         claude_md_left = _undo_section(claude_md, current_md, md_utf8, found, entry, apply, notices)
     elif found is not None and not isinstance(entry, dict):
@@ -420,17 +436,14 @@ def main(argv=None):
     try:
         changes, notices = uninstall(home, dry_run=args.dry_run, progress=progress, config_dir=config_dir)
     except ValueError as e:
-        # Raised while reading, before any write.
-        print(f"Error: {e}; nothing written", file=sys.stderr)
+        # Raised while reading and checking, before any write; or, rarely, by a write.
+        install.report_error(e, progress, before_writes=True,
+                             stopped="; the undo stopped part way, fix the cause and run again")
         return 1
     except OSError as e:
         # e.g. the hook path is a folder, or a file is read-only. Files already undone stay
         # undone; a second run after fixing the cause finishes the rest.
-        print(f"Error: {e}; the undo stopped part way, fix the cause and run again", file=sys.stderr)
-        if progress:
-            print("Done before the error:", file=sys.stderr)
-            for line in progress:
-                print(f"  - {line}", file=sys.stderr)
+        install.report_error(e, progress, stopped="; the undo stopped part way, fix the cause and run again")
         return 1
     if changes:
         print("Would change:" if args.dry_run else "Changes:")

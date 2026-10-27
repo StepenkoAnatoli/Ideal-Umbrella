@@ -234,9 +234,37 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
     return changes, notices
 
 
+JSON_DEPTH = 100
+
+
+def _check_json(data, path, fix="fix it first"):
+    """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
+    than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
+    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8).
+    Called right after reading, so the run stops before its first write."""
+    stack = [(data, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"{path} holds text that is not valid Unicode (a lone surrogate "
+                                 f"such as \\ud800); {fix}") from None
+        elif isinstance(value, (dict, list)):
+            if depth > JSON_DEPTH:
+                raise ValueError(f"{path} is nested more than {JSON_DEPTH} levels deep; {fix}")
+            items = value.items() if isinstance(value, dict) else ((None, v) for v in value)
+            for key, item in items:
+                if key is not None:
+                    stack.append((key, depth))
+                stack.append((item, depth + 1))
+
+
 def _read_json(path):
-    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
-    naming the file, which main() reports as one line before anything is written."""
+    """Read a JSON object; a file that is not UTF-8, not JSON, not an object or not writable
+    back is a ValueError naming the file, which main() reports as one line before anything is
+    written."""
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -248,16 +276,24 @@ def _read_json(path):
         raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
+    _check_json(data, path)
     return data
 
 
-def _backup(path):
-    """Copy path to a timestamped backup beside it and return the backup's path. A backup
-    already holding the same bytes is returned instead: a run that failed after its backup
-    would otherwise leave one that no record names and no uninstall removes."""
+# Only names this installer gives a backup: a <name>.bak-something the user made by hand is
+# never taken for one of ours (and then deleted by uninstall).
+_BACKUP_NAME = r"\.bak-\d{8}-\d{6}(-\d+)?"
+
+
+def _backup_name(path):
+    """The backup path _backup would use for path, without copying: an earlier backup of ours
+    already holding the same bytes (a run that failed after its backup would otherwise leave
+    one that no record names and no uninstall removes), else a new timestamped name."""
     data = path.read_bytes()
+    ours = re.compile(re.escape(path.name) + _BACKUP_NAME)
     for earlier in sorted(path.parent.glob(glob.escape(path.name) + ".bak-*")):
-        if earlier.is_file() and not earlier.is_symlink() and earlier.read_bytes() == data:
+        if ours.fullmatch(earlier.name) and earlier.is_file() and not earlier.is_symlink() \
+                and earlier.read_bytes() == data:
             return earlier
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
@@ -265,7 +301,15 @@ def _backup(path):
     while backup.exists():
         backup = path.with_name(f"{path.name}.bak-{stamp}-{n}")
         n += 1
-    shutil.copy2(path, backup)
+    return backup
+
+
+def _backup(path, backup=None):
+    """Copy path to a timestamped backup beside it (or to backup, from _backup_name) and
+    return the backup's path. An existing backup with the same bytes is not copied again."""
+    backup = backup or _backup_name(path)
+    if not (backup.is_file() and not backup.is_symlink() and backup.read_bytes() == path.read_bytes()):
+        shutil.copy2(path, backup)
     return backup
 
 
@@ -360,56 +404,89 @@ def section_text(rules):
     return f"{SECTION_BEGIN}\n{rules}{SECTION_END}\n"
 
 
+def _lines(text):
+    """text split at "\n", with a BOM before line 1 taken off; returns (lines, BOM length)."""
+    lines = text.split("\n")
+    if lines[0].startswith("\ufeff"):
+        lines[0] = lines[0][1:]
+        return lines, 1
+    return lines, 0
+
+
 def _fenced(lines):
     """Numbers of the lines inside a closed Markdown code fence (``` or ~~~), fence lines
-    included. A fence never closed hides nothing: read as Markdown it would run to the end
-    of the file and swallow the section install appends there."""
-    inside, opened = set(), None
+    included. An opening fence that is never closed is ordinary text and the scan goes on at
+    the next line: read as Markdown it would run to the end of the file and swallow the
+    section install appends there, and it must not hide a closed fence after it either."""
+    fences = []   # (number, character, length, closes: no info string)
     for number, line in enumerate(lines, 1):
         match = FENCE.match(line)
-        if opened is None:
-            # A backtick fence's info string holds no backtick (CommonMark).
-            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
-                opened = (number, match.group(1))
-        elif match and match.group(1)[0] == opened[1][0] and len(match.group(1)) >= len(opened[1]) \
-                and not match.group(2).strip():
-            inside.update(range(opened[0], number + 1))
-            opened = None
+        if match:
+            fences.append((number, match.group(1)[0], len(match.group(1)), not match.group(2).strip(),
+                           match.group(2)))
+    # longest[char][i]: the longest closing fence of that character at fences[i] or later, so
+    # an opener with no closer is skipped without scanning to the end (no quadratic run).
+    longest = {"`": [0] * (len(fences) + 1), "~": [0] * (len(fences) + 1)}
+    for i in range(len(fences) - 1, -1, -1):
+        for char in longest:
+            longest[char][i] = longest[char][i + 1]
+        _, char, length, closes, _ = fences[i]
+        if closes:
+            longest[char][i] = max(longest[char][i], length)
+    inside, i = set(), 0
+    while i < len(fences):
+        number, char, length, _, info = fences[i]
+        # A backtick fence's info string holds no backtick (CommonMark).
+        if (char == "`" and "`" in info) or longest[char][i + 1] < length:
+            i += 1
+            continue
+        j = i + 1
+        while not (fences[j][1] == char and fences[j][2] >= length and fences[j][3]):
+            j += 1
+        inside.update(range(number, fences[j][0] + 1))
+        i = j + 1
     return inside
 
 
-def find_section(text):
+def find_section(text, recorded=None):
     """Where the Ideal-Umbrella section is in text: (start, body_start, body_end, end) as
     offsets, from the begin marker line to past the end marker line's line break; None when
     text has no marker line. A marker is a whole line (trailing whitespace ignored), so a line
     that only mentions one is not one, and neither is a marker line inside a code fence (an
     example the user wrote). A BOM before a begin marker on line 1 stays outside the section.
     A marker without its pair, a second section, or an end before the begin is a ValueError:
-    guessing where the section ends could delete the user's text."""
-    begins, ends = [], []
-    offset = 0
-    lines = text.split("\n")
-    if lines[0].startswith("\ufeff"):
-        lines[0] = lines[0][1:]
-        offset = 1
+    guessing where the section ends could delete the user's text.
+
+    recorded is the sha256 the install record holds for the section. When every marker line
+    is inside a fence and exactly one begin and one end line are found with fences ignored,
+    holding exactly the recorded section, that pair is the section: a fence line the user
+    left open before it and closed after it (a code block added below) does not hide it."""
+    lines, bom = _lines(text)
     fenced = _fenced(lines)
+    begins, ends, all_begins, all_ends = [], [], [], []
+    offset = bom
     for number, line in enumerate(lines, 1):
         bare = line.rstrip()
-        after = min(offset + len(line) + 1, len(text))
-        if number in fenced:
-            pass
-        elif bare == SECTION_BEGIN:
-            begins.append((number, offset, after))
+        found = (number, offset, min(offset + len(line) + 1, len(text)))
+        if bare == SECTION_BEGIN:
+            all_begins.append(found)
+            if number not in fenced:
+                begins.append(found)
         elif bare == SECTION_END:
-            ends.append((number, offset, after))
+            all_ends.append(found)
+            if number not in fenced:
+                ends.append(found)
         offset += len(line) + 1
     if not begins and not ends:
-        return None
+        if recorded is None or len(all_begins) != 1 or len(all_ends) != 1 or all_ends[0][0] < all_begins[0][0]:
+            return None
+        pair = all_begins[0][1], all_begins[0][2], all_ends[0][1], all_ends[0][2]
+        return pair if text_hash(section_text(section_body(text, pair))) == recorded else None
     if len(begins) != 1 or len(ends) != 1 or ends[0][0] < begins[0][0]:
-        def lines(found):
+        def numbers(found):
             return ", ".join(str(n) for n, _, _ in found) or "none"
         raise ValueError(f"the Ideal-Umbrella marker lines are not one begin line followed by one end "
-                         f"line (begin on line {lines(begins)}, end on line {lines(ends)}); "
+                         f"line (begin on line {numbers(begins)}, end on line {numbers(ends)}); "
                          "fix them by hand first")
     return begins[0][1], begins[0][2], ends[0][1], ends[0][2]
 
@@ -426,24 +503,28 @@ def plan_claude_md(current, rules, old):
     record's claude_md entry from an earlier install. Returns None when the section is
     already the template, else a dict: text (the whole new file; None when only the record
     changes), entry (for the record), backup ("user" for the file before the section is
-    added, "edited" for a section the user changed, None) and change (the line to report).
-    Raises ValueError for broken markers.
+    added, "edited" for a section the user changed, None), change (the line to report) and,
+    when there is something to tell, notice. Raises ValueError for broken markers.
     """
     old = old if isinstance(old, dict) else None
     old_format = old is not None and "format" not in old   # the whole-file installer's entry
     section = section_text(rules)
     entry = {"format": "section", "sha256": text_hash(section), "created": False, "joined": ""}
-    if old_format and old.get("backup"):
-        entry["legacy_backup"] = old["backup"]
-    elif old is not None and not old_format:
-        entry.update({k: old[k] for k in ("created", "legacy_backup", "safety_backup") if k in old})
+    if old_format:
+        # The whole-file installer created the file when it made no backup of one.
+        entry["created"] = old.get("backup") is None
+        if old.get("backup"):
+            entry["legacy_backup"] = old["backup"]
+    elif old is not None:
+        entry.update({k: old[k] for k in ("created", "legacy_backup", "safety_backup", "wrapped") if k in old})
     if current is None:
         entry["created"] = True
+        entry.pop("wrapped", None)   # the copy that was the user's is gone with the file
         return {"text": section, "entry": entry, "backup": None, "change": "CLAUDE.md written"}
 
     newline = "\r\n" if "\r\n" in current else "\n"
     ours = section.replace("\n", newline)
-    found = find_section(current)
+    found = find_section(current, None if old is None or old_format else old.get("sha256"))
     if found:
         start, _, _, end = found
         present = section_text(section_body(current, found))
@@ -453,26 +534,32 @@ def plan_claude_md(current, rules, old):
             # The user put the markers around the whole-file install by hand: nothing to
             # write, but the record must move to the section format, or uninstall would
             # compare the whole file and never give back the file that install moved aside.
-            entry["created"] = old.get("backup") is None
             return {"text": None, "entry": entry, "backup": None, "change": "CLAUDE.md section recorded"}
         still_ours = not old_format and old is not None and old.get("sha256") == text_hash(present)
         if not old_format and old is not None:
             entry["joined"] = old.get("joined", "")
-        return {"text": current[:start] + ours + current[end:], "entry": entry,
+        plan = {"text": current[:start] + ours + current[end:], "entry": entry,
                 "backup": None if still_ours else "edited", "change": "CLAUDE.md section updated"}
+        if entry.get("wrapped") is True:
+            # The section was the user's own copy of the rules; it now holds the new rules,
+            # and uninstall leaves them (only the marker lines go). The file from before the
+            # first install is the backup the record names.
+            kept = entry.get("safety_backup")
+            plan["notice"] = ("the Ideal-Umbrella section of CLAUDE.md was your own copy of the rules; it now "
+                              "holds the new rules, which uninstall leaves in place"
+                              + (f" (your file from before the first install is in {kept})" if kept else ""))
+        return plan
 
     if old_format and old.get("sha256") == text_hash(_lf(current)):
         # The whole file is what the whole-file installer wrote: it becomes the section, and
         # the file it replaced (if any) is still the one an uninstall puts back.
-        entry["created"] = old.get("backup") is None
         return {"text": ours, "entry": entry, "backup": None,
                 "change": "CLAUDE.md converted to a marked section"}
 
     copy = _lf(rules)
     copy = (copy if copy.endswith("\n") else copy + "\n").replace("\n", newline)
-    at = current.find(copy)
-    line_start = at >= 0 and (current[:at] in ("", "\ufeff") or current[at - 1] == "\n")
-    if copy.strip() and line_start and current.find(copy, at + 1) < 0:
+    at = _unfenced_copy(current, copy)
+    if copy.strip() and at is not None:
         # An unmarked copy of the rules is wrapped in the marker lines, not added a second
         # time. With a record it is the installer's own (the whole-file install, or a section
         # whose marker lines were deleted): uninstall removes it, and only marker lines are
@@ -485,10 +572,29 @@ def plan_claude_md(current, rules, old):
         return {"text": text, "entry": entry, "backup": "user" if old is None else None,
                 "change": "CLAUDE.md rules marked as a section"}
 
+    entry.pop("wrapped", None)   # a new section holds no copy of the user's
     if current:
         entry["joined"] = ("" if current.endswith("\n") else newline) + newline
     return {"text": current + entry["joined"] + ours, "entry": entry,
             "backup": "user" if current else None, "change": "CLAUDE.md section added"}
+
+
+def _unfenced_copy(current, copy):
+    """Offset of the one copy of the rules in current that starts a line and has no line
+    inside a code fence (a fenced copy is an example the user wrote); None when there is no
+    such copy or more than one."""
+    lines, bom = _lines(current)
+    fenced = _fenced(lines)
+    span = copy.count("\n")
+    found, at, counted, line = [], current.find(copy), 0, 1
+    while at >= 0 and len(found) < 2:
+        line += current.count("\n", counted, at)   # counted once over the whole text
+        counted = at
+        if (at == 0 or (at == 1 and current[0] == "\ufeff") or current[at - 1] == "\n") \
+                and not fenced.intersection(range(line, line + span)):
+            found.append(at)
+        at = current.find(copy, at + 1)
+    return found[0] if len(found) == 1 else None
 
 
 def read_record(path):
@@ -510,6 +616,7 @@ def read_record(path):
         raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
         raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
+    _check_json(data, path, "fix it or delete it first")
     return data
 
 
@@ -590,32 +697,44 @@ def install(home, force=False, progress=None, config_dir=None):
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
 
-    if current_hook != hook_bytes:
+    hook_changed = current_hook != hook_bytes
+    md_backup = None
+    if md_plan is not None:
+        entry = md_plan["entry"]
+        if md_plan.get("notice"):
+            notices.append(md_plan["notice"])
+        if md_plan["backup"]:
+            md_backup = _backup_name(paths["claude_md"])
+            if md_plan["backup"] == "edited":
+                notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {md_backup.name}")
+            else:
+                # The file as it is now, before the section: the bytes an uninstall gives back.
+                entry["safety_backup"] = md_backup.name
+        record["claude_md"] = entry
+
+    # The record comes first: it names every change this run makes, so a write that fails
+    # after it still leaves a record the undo works from. A change it names that never landed
+    # is harmless to undo (a key that already holds its old value is skipped, a backup that
+    # equals the file is deleted); a change it does not name would be stranded: a rerun sees
+    # the section or the values already in place and records nothing for them.
+    if hook_changed or md_plan is not None or setting_changes:
+        _write_json(paths["record"], _merge_record(old_record, record))
+        progress.append("install record written")
+
+    if hook_changed:
         _write_bytes(paths["hook"], hook_bytes)
         changes.append(f"hook {'updated' if hook_exists else 'written'}")
         progress.append(changes[-1])
 
     if md_plan is not None:
-        entry = md_plan["entry"]
-        if md_plan["backup"]:
-            backup = _backup(paths["claude_md"])
-            changes.append(f"CLAUDE.md backup: {backup.name}")
+        if md_backup is not None:
+            _backup(paths["claude_md"], md_backup)
+            changes.append(f"CLAUDE.md backup: {md_backup.name}")
             progress.append(changes[-1])
-            if md_plan["backup"] == "edited":
-                notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {backup.name}")
-            else:
-                # The file as it is now, before the section: the bytes an uninstall gives back.
-                entry["safety_backup"] = backup.name
         if md_plan["text"] is not None:
             _write_bytes(paths["claude_md"], md_plan["text"].encode("utf-8"))
         changes.append(md_plan["change"])
         progress.append(changes[-1])
-        record["claude_md"] = entry
-        # Record the CLAUDE.md change now, before settings.json: if that write fails, the next
-        # install would otherwise see a section that already matches, record nothing for it,
-        # and the undo would never remove it. The settings values are recorded only once
-        # settings.json holds them.
-        _write_json(paths["record"], _merge_record(old_record, {"claude_md": entry}))
 
     if setting_changes:
         if paths["settings"].exists():
@@ -624,12 +743,6 @@ def install(home, force=False, progress=None, config_dir=None):
             progress.append(setting_changes[-1])
         _write_json(paths["settings"], existing)
         progress.append("settings.json written")
-
-    # The record describes what was written, so it comes after settings.json: a record of an
-    # install that failed would make uninstall report values it never installed. Without a
-    # record, uninstall still works from the hook entry as evidence.
-    if setting_changes or changes:
-        _write_json(paths["record"], _merge_record(old_record, record))
     return setting_changes + changes, notices
 
 
@@ -733,7 +846,12 @@ def verify(home, config_dir=None):
     else:
         text = paths["claude_md"].read_bytes().decode("utf-8", errors="replace")
         try:
-            found = find_section(text)
+            entry = (read_record(paths["record"]) or {}).get("claude_md")
+        except ValueError:
+            entry = None   # the record is checked by install and uninstall, not here
+        recorded = entry.get("sha256") if isinstance(entry, dict) and entry.get("format") == "section" else None
+        try:
+            found = find_section(text, recorded)
         except ValueError as e:
             issues.append(f"CLAUDE.md: {e}")
         else:
@@ -748,6 +866,21 @@ def verify(home, config_dir=None):
         issues.append("Hook content differs from hooks/context_check.py")
 
     return len(issues) == 0, issues, warnings
+
+
+def report_error(error, progress, before_writes=False, stopped=""):
+    """Print the error, then what was done before it. "nothing written" is said only for an
+    error the run raises before its first write (before_writes) when progress shows none was
+    made: a ValueError can also come from a write, after others were done."""
+    if before_writes and not progress:
+        print(f"Error: {error}; nothing written", file=sys.stderr)
+        return
+    print(f"Error: {error}{stopped}", file=sys.stderr)
+    if not progress:
+        return
+    print("Done before the error:", file=sys.stderr)
+    for line in progress:
+        print(f"  - {line}", file=sys.stderr)
 
 
 def main(argv=None):
@@ -768,16 +901,13 @@ def main(argv=None):
         try:
             changes, notices = install(home, force=args.force, progress=progress, config_dir=config_dir)
         except ValueError as e:
-            print(f"Error: {e}; nothing written", file=sys.stderr)
+            # Raised while reading and checking, before any write; or, rarely, by a write.
+            report_error(e, progress, before_writes=True)
             return 1
         except OSError as e:
             # e.g. ~/.claude/ballast exists as a regular file, or a folder is read-only. Every
             # file is written whole or not at all; name what was done so the backups are findable.
-            print(f"Error: {e}", file=sys.stderr)
-            if progress:
-                print("Done before the error:", file=sys.stderr)
-                for line in progress:
-                    print(f"  - {line}", file=sys.stderr)
+            report_error(e, progress)
             return 1
         if changes:
             print("Changes:")

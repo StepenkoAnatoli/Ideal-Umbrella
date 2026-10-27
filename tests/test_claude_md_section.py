@@ -369,6 +369,9 @@ FENCED = [
     pytest.param("~~~\n" + BEGIN + "\n- example A\n" + END + "\n~~~\n", id="tildes"),
     pytest.param("````md\n```\n" + BEGIN + "\n- a\n" + END + "\n```\n````\n", id="longer-fence-holds-a-shorter-one"),
     pytest.param("  ```\n" + BEGIN + "\n- a\n```\n", id="begin-only-inside-a-fence"),
+    # Review 2, finding 2b: a ``` fence never closed used to hide the ~~~ fence after it.
+    pytest.param("notes\n```\nstray\n\nExample:\n~~~\n" + BEGIN + "\n- example A\n" + END + "\n~~~\n",
+                 id="a-fence-never-closed-before-a-fenced-example"),
 ]
 
 
@@ -530,3 +533,112 @@ def test_an_old_install_saved_with_a_bom_is_migrated_and_undone(install_module, 
     uninstall_module.uninstall(home)
     assert read_md(home) == "mine\n"
     assert backups(home) == []
+
+
+@pytest.mark.parametrize("before", [
+    pytest.param("# Mine\n```\n" + RULES + "```\nend\n", id="rules"),
+    pytest.param("# Mine\n~~~\n" + BEGIN + "\n" + RULES + END + "\n~~~\nend\n", id="rules-with-markers"),
+])
+def test_a_fenced_copy_of_the_rules_is_an_example_not_wrapped(install_module, uninstall_module, tmp_path, before):
+    # Review 2, finding 1: the wrap path looked for an unmarked copy of the rules with no
+    # notion of fences, so every install added another marker pair inside the user's example.
+    home = tmp_path / "home"
+    write_md(home, before)
+    install_module.install(home)
+    assert read_md(home) == before + "\n" + SECTION
+    assert install_module.install(home) == ([], [])
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+    assert backups(home) == []
+
+
+def test_a_fence_closed_only_after_the_section_does_not_hide_it(install_module, uninstall_module, tmp_path):
+    # Review 2, finding 2a: a stray fence line before the section paired with a code block the
+    # user added after it, so the section looked fenced: every install appended another one,
+    # and uninstall could not find any.
+    home = tmp_path / "home"
+    write_md(home, "mine\n```\nstray\n")
+    install_module.install(home)
+    later = "```\ncode\n```\n"
+    write_md(home, read_md(home) + later)
+    assert install_module.install(home) == ([], [])
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n```\nstray\n\n" + later
+    # The user added text after the section, so the file differs from the backup: it stays.
+    assert [(home / ".claude" / b).read_bytes() for b in backups(home)] == [b"mine\n```\nstray\n"]
+
+
+def test_a_wrapped_copy_stays_the_users_after_the_template_changes(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Review 2, finding 3: the record lost "wrapped" when the section was updated, so uninstall
+    # then removed the user's own copy of the rules, and no message named the backup holding it.
+    home = tmp_path / "home"
+    write_md(home, "# My notes\n" + RULES + "more of mine\n")
+    install_module.install(home)
+    safety = read_record(home)["claude_md"]["safety_backup"]
+    new_md = tmp_path / "CLAUDE.md"
+    new_md.write_bytes((RULES + "- a rule added later\n").encode("utf-8"))
+    monkeypatch.setattr(install_module, "CLAUDE_MD", new_md)
+    monkeypatch.setattr(uninstall_module.install, "CLAUDE_MD", new_md)
+    _, notices = install_module.install(home)
+    assert read_record(home)["claude_md"]["wrapped"] is True
+    assert any(safety in n for n in notices), notices
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "# My notes\n" + RULES + "- a rule added later\nmore of mine\n"
+
+
+def test_a_backup_the_user_named_is_never_taken_for_ours(install_module, uninstall_module, tmp_path):
+    # Review 2, finding 8: any <name>.bak-* with the same bytes was reused, then deleted.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    own = home / ".claude" / "CLAUDE.md.bak-before-trying-it"
+    own.write_bytes(b"mine\n")
+    install_module.install(home)
+    assert read_record(home)["claude_md"]["safety_backup"] != own.name
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n"
+    assert own.read_bytes() == b"mine\n"
+
+
+def test_uninstall_names_the_legacy_backup_when_claude_md_is_gone(install_module, uninstall_module, tmp_path):
+    # Review 2, info 1: the record entry was dropped in silence, orphaning the user's old file.
+    home = tmp_path / "home"
+    old_install(install_module, home, before="mine\n")
+    install_module.install(home)
+    md(home).unlink()
+    _, notices = uninstall_module.uninstall(home)
+    assert any(OLD_BACKUP in n for n in notices), notices
+
+
+def test_an_old_install_that_created_the_file_and_was_wrapped_is_deleted(install_module, uninstall_module, tmp_path):
+    # Review 2, info 5: the old-format wrap path said created=False whatever the old record said.
+    home = tmp_path / "home"
+    old_install(install_module, home)
+    write_md(home, RULES + "\n")
+    install_module.install(home)
+    assert read_record(home)["claude_md"]["created"] is True
+    uninstall_module.uninstall(home)
+    assert not md(home).exists()
+
+
+def test_a_failed_restore_of_the_legacy_backup_keeps_both_files(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Review 2, info 3: no test made this write fail (the one named for it patched a copy that
+    # no longer happens).
+    import os
+    home = tmp_path / "home"
+    old_install(install_module, home, before="my own rules\n")
+    install_module.install(home)
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if str(dst).endswith("CLAUDE.md"):
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *args, **kwargs)
+    monkeypatch.setattr(os, "replace", failing_replace)
+    with pytest.raises(OSError):
+        uninstall_module.uninstall(home)
+    assert read_md(home) == SECTION
+    assert (home / ".claude" / OLD_BACKUP).read_bytes() == b"my own rules\n"

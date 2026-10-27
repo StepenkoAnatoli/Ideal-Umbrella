@@ -118,9 +118,37 @@ def merge(settings, template, force=False):
     return changes, notices
 
 
+JSON_DEPTH = 100
+
+
+def _check_json(data, path):
+    """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
+    than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
+    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8).
+    The same check as config/install.py's (this script runs on its own, without it)."""
+    stack = [(data, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"{path} holds text that is not valid Unicode (a lone surrogate "
+                                 "such as \\ud800); fix it first") from None
+        elif isinstance(value, (dict, list)):
+            if depth > JSON_DEPTH:
+                raise ValueError(f"{path} is nested more than {JSON_DEPTH} levels deep; fix it first")
+            items = value.items() if isinstance(value, dict) else ((None, v) for v in value)
+            for key, item in items:
+                if key is not None:
+                    stack.append((key, depth))
+                stack.append((item, depth + 1))
+
+
 def _read_json(path):
-    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
-    naming the file, which main() reports as one line before anything is written."""
+    """Read a JSON object; a file that is not UTF-8, not JSON, not an object or not writable
+    back is a ValueError naming the file, which main() reports as one line before anything is
+    written."""
     try:
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
@@ -132,6 +160,7 @@ def _read_json(path):
         raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
+    _check_json(data, path)
     return data
 
 
@@ -207,6 +236,9 @@ def _take_handoff_at(argv):
     if len(values) > 1:
         raise ValueError("--handoff-at is given more than once")
     value = values[0]
+    if value.isascii() and value.isdigit() and len(value.lstrip("0")) > 15:
+        # int() refuses more than 4300 digits with its own message; no context window is near.
+        raise ValueError(f"--handoff-at {value[:20]}... is too large; give a whole number of tokens")
     if not (value.isascii() and value.isdigit() and int(value) > 0):
         raise ValueError(f"--handoff-at needs a whole number of tokens above 0, not {value!r}")
     return int(value), rest
@@ -227,13 +259,13 @@ def main(argv=None):
     progress = []
     try:
         changes, notices = _add(argv[0], force, progress=progress, handoff_at=handoff_at)
-    except ValueError as e:
-        # Raised while reading or merging, before any write.
-        print(f"Error: {e}; nothing written", file=sys.stderr)
-        return 1
-    except OSError as e:
+    except (ValueError, OSError) as e:
+        # A ValueError is raised while reading or merging, before any write; an OSError means
         # e.g. <repo>/.claude is a regular file, or the folder is read-only. Every file is
         # written whole or not at all; name what was done before the error.
+        if isinstance(e, ValueError) and not progress:
+            print(f"Error: {e}; nothing written", file=sys.stderr)
+            return 1
         print(f"Error: {e}", file=sys.stderr)
         if progress:
             print("Done before the error:", file=sys.stderr)

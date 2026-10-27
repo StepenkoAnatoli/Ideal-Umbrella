@@ -244,25 +244,32 @@ def test_home_with_a_quote_in_its_path_verifies(install_module, tmp_path):
     assert ok, issues
 
 
-def test_record_is_written_after_settings(install_module, tmp_path, monkeypatch):
-    # A record of an install whose settings.json write failed would make uninstall report
-    # values that were never installed, so settings.json goes first and the record last.
+def test_a_record_written_before_a_failed_settings_write_undoes_cleanly(install_module, tmp_path, monkeypatch):
+    # The record is written first and names this run's changes (review 2, findings 4 and 5:
+    # written last, it stranded what landed before a failed write). A key it names that never
+    # reached settings.json must not be reported as a value the user changed.
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     home = tmp_path / "home"
     paths = install_module.layout(home)
-    real_write = install_module._write_json
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"autoCompactWindow": 1}), encoding="utf-8")
+    real_write = uninstall_module.install._write_json
 
     def failing_write(path, data):
         if path == paths["settings"]:
             raise OSError("disk full")
         real_write(path, data)
 
-    monkeypatch.setattr(install_module, "_write_json", failing_write)
+    monkeypatch.setattr(uninstall_module.install, "_write_json", failing_write)
     with pytest.raises(OSError):
-        install_module.install(home)
-    record = install_module.read_record(paths["record"]) or {}
-    assert not any(record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
-    assert not paths["settings"].exists()
-    assert paths["hook"].exists()
+        uninstall_module.install.install(home, force=True)
+    monkeypatch.setattr(uninstall_module.install, "_write_json", real_write)
+    assert install_module.read_record(paths["record"])["replaced"] == {"autoCompactWindow": 1}
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 1}
+    _, notices = uninstall_module.uninstall(home)
+    assert not any("not the installed value" in n for n in notices), notices
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 1}
+    assert not paths["hook"].exists()
 
 
 def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
@@ -588,3 +595,38 @@ def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_f
     backups = sorted(claude.glob("CLAUDE.md.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "my own rules\n"
+
+
+NOT_WRITABLE = [
+    # Review 2, finding 6: json.loads reads this, but on Python 3.12 json.dumps(indent=2) runs
+    # out of stack writing it back, after the hook and CLAUDE.md were already written.
+    pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
+    # Review 2, finding 7: valid JSON holding a lone surrogate, which UTF-8 cannot encode.
+    pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+]
+
+
+@pytest.mark.parametrize("text, message", NOT_WRITABLE)
+def test_settings_that_cannot_be_written_back_stop_before_any_write(install_module, tmp_path, capsys, text, message):
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text(text, encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert message in err and "nothing written" in err and "Traceback" not in err
+    assert sorted(p.name for p in (home / ".claude").iterdir()) == ["settings.json"]
+
+
+def test_an_error_after_a_write_does_not_say_nothing_was_written(install_module, tmp_path, capsys, monkeypatch):
+    # Review 2, finding 7, the class: main() said "nothing written" for every ValueError.
+    home = tmp_path / "home"
+    real = install_module._write_json
+
+    def failing(path, data):
+        if path.name == "settings.json":
+            raise ValueError("cannot encode")
+        real(path, data)
+    monkeypatch.setattr(install_module, "_write_json", failing)
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nothing written" not in err and "Done before the error" in err and "hook written" in err

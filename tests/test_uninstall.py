@@ -385,29 +385,21 @@ def test_deny_that_is_not_a_list_is_reported_and_kept_in_the_record(install_modu
     assert "deny" not in read_settings(home).get("permissions", {})
 
 
-def test_failed_restore_never_leaves_a_truncated_claude_md(install_module, uninstall_module, tmp_path, monkeypatch):
-    # The backup was copied over CLAUDE.md in place; a write error left a fragment.
-    import shutil
+def test_a_failed_section_removal_never_leaves_a_truncated_claude_md(install_module, uninstall_module, tmp_path, monkeypatch):
+    # The file is written to a temp file and renamed over CLAUDE.md; a failed rename keeps the
+    # old file whole. (The legacy-backup restore: tests/test_claude_md_section.py.)
     home = tmp_path / "home"
     seed(home, {}, claude_md="my own rules\n")
     install_module.install(home)
     claude_md = home / ".claude" / "CLAUDE.md"
     installed = claude_md.read_text(encoding="utf-8")
-    real_copyfile, real_replace = shutil.copyfile, os.replace
-
-    def truncating_copyfile(src, dst, *args, **kwargs):
-        if str(dst).endswith("CLAUDE.md"):
-            with open(dst, "w", encoding="utf-8") as f:
-                f.write("my o")
-            raise OSError(28, "No space left on device")
-        return real_copyfile(src, dst, *args, **kwargs)
+    real_replace = os.replace
 
     def failing_replace(src, dst, *args, **kwargs):
         if str(dst).endswith("CLAUDE.md"):
             raise OSError(28, "No space left on device")
         return real_replace(src, dst, *args, **kwargs)
 
-    monkeypatch.setattr(shutil, "copyfile", truncating_copyfile)
     monkeypatch.setattr(os, "replace", failing_replace)
     with pytest.raises(OSError):
         uninstall_module.uninstall(home)
@@ -578,3 +570,19 @@ def test_a_container_the_user_adds_between_uninstall_and_reinstall_is_kept(insta
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
     uninstall_module.uninstall(home)
     assert read_settings(home) == {"hooks": {}, "permissions": {}}
+
+
+@pytest.mark.parametrize("text, message", [
+    pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
+    pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+])
+def test_settings_that_cannot_be_written_back_stop_the_undo_before_any_write(install_module, uninstall_module, tmp_path, capsys, text, message):
+    # Review 2, findings 6 and 7: the undo made its settings backup, then failed to write.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).write_text(text, encoding="utf-8")
+    before = sorted(p.name for p in (home / ".claude").rglob("*"))
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert message in err and "nothing written" in err and "Traceback" not in err
+    assert sorted(p.name for p in (home / ".claude").rglob("*")) == before

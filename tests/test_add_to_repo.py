@@ -302,3 +302,26 @@ def test_an_object_valued_template_key_merges_key_by_key(add_to_repo):
     changes, notices = add_to_repo.merge(settings, {"env": {"BAR": "2"}})
     assert settings == {"env": {"FOO": "1", "BAR": "2"}, "hooks": {}}
     assert changes == ["env.BAR: added '2'"] and notices == []
+
+
+@pytest.mark.parametrize("text, message", [
+    pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
+    pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+])
+def test_settings_that_cannot_be_written_back_stop_before_any_write(tmp_path, text, message):
+    # Review 2, findings 6 and 7: the hook was copied before the settings write failed.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(text, encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert message in result.stderr and "nothing written" in result.stderr and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_a_huge_handoff_value_is_a_plain_usage_error(tmp_path):
+    # Review 2, info 5: int() of 5000 digits printed Python's own digit-limit message.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", "9" * 5000)
+    assert result.returncode != 0
+    assert "--handoff-at" in result.stderr and "Exceeds" not in result.stderr
