@@ -316,6 +316,20 @@ def test_unreadable_record_is_not_overwritten(install_module, uninstall_module, 
     assert (home / ".claude" / "ballast" / "context_check.py").exists()
 
 
+def test_an_os_error_before_any_step_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys):
+    # Review 4, info E2: settings.json replaced by a folder fails the first read, and the
+    # message said the undo stopped part way although nothing was done.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).unlink()
+    settings_file(home).mkdir()
+
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and "run uninstall again" in err
+    assert "part way" not in err and "Done before the error" not in err
+
+
 def test_os_error_mid_undo_is_reported_not_raised(install_module, uninstall_module, tmp_path, capsys):
     # The hook path replaced by a folder: unlink() raises after settings.json was already
     # undone. The message says so; a second run after removing the folder finishes the undo.

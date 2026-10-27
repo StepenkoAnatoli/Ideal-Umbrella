@@ -184,8 +184,16 @@ def _rest_without_section(current, found, entry):
         return current[:start] + current[body_start:body_end] + current[end:]
     before, after = current[:start], current[end:]
     joined = entry.get("joined")
-    if not after and isinstance(joined, str) and joined and before.endswith(joined):
-        before = before[:-len(joined)]
+    if not after and isinstance(joined, str) and joined and not joined.strip("\r\n"):
+        # The separator is a number of line breaks, not the bytes recorded: an editor or git
+        # may have changed the file's line endings since the install.
+        cut = before
+        for _ in range(joined.count("\n")):
+            if not cut.endswith("\n"):
+                break
+            cut = cut[:-2] if cut.endswith("\r\n") else cut[:-1]
+        else:
+            before = cut
     return before + after
 
 
@@ -221,6 +229,12 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         return True
     if install.text_hash(install.section_text(install.section_body(current, found))) != entry.get("sha256"):
         notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is")
+        edited = _backup_of(claude_md, entry.get("edited_backup"))
+        if edited is not None and edited.is_file() and not edited.is_symlink() \
+                and edited.read_bytes() == claude_md.read_bytes():
+            # The install backed up the user's edits, then stopped before its CLAUDE.md write:
+            # the file still holds those edits, so the copy names nothing that is not in it.
+            apply(f"CLAUDE.md backup {edited.name} deleted (CLAUDE.md holds the same bytes)", edited.unlink)
         return True
     if not utf8:
         # The text was decoded with replacement characters; writing it back would change the
@@ -248,6 +262,10 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
             return False
     data = rest.encode("utf-8")
     safety = _backup_of(claude_md, entry.get("safety_backup"))
+    if safety is not None and safety.is_file() and not safety.is_symlink() and safety.read_bytes() != data:
+        # The user changed their own text since the install: the copy from before it is kept.
+        notices.append(f"your CLAUDE.md from before the install is kept in {safety.name}; "
+                       "it differs from the file now, so delete it once you no longer need it")
 
     def write():
         install._write_bytes(claude_md, data)
@@ -451,8 +469,11 @@ def main(argv=None):
         return 1
     except OSError as e:
         # e.g. the hook path is a folder, or a file is read-only. Files already undone stay
-        # undone; a second run after fixing the cause finishes the rest.
-        install.report_error(e, progress, stopped="; the undo stopped part way, fix the cause and run again")
+        # undone; a second run after fixing the cause finishes the rest. With no step done the
+        # error may still have come from reading, so "part way" is not said (a folder removed
+        # part way is not a step done, so "nothing written" is not said either).
+        install.report_error(e, progress, stopped="; the undo stopped part way, fix the cause and run again"
+                             if progress else "; fix the cause and run uninstall again")
         return 1
     if changes:
         print("Would change:" if args.dry_run else "Changes:")

@@ -765,7 +765,8 @@ def install(home, force=False, progress=None, config_dir=None):
     template = _read_json(USER_SETTINGS)
     claude_md = _read_text(CLAUDE_MD)
     current_md = _read_text(paths["claude_md"]) if paths["claude_md"].exists() else None
-    old_record = settle_record(read_record(paths["record"]) or {}, existing, current_md)
+    raw_record = read_record(paths["record"]) or {}
+    old_record = settle_record(raw_record, existing, current_md)
     try:
         md_plan = plan_claude_md(current_md, claude_md, old_record.get("claude_md"))
     except ValueError as e:
@@ -787,6 +788,9 @@ def install(home, force=False, progress=None, config_dir=None):
             md_backup = _backup_name(paths["claude_md"])
             if md_plan["backup"] == "edited":
                 notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {md_backup.name}")
+                # Named so that uninstall can delete it when the CLAUDE.md write then fails
+                # (the file still holds the same edits); otherwise it is the user's to keep.
+                entry["edited_backup"] = md_backup.name
             else:
                 # The file as it is now, before the section: the bytes an uninstall gives back.
                 entry["safety_backup"] = md_backup.name
@@ -829,6 +833,10 @@ def install(home, force=False, progress=None, config_dir=None):
         progress.append("settings.json written")
     if changing and old_record:
         _write_json(paths["record"], merged)   # every write landed: nothing is pending
+    elif "pending" in raw_record:
+        # An earlier run stopped at its last write. Its pending part is settled now; left in
+        # place, it would later take a value the user set by hand for the installer's.
+        _write_json(paths["record"], {k: v for k, v in old_record.items() if k != "pending"})
     return setting_changes + changes, notices
 
 

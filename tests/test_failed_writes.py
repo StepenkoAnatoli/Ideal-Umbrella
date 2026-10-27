@@ -163,3 +163,48 @@ def test_a_rerun_after_a_failed_install_finishes_it_and_can_be_undone(uninstall_
     assert ok, issues
     _, notices = uninstall_module.uninstall(home)
     assert_undone(home, md, notices)
+
+
+@pytest.mark.parametrize("run", RUNS)
+def test_a_completed_run_leaves_nothing_pending(uninstall_module, tmp_path, monkeypatch, run):
+    # Review 4, info C (M1): the last write of a run, the record without "pending", could be
+    # dropped and every test still passed.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    run(inst, home, tmp_path, monkeypatch)
+    inst.install(home)
+    assert "pending" not in json.loads((claude(home) / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+
+
+def test_a_rerun_settles_a_record_left_pending_by_its_last_write(uninstall_module, tmp_path, monkeypatch):
+    # Review 4, finding B: when only the last write failed, a rerun had nothing to change and
+    # never wrote the record again, so "pending" stayed for good. A value the user later set
+    # by hand to the one the earlier install wrote was then taken for the installer's: the next
+    # install replaced it without --force, and uninstall deleted it.
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    earlier = json.loads(inst.USER_SETTINGS.read_text(encoding="utf-8"))["autoCompactWindow"]
+    settings_template_change(inst, home, tmp_path, monkeypatch)
+    record_path = claude(home) / "ballast" / "install-record.json"
+    real_write, calls = inst._write_bytes, []
+
+    def failing(path, data):
+        if path == record_path:
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError(28, "No space left on device")
+        real_write(path, data)
+    monkeypatch.setattr(inst, "_write_bytes", failing)
+    with pytest.raises(OSError):
+        inst.install(home)
+    monkeypatch.setattr(inst, "_write_bytes", real_write)
+    assert inst.install(home) == ([], [])
+    assert "pending" not in json.loads(record_path.read_text(encoding="utf-8"))
+    settings = json.loads((claude(home) / "settings.json").read_text(encoding="utf-8"))
+    settings["autoCompactWindow"] = earlier
+    (claude(home) / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    _, notices = inst.install(home)
+    assert any("autoCompactWindow" in n and "--force" in n for n in notices), notices
+    uninstall_module.uninstall(home)
+    settings = json.loads((claude(home) / "settings.json").read_text(encoding="utf-8"))
+    assert settings.get("autoCompactWindow") == earlier

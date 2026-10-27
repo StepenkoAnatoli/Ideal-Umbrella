@@ -629,11 +629,13 @@ def test_a_wrapped_copy_stays_the_users_after_the_template_changes(install_modul
     assert read_md(home) == "# My notes\n" + RULES + "- a rule added later\nmore of mine\n"
 
 
-def test_a_backup_the_user_named_is_never_taken_for_ours(install_module, uninstall_module, tmp_path):
+# Review 4, info C (M8): a name that starts like ours and goes on is the user's too.
+@pytest.mark.parametrize("name", ["CLAUDE.md.bak-before-trying-it", "CLAUDE.md.bak-20250101-000000-mine"])
+def test_a_backup_the_user_named_is_never_taken_for_ours(install_module, uninstall_module, tmp_path, name):
     # Review 2, finding 8: any <name>.bak-* with the same bytes was reused, then deleted.
     home = tmp_path / "home"
     write_md(home, "mine\n")
-    own = home / ".claude" / "CLAUDE.md.bak-before-trying-it"
+    own = home / ".claude" / name
     own.write_bytes(b"mine\n")
     install_module.install(home)
     assert read_record(home)["claude_md"]["safety_backup"] != own.name
@@ -723,3 +725,99 @@ def test_a_new_section_after_a_wrapped_copy_is_the_installers(install_module, un
     assert "wrapped" not in read_record(home)["claude_md"]
     uninstall_module.uninstall(home)
     assert (read_md(home) if md(home).exists() else None) == after
+
+
+# Review 4, finding A: joined was stripped only as the exact bytes recorded, so a file whose
+# line endings an editor or git changed after the install kept a lone CR or a blank line.
+@pytest.mark.parametrize("before, convert, after", [
+    ("mine\n", ("\n", "\r\n"), b"mine\r\n"),
+    ("mine", ("\n", "\r\n"), b"mine"),
+    ("mine\r\n", ("\r\n", "\n"), b"mine\n"),
+    ("a\r\nb", ("\r\n", "\n"), b"a\nb"),
+])
+def test_line_endings_changed_after_install_leave_no_trace_on_uninstall(install_module, uninstall_module, tmp_path,
+                                                                        before, convert, after):
+    home = tmp_path / "home"
+    write_md(home, before)
+    install_module.install(home)
+    write_md(home, read_md(home).replace(*convert))
+    _, notices = uninstall_module.uninstall(home)
+    assert md(home).read_bytes() == after
+    if after == before.encode("utf-8"):
+        assert backups(home) == []
+        return
+    # The copy from before the install no longer equals the file, so it is kept, and named
+    # (review 4, info E1).
+    assert len(backups(home)) == 1
+    assert any(backups(home)[0] in n for n in notices), notices
+
+
+def test_a_safety_backup_kept_after_the_user_edited_their_own_text_is_named(install_module, uninstall_module,
+                                                                            tmp_path):
+    # Review 4, info E1: the backup was kept, correctly, but no notice said it was there.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    write_md(home, "mine, edited\n" + read_md(home)[len("mine\n"):])
+    _, notices = uninstall_module.uninstall(home)
+    assert read_md(home) == "mine, edited\n"
+    assert any(backups(home)[0] in n for n in notices), notices
+
+
+def test_a_backup_keeps_the_time_of_the_file_it_copies(install_module, tmp_path):
+    # Review 4, info C (M6): nothing checked that the backup keeps the file's time.
+    import os
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    os.utime(md(home), (1_000_000_000, 1_000_000_000))
+    install_module.install(home)
+    backup = home / ".claude" / read_record(home)["claude_md"]["safety_backup"]
+    assert int(backup.stat().st_mtime) == 1_000_000_000
+
+
+def test_verify_reads_a_record_that_is_still_pending(install_module, tmp_path):
+    # Review 4, info C (M22): no test ran verify against a record with "pending". Here the
+    # record's own entry names a section that never landed; the earlier entry names the one
+    # on disk, which only the hash finds (a stray fence line above it).
+    home = tmp_path / "home"
+    write_md(home, "mine\n```\nstray\n")
+    install_module.install(home)
+    write_md(home, read_md(home) + "```\ncode\n```\n")
+    record = read_record(home)
+    record["pending"] = json.loads(json.dumps(record))
+    record["claude_md"]["sha256"] = "0" * 64
+    record_path(home).write_text(json.dumps(record), encoding="utf-8")
+    ok, issues, warnings = install_module.verify(home)
+    assert not any("no Ideal-Umbrella section" in i for i in issues), issues
+    assert any("code fence" in w for w in warnings), warnings
+
+
+@pytest.mark.parametrize("template_change", [False, True])
+def test_an_edited_backup_left_by_a_failed_write_goes_with_uninstall(install_module, uninstall_module, tmp_path,
+                                                                     monkeypatch, template_change):
+    # Review 4, finding D: the user edits the section and installs again; the backup of the
+    # edited file is made, then the CLAUDE.md write fails. No record named that backup, so
+    # uninstall left it, a copy of CLAUDE.md that nothing mentions.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    safety = read_record(home)["claude_md"]["safety_backup"]
+    edited = edit_section(home)
+    if template_change:
+        path = tmp_path / "CLAUDE.md"
+        path.write_bytes((RULES + "- a rule added later\n").encode("utf-8"))
+        monkeypatch.setattr(install_module, "CLAUDE_MD", path)
+    real_write = install_module._write_bytes
+
+    def failing(path, data):
+        if path == md(home):
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+    monkeypatch.setattr(install_module, "_write_bytes", failing)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_bytes", real_write)
+    assert len(backups(home)) == 2
+    uninstall_module.uninstall(home)
+    assert read_md(home) == edited
+    assert backups(home) == [safety]
