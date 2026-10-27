@@ -60,13 +60,19 @@ def _text(text):
 
 def _wide(data):
     """True for UTF-16 or UTF-32 text (PowerShell 5's default for Out-File, > and >>): a byte
-    order mark, or NULs between the bytes of the first characters, which in a ledger are ASCII.
-    NULs alone are no encoding: a torn append after a power loss reads as a run of them, also
-    after a UTF-8 BOM (Notepad). UTF-32 BE starts with NULs, so the second check finds it."""
-    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+    order mark, or the first two characters each with its NULs (x0y0, 0x0y, x000y000, 000x000y;
+    a ledger line starts with ASCII `{"`), either one also after a UTF-8 BOM (PowerShell 5
+    appending to a file Notepad made). NULs alone, or after a short line, are no encoding: a
+    torn append after a power loss reads as a run of them."""
+    head = data[3:] if data.startswith(b"\xef\xbb\xbf") else data
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
         return True
-    head = data[3:7] if data.startswith(b"\xef\xbb\xbf") else data[:4]
-    return b"\x00" in head and bool(head.strip(b"\x00"))
+    for width, at in ((2, 0), (2, 1), (4, 0), (4, 3)):
+        units = head[:2 * width]
+        if len(units) == 2 * width and all(units[i] for i in (at, width + at)) \
+                and not any(b for i, b in enumerate(units) if i % width != at):
+            return True
+    return False
 
 
 def previous_entry(path):

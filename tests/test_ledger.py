@@ -83,10 +83,15 @@ def test_a_byte_order_mark_before_the_first_line_is_not_an_unreadable_line(ledge
 @pytest.mark.parametrize("data", [
     '{"fixed_tokens": 71396}\r\n'.encode("utf-16"),       # PowerShell 5 Out-File, > and >>
     '{"fixed_tokens": 71396}\r\n'.encode("utf-16-be"),    # no BOM
+    '{"fixed_tokens": 71396}\r\n'.encode("utf-16-le"),    # no BOM
     '{"fixed_tokens": 71396}\n'.encode("utf-32"),
     '{"fixed_tokens": 71396}\n'.encode("utf-32-be"),   # no BOM
     b"\xff\xfe",                                        # an empty file PowerShell 5 made
-], ids=["utf-16-bom", "utf-16-be", "utf-32", "utf-32-be", "utf-16-bom-only"])
+    # Review 12: PowerShell 5 appending to an empty file Notepad saved with a UTF-8 BOM.
+    b"\xef\xbb\xbf" + '{"fixed_tokens": 71396}\r\n'.encode("utf-16"),
+    b"\xef\xbb\xbf" + '{"fixed_tokens": 71396}\r\n'.encode("utf-16-le"),
+], ids=["utf-16-bom", "utf-16-be", "utf-16-le", "utf-32", "utf-32-be", "utf-16-bom-only",
+        "utf8-bom-then-utf-16-bom", "utf8-bom-then-utf-16-le"])
 def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger, tmp_path, capsys, data):
     # Review 9, finding L3: a UTF-8 line appended to a UTF-16 file left a file neither
     # encoding decodes.
@@ -105,7 +110,13 @@ def test_a_file_that_is_not_utf8_text_is_an_error_and_is_not_appended_to(ledger,
     b'{"date": "2026-10-19", "fixed_tokens": 71396}\n{"date": "2026-10' + b"\x00" * 40,
     # Review 11, finding B2: a UTF-8 BOM (Notepad) before the torn line is no wide encoding.
     b"\xef\xbb\xbf" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
-], ids=["nul-tail", "nul-line", "torn-then-nul", "bom-then-nul"])
+    # Review 12, finding C2: fewer than four bytes before the NULs, with or without a BOM.
+    b"\n" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
+    b"\r\n" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
+    b"\xef\xbb\xbf\n" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
+    b"{}\n" + b"\x00" * 40 + b"\n" + b'{"date": "2026-10-19", "fixed_tokens": 71396}\n',
+], ids=["nul-tail", "nul-line", "torn-then-nul", "bom-then-nul", "lf-then-nul", "crlf-then-nul",
+        "bom-lf-then-nul", "short-line-then-nul"])
 def test_a_torn_append_filled_with_nul_bytes_is_an_unreadable_line(ledger, tmp_path, capsys, data):
     # Review 10, finding L2: after a power loss a file can keep its new size with the block never
     # written, so the torn line reads as NUL bytes. Since review 9 any NUL stopped every run with
@@ -118,6 +129,16 @@ def test_a_torn_append_filled_with_nul_bytes_is_an_unreadable_line(ledger, tmp_p
     assert "fixed_tokens: 71,396 -> 72,000" in out
     assert path.read_bytes() == data + (b"" if data.endswith(b"\n") else b"\n") \
         + b'{"date": "2026-10-27", "fixed_tokens": 72000}\n'
+
+
+@pytest.mark.parametrize("data", [b"{}", b"\n", b"\xef\xbb\xbf{}\n"], ids=["two-bytes", "lf", "bom-short"])
+def test_a_file_shorter_than_two_wide_characters_is_read(ledger, tmp_path, capsys, data):
+    # Review 12: the check on the first two characters needs their bytes; a shorter file is
+    # UTF-8 and is read.
+    path = tmp_path / "m.jsonl"
+    path.write_bytes(data)
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "72000", "--date", "2026-10-27"]) == 0
+    assert path.read_bytes().endswith(b'{"date": "2026-10-27", "fixed_tokens": 72000}\n')
 
 
 def test_a_file_of_nul_bytes_only_is_an_unreadable_line(ledger, tmp_path, capsys):

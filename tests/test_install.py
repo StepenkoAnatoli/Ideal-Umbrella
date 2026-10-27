@@ -699,3 +699,69 @@ def test_a_record_field_of_the_wrong_type_is_a_one_line_error(install_module, tm
     path.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(ValueError, match="install-record.json"):
         install_module.install(home)
+
+
+def link_or_skip(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+
+def test_a_claude_md_linked_to_an_earlier_backup_gets_a_backup_of_its_own(install_module, tmp_path):
+    # Review 12, finding C1: the earlier backup holds the same bytes as CLAUDE.md (it is the
+    # file), so it was reused as the backup, and the section was written into it through the
+    # link. Uninstall then found CLAUDE.md equal to its backup and left the section for good.
+    uninstall_module = load_module("uninstall", ROOT / "config" / "uninstall.py")
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    earlier = claude / "CLAUDE.md.bak-20250101-000000"
+    earlier.write_text("my own notes\n", encoding="utf-8")
+    link_or_skip(claude / "CLAUDE.md", earlier.name)
+    install_module.install(home)
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["claude_md"]["safety_backup"] != earlier.name
+    uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").is_symlink() and earlier.read_text(encoding="utf-8") == "my own notes\n"
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_edits_in_a_section_whose_recorded_backup_is_the_file_itself_are_backed_up(install_module, tmp_path):
+    # Review 12, finding C1 (b): a record from before the fix names the link's target as the
+    # backup. The check for "an earlier run made this backup, then stopped" took the target
+    # for that backup, so the edits were written over with no copy.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    md = claude / "CLAUDE.md"
+    md.write_text("my own notes\n", encoding="utf-8")
+    install_module.install(home)
+    path = claude / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    target = claude / record["claude_md"]["safety_backup"]
+    text = md.read_text(encoding="utf-8")
+    end = text.index("<!-- Ideal-Umbrella rules: end -->")
+    edited = text[:end] + "- my own rule\n" + text[end:]
+    target.write_text(edited, encoding="utf-8")
+    md.unlink()
+    link_or_skip(md, target.name)
+    record["claude_md"]["sha256"] = "0" * 64   # a template change since: the section is replaced
+    path.write_text(json.dumps(record), encoding="utf-8")
+    install_module.install(home)
+    copies = [b for b in claude.glob("CLAUDE.md.bak-*") if b != target]
+    assert any(b.read_text(encoding="utf-8") == edited for b in copies), [b.name for b in copies]
+
+
+def test_a_settings_file_linked_to_an_earlier_backup_gets_a_backup_of_its_own(install_module, tmp_path):
+    # Review 12, finding C1, other hit: the same for settings.json; no copy of the settings
+    # from before the run was left.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    earlier = claude / "settings.json.bak-20250101-000000"
+    earlier.write_text('{"model": "mine"}', encoding="utf-8")
+    link_or_skip(settings_file(home), earlier.name)
+    install_module.install(home)
+    copies = [b for b in claude.glob("settings.json.bak-*") if b != earlier]
+    assert [b.read_text(encoding="utf-8") for b in copies] == ['{"model": "mine"}']

@@ -937,12 +937,12 @@ def test_a_claude_md_linked_to_a_read_only_file_stops_uninstall_at_its_step_with
 
 def test_a_backup_is_kept_when_it_cannot_be_told_whether_claude_md_links_to_it(uninstall_module, tmp_path,
                                                                                monkeypatch):
-    # Review 11, mutant n02: a path that cannot be resolved may still be the link's target.
+    # Review 11, mutant n02: a path that cannot be compared may still be the link's target.
     backup, md = tmp_path / "CLAUDE.md.bak-20250101-000000", tmp_path / "CLAUDE.md"
 
-    def refuse(self, *args, **kwargs):
-        raise OSError("cannot resolve")
-    monkeypatch.setattr(type(backup), "resolve", refuse)
+    def refuse(*args, **kwargs):
+        raise OSError("cannot compare")
+    monkeypatch.setattr(os.path, "samefile", refuse)
     assert uninstall_module._is_target(backup, md) is True
 
 
@@ -985,3 +985,114 @@ def test_a_folder_named_as_a_backup_is_neither_read_nor_named(install_module, un
     changes, notices = uninstall_module.uninstall(home)
     assert backup.is_dir()
     assert not any(backup.name in s for s in changes + notices), (changes, notices)
+
+
+@pytest.mark.parametrize("name", ["settings", "claude_md", "hook", "record"])
+def test_a_dangling_symlink_stops_uninstall_before_anything_is_written(install_module, uninstall_module, tmp_path,
+                                                                       capsys, name):
+    # Review 12, finding C5: a dotfiles folder moved or not mounted. Uninstall took the link for
+    # a missing file, dropped the settings undo or the CLAUDE.md entry, and wrote the record as
+    # uninstalled: once the folder was back, the settings and the section stayed for good.
+    home = tmp_path / "home"
+    seed(home, {}, "my own notes\n")
+    install_module.install(home)
+    path = install_module.layout(home)[name]
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    path.replace(dotfiles / path.name)
+    link_or_skip(path, dotfiles / path.name)
+    dotfiles.rename(tmp_path / "away")
+    record = install_module.layout(home)["record"]
+    before = {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()}
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert {p: p.read_bytes() for p in (home / ".claude").rglob("*") if p.is_file()} == before
+    (tmp_path / "away").rename(dotfiles)
+    uninstall_module.uninstall(home)
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {}
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == "my own notes\n"
+    assert json.loads(record.read_text(encoding="utf-8")) == {"uninstalled": True}
+
+
+def test_a_whole_file_record_without_a_backup_on_a_changed_file_is_left_and_kept(install_module, uninstall_module,
+                                                                                tmp_path):
+    # Review 12, mutant m01: the file the install created was rewritten, not emptied.
+    home = tmp_path / "home"
+    seed(home, {})
+    whole_file_install(install_module, home, None)
+    (home / ".claude" / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert any("differs" in n for n in notices), notices
+    _, notices = uninstall_module.uninstall(home)
+    assert any("differs" in n for n in notices), notices
+
+
+def test_a_whole_file_record_with_a_backup_on_an_emptied_file_names_the_backup(install_module, uninstall_module,
+                                                                              tmp_path):
+    # Review 12, mutant m02: an empty file is the finished step only when there is no backup.
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = a_whole_file_record(install_module, home)
+    (home / ".claude" / "CLAUDE.md").write_text("", encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert any("differs" in n and backup.name in n for n in notices), notices
+
+
+def test_a_folder_named_as_the_safety_backup_is_no_backup_when_the_section_is_removed(
+        install_module, uninstall_module, tmp_path):
+    # Review 12, mutants m06 and m07: finish() reads the copy from before the section.
+    home = tmp_path / "home"
+    seed(home, {})
+    backup = a_section_install(install_module, home)
+    backup.unlink()
+    backup.mkdir()
+    changes, notices = uninstall_module.uninstall(home)
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == "my own notes\n"
+    assert backup.is_dir() and not any(backup.name in s for s in changes + notices), (changes, notices)
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def one_backup_in_two_roles(install_module, home):
+    """The user took the converted section out, back to their own text, and installed again:
+    the copy made before the section is the whole-file installer's backup, reused."""
+    legacy = a_legacy_backup(install_module, home)
+    (home / ".claude" / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    install_module.install(home)
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["claude_md"]["safety_backup"] == record["claude_md"]["legacy_backup"] == legacy.name
+    return legacy
+
+
+def test_one_backup_in_two_roles_is_named_once_when_claude_md_is_gone(install_module, uninstall_module, tmp_path):
+    # Review 12, finding C4.
+    home = tmp_path / "home"
+    seed(home, {})
+    legacy = one_backup_in_two_roles(install_module, home)
+    (home / ".claude" / "CLAUDE.md").unlink()
+    _, notices = uninstall_module.uninstall(home)
+    assert len([n for n in notices if legacy.name in n]) == 1, notices
+
+
+def test_a_dry_run_of_one_backup_in_two_roles_says_what_the_real_run_does(install_module, uninstall_module,
+                                                                         tmp_path):
+    # Review 12, finding C4: the dry run said the backup is still there; the real run deletes it.
+    home = tmp_path / "home"
+    seed(home, {})
+    legacy = one_backup_in_two_roles(install_module, home)
+    _, dry = uninstall_module.uninstall(home, dry_run=True)
+    _, real = uninstall_module.uninstall(home)
+    assert dry == real and not legacy.exists(), (dry, real)
+
+
+def test_a_dry_run_of_one_backup_in_two_roles_lists_the_real_run_changes_once(install_module, uninstall_module,
+                                                                               tmp_path):
+    # Review 12, finding C4, the leave() path: CLAUDE.md is put back as the backup holds it.
+    home = tmp_path / "home"
+    seed(home, {})
+    legacy = one_backup_in_two_roles(install_module, home)
+    (home / ".claude" / "CLAUDE.md").write_bytes(legacy.read_bytes())
+    dry, _ = uninstall_module.uninstall(home, dry_run=True)
+    real, _ = uninstall_module.uninstall(home)
+    dry, real = ([c for c in changes if legacy.name in c] for changes in (dry, real))
+    assert dry == real and len(real) == 1 and not legacy.exists(), (dry, real)

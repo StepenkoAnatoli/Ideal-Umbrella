@@ -300,8 +300,10 @@ def _backup_name(path):
     data = path.read_bytes()
     ours = re.compile(re.escape(path.name) + _BACKUP_NAME)
     for earlier in sorted(path.parent.glob(glob.escape(path.name) + ".bak-*")):
+        # Not the file itself: path linked to a backup (put back with `ln -s`) holds its bytes,
+        # and the install then writes through the link into what it takes for the copy.
         if ours.fullmatch(earlier.name) and earlier.is_file() and not earlier.is_symlink() \
-                and earlier.read_bytes() == data:
+                and earlier.read_bytes() == data and not same_file(earlier, path):
             return earlier
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
@@ -379,6 +381,24 @@ def _new_temp(directory, prefix):
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
+
+
+def same_file(a, b):
+    """True when a and b are one file (a symlink to the other, or the same name on a file
+    system that ignores case); True also when it cannot be told, so that no caller deletes,
+    reuses or skips a copy on a guess."""
+    try:
+        return os.path.samefile(a, b)
+    except (OSError, ValueError):
+        return True
+
+
+def refuse_dangling(paths):
+    """Raise ValueError for a symlink whose target is missing (a dotfiles folder moved or not
+    mounted): read as a missing file, it would be written over, or its undo dropped."""
+    for path in paths:
+        if _is_link(path) and not path.exists():
+            raise ValueError(f"{path} is a symlink to a missing target; fix or remove it first")
 
 
 def _is_link(path):
@@ -842,9 +862,7 @@ def install(home, force=False, progress=None, config_dir=None):
     # Read and check everything before writing anything, and write settings.json after the
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
-    for name in ("settings", "claude_md", "hook", "record"):
-        if _is_link(paths[name]) and not paths[name].exists():
-            raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
+    refuse_dangling(paths[name] for name in ("settings", "claude_md", "hook", "record"))
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
     claude_md = _read_text(CLAUDE_MD)
@@ -870,7 +888,8 @@ def install(home, force=False, progress=None, config_dir=None):
             notices.append(md_plan["notice"])
         kept = backup_of(paths["claude_md"], (old_record.get("claude_md") or {}).get("safety_backup"))
         if md_plan["backup"] == "edited" and kept is not None and kept.is_file() and not kept.is_symlink() \
-                and kept.read_bytes() == paths["claude_md"].read_bytes():
+                and kept.read_bytes() == paths["claude_md"].read_bytes() \
+                and not same_file(kept, paths["claude_md"]):
             # An earlier run backed the file up before adding its section, then stopped before
             # its CLAUDE.md write: the section is the one that was there, and the backup holds it.
             md_backup = None

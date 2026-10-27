@@ -205,10 +205,7 @@ def _is_file(path):
 def _is_target(backup, claude_md):
     """True when CLAUDE.md is a link to this backup (put back with `ln -s` rather than a copy):
     deleting the backup would delete the file. When it cannot be told, the backup is kept."""
-    try:
-        return backup.resolve() == claude_md.resolve()
-    except (OSError, RuntimeError):   # RuntimeError: a symlink loop, before Python 3.13
-        return True
+    return install.same_file(backup, claude_md)
 
 
 def _empty(claude_md):
@@ -240,7 +237,7 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
             else:
                 notices.append(f"your CLAUDE.md from before the install is kept in {safety.name}; "
                                "it differs from the file now, so delete it once you no longer need it")
-        if _is_file(legacy_path):
+        if _is_file(legacy_path) and legacy_path != safety:   # one file in both roles: done above
             if legacy_path.read_bytes() == on_disk:
                 if not _is_target(legacy_path, claude_md):
                     apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)",
@@ -335,7 +332,7 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
             return finish(change, b"", delete)
     data = rest.encode("utf-8")
     finish("CLAUDE.md: Ideal-Umbrella section removed", data, lambda: install._write_bytes(claude_md, data))
-    if _is_file(legacy_path):
+    if _is_file(legacy_path) and legacy_path != safety:   # finish() named or deleted it
         notices.append(f"your CLAUDE.md from before the first install is still in {legacy}")
     return False
 
@@ -344,6 +341,8 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     """Undo the install; return (changes, notices). Each change is appended to `progress`
     (when given) once it is done, so an OSError part way can still name the backups made."""
     paths = install.layout(home, config_dir)
+    # As install refuses them: read as missing files, they would lose their undo for good.
+    install.refuse_dangling(paths[name] for name in ("settings", "claude_md", "hook", "record"))
     record = install.read_record(paths["record"])
     changes, notices = [], []
     if progress is None:
@@ -416,9 +415,11 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         if isinstance(entry, dict):
             kept = (("safety_backup", "the install"), ("legacy_backup", "the first install")) \
                 if entry.get("format") == "section" else (("backup", "the install"),)
+            named = set()
             for key, which in kept:
                 path = _backup_of(claude_md, entry.get(key))
-                if _is_file(path):
+                if _is_file(path) and path not in named:   # one file in both roles is named once
+                    named.add(path)
                     notices.append(f"CLAUDE.md is gone; your file from before {which} is still in {path.name}")
     elif isinstance(entry, dict) and entry.get("format") == "section":
         claude_md_left = _undo_section(claude_md, current_md, md_utf8, found, entry, apply, notices)

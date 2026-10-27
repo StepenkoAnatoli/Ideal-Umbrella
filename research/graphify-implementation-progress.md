@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 12 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 13 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -15,7 +15,8 @@
 - Review pass 9 (fresh agent, default model after the Fable limit; head 5584721): 3 low, 2 info; fixed class-wide in the commit after 5584721; record `research/review-findings-graphify-5584721.md`. Main changes: with no section and a kept pre-install copy that differs, uninstall names the copy (a run stopped after the CLAUDE.md step, e.g. at a read-only settings.json, never printed that note); `without_the_hook_entry` no-record test kinds (the hook file as only evidence; kills mutants r06-r08); `scripts/ledger.py` refuses a UTF-16/UTF-32 file (BOM or NUL) with a one-line error and writes nothing; README wording. r10 equivalent.
 - Review pass 10 (fresh agent, default model after the Fable limit; head d48df3e): 4 low, 2 info; fixed class-wide in 9666225; record `research/review-findings-graphify-d48df3e.md`. Main changes: `leave()`/`finish()` in `_undo_section` (one exit each for "file left, entry dropped" and "file written, restored or deleted"; every kept backup deleted when equal, else named), `_empty()` empties a symlinked CLAUDE.md through the link, ledger `_wide()` decides UTF-16/32 by BOM or NUL beside ASCII in the first 4 bytes (a NUL tail is a skipped line). Mutants m1-m11 killed; s06 no longer applies.
 - Review pass 11 (fresh agent, default model after the Fable limit; head b9b2a9b): 5 low, 5 info; fixed class-wide in the commit after b9b2a9b; record `research/review-findings-graphify-b9b2a9b.md`. Main changes: `_is_target()` guards every same-bytes backup delete (a CLAUDE.md linked to its backup), `_is_file()` for every backup read or named, the gone branch names every backup of the entry, the edited note names the copy, a blank symlinked CLAUDE.md under a whole-file record with no backup is the finished step, ledger checks the bytes after a UTF-8 BOM, home-manager claim removed from docs. Mutants n01-n21 (scratchpad `fix11/mut.py`) killed except n16 (equivalent: the first check returns `leave()`).
-- Next: review pass 12 (fresh agent; known-and-accepted list as in pass 11's brief plus: the `finish()` `_is_target` guard is unreachable (n16); uninstall does not skip a CLAUDE.md linked to a read-only file, it stops with the path).
+- Review pass 12 (fresh agent, default model after the Fable limit; head 341f303): 1 medium, 2 low, 2 info; fixed class-wide in the commit after 341f303; record `research/review-findings-graphify-341f303.md`. Main changes: `install.refuse_dangling()` also runs first in uninstall (a dangling settings/CLAUDE.md/hook/record link lost its undo); `install.same_file()` (`os.path.samefile`, True when it cannot tell) in `_backup_name()`, install's kept check and `_is_target()` (a file linked to its own backup); ledger `_wide()` decides by the first two characters with their NULs (x0y0, 0x0y, x000y000, 000x000y) after an optional UTF-8 BOM; one backup in two roles is named/deleted once. Mutants (scratchpad `fix12/mut.py`) m1-m13 killed.
+- Next: review pass 13 (fresh agent; known-and-accepted list as in pass 12's brief (scratchpad `brief12.txt`) plus `-341f303.md`).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -38,5 +39,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Review pass 12 and later, then merge.
+- Review pass 13 and later, then merge.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
