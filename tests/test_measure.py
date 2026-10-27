@@ -155,3 +155,24 @@ def test_a_file_gone_during_the_walk_is_no_longer_there(tmp_path, capsys, monkey
     captured = capsys.readouterr()
     assert f"skip (no longer there): {tmp_path / 'gone.txt'}" in captured.err, captured
     assert "good.txt" in captured.out
+
+
+def test_a_folder_gone_during_the_walk_is_no_longer_there(tmp_path, capsys, monkeypatch):
+    # Review 27, I1: a folder removed during the walk was "cannot read: No such file or
+    # directory"; a file removed the same way is "no longer there".
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    real = os.scandir
+
+    def scandir(path="."):
+        if os.path.normcase(os.path.normpath(os.fspath(path))) == os.path.normcase(os.path.normpath(sub)):
+            raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
+        return real(path)
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert measure.main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert f"skip (no longer there): {sub}" in captured.err, captured
+    assert "good.txt" in captured.out

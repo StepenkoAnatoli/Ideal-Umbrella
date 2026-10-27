@@ -2,10 +2,10 @@
 
 Usage:
   python measure.py FILE_OR_FOLDER [FILE_OR_FOLDER ...]
-A folder is walked recursively (hidden folders, cache/ and __pycache__/ skipped). With exactly two
-files, a change line is printed. Files are counted exactly as stored (a UTF-8 BOM is dropped;
-line endings and a trailing newline are counted). These are OpenAI tokenizers: a proxy for
-Claude's tokenizer, which is not public.
+A folder is walked recursively (hidden folders, cache/, __pycache__/ and node_modules/ skipped).
+With exactly two files, a change line is printed. Files are counted exactly as stored (a UTF-8
+BOM is dropped; line endings and a trailing newline are counted). These are OpenAI tokenizers:
+a proxy for Claude's tokenizer, which is not public.
 """
 import os
 import stat
@@ -22,6 +22,12 @@ except ImportError:
 SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
 
+def _unlisted(e):
+    """os.walk's onerror: a folder the walk cannot list is named, as a file it cannot read is."""
+    why = "no longer there" if isinstance(e, FileNotFoundError) else f"cannot read: {e.strerror or e}"
+    print(f"skip ({why}): {e.filename}", file=sys.stderr)
+
+
 def files_in(arg):
     # os.stat, not is_file()/is_dir(): on Python 3.14 those say False for a path that cannot be
     # looked at (in a folder that cannot be searched), which read as "no such file or folder".
@@ -31,9 +37,7 @@ def files_in(arg):
         return [p]
     if stat.S_ISDIR(mode):
         out = []
-        # onerror: a folder the walk cannot list is named, as a file it cannot read is.
-        for root, dirs, names in os.walk(p, onerror=lambda e: print(
-                f"skip (cannot read: {e.strerror or e}): {e.filename}", file=sys.stderr)):
+        for root, dirs, names in os.walk(p, onerror=_unlisted):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
             out += [Path(root) / n for n in sorted(names)]
         return out

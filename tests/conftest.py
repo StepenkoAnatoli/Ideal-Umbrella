@@ -55,6 +55,26 @@ def write_jsonl(path, events):
     return path
 
 
+def link_or_skip(link, target, target_is_directory=False):
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+
+def loop_or_skip(link):
+    """A symlink that points at itself, or a skip where links cannot be made or the OS does not
+    report the loop as ELOOP (Windows)."""
+    import errno
+    link_or_skip(link, link.name)
+    try:
+        os.stat(link)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return
+    pytest.skip("this OS does not report a symlink loop as ELOOP")
+
+
 def python_314_pathlib(monkeypatch):
     """pathlib as in Python 3.14: exists() and the is_*() checks say False for a path they
     cannot look at, where 3.13 and earlier raise. They look through os.stat and os.lstat, not

@@ -8,6 +8,7 @@ Transcripts are the *.jsonl files Claude Code writes under ~/.claude/projects.
 """
 import argparse
 import collections
+import errno
 import json
 import os
 import stat
@@ -24,10 +25,15 @@ def _is(path, kind):
         return kind(os.stat(path).st_mode)
     except (FileNotFoundError, NotADirectoryError):
         return False
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return False   # a symlink loop leads nowhere, like a link to a missing target
+        raise
 
 
 def _raise(error):
-    raise error
+    if not isinstance(error, FileNotFoundError):   # a folder gone during the walk holds nothing
+        raise error
 
 
 def transcripts(folder):

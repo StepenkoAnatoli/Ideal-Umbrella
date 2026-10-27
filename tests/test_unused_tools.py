@@ -3,7 +3,7 @@ import pytest
 import os
 import sys
 
-from conftest import ROOT, load_module, python_314_pathlib, refuse_listing, refuse_looks_inside, write_jsonl
+from conftest import ROOT, link_or_skip, load_module, loop_or_skip, python_314_pathlib, refuse_listing, refuse_looks_inside, write_jsonl
 
 
 @pytest.fixture
@@ -102,3 +102,61 @@ def test_a_subfolder_that_cannot_be_listed_is_an_error_for_real(tmp_path):
         sub.chmod(0o755)
     assert result.returncode == 1, result
     assert f"cannot read {sub} (" in result.stderr and "Traceback" not in result.stderr, result.stderr
+
+
+def _calls(name, n=1):
+    return [{"message": {"content": [{"type": "tool_use", "name": name}]}}] * n
+
+
+def test_the_walk_keeps_rglobs_rules(unused_tools, tmp_path, capsys):
+    # Review 27, L1: os.walk never puts a folder in names, so the folder test above no longer
+    # reached the regular-file filter, and nothing pinned the rest of rglob's rules.
+    write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
+    (tmp_path / ".hidden").mkdir()
+    write_jsonl(tmp_path / ".hidden" / "h.jsonl", _calls("Grep"))      # rglob reads hidden folders
+    write_jsonl(tmp_path / "notes.jsonl.bak", _calls("Bash"))            # not *.jsonl
+    write_jsonl(tmp_path / "U.JSONL", _calls("Glob"))                    # *.jsonl on Windows only
+    assert unused_tools.main([str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    n = 3 if os.name == "nt" else 2
+    assert out.startswith(f"{n} transcripts, {n} tool calls, {n} distinct tools"), out
+    assert "Bash" not in out
+
+
+def test_a_linked_folder_and_a_dangling_link_are_not_counted(unused_tools, tmp_path, capsys):
+    # Review 27, L1: as rglob, the walk does not follow a link to a folder (its transcripts would
+    # be counted twice), and a dangling link named *.jsonl is passed over, not "cannot read".
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    write_jsonl(sub / "s.jsonl", _calls("Edit"))
+    link_or_skip(tmp_path / "linked", sub, target_is_directory=True)
+    link_or_skip(tmp_path / "gone.jsonl", tmp_path / "missing")
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")
+
+
+def test_a_symlink_loop_named_like_a_transcript_is_passed_over(unused_tools, tmp_path, capsys):
+    # Review 27, I2: os.stat raised ELOOP and the run stopped with "cannot read"; a loop holds
+    # no transcript, so passing over it leaves nothing out (install's _look does the same).
+    write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
+    loop_or_skip(tmp_path / "loop.jsonl")
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")
+
+
+def test_a_folder_gone_during_the_walk_holds_no_transcripts(unused_tools, tmp_path, capsys, monkeypatch):
+    # Review 27, I1: a subfolder removed between listing its parent and listing it (Claude Code
+    # cleaning up old sessions) stopped the run with "cannot read <sub>"; a file removed the
+    # same way was already passed over.
+    write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    real = os.scandir
+
+    def scandir(path="."):
+        if os.path.normcase(os.path.normpath(os.fspath(path))) == os.path.normcase(os.path.normpath(sub)):
+            raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
+        return real(path)
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")

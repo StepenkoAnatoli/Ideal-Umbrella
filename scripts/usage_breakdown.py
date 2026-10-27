@@ -8,6 +8,7 @@ records 5-minute and 1-hour cache writes separately; they cost $5/MTok and $8/MT
 on Opus 5.5, so pricing every write at the 5-minute rate understates the bill.
 """
 import collections
+import errno
 import json
 import os
 import stat
@@ -138,6 +139,10 @@ def transcripts(folder):
                 st = os.stat(path)
             except (FileNotFoundError, NotADirectoryError):
                 continue
+            except OSError as e:
+                if e.errno == errno.ELOOP:
+                    continue   # a symlink loop leads nowhere, like a link to a missing target
+                raise
             if stat.S_ISREG(st.st_mode):
                 yield path, st.st_size
 

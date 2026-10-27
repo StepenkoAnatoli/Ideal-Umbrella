@@ -1,8 +1,9 @@
 import json
+import os
 
 import pytest
 
-from conftest import refuse_listing, refuse_looks_inside, write_jsonl
+from conftest import link_or_skip, loop_or_skip, refuse_listing, refuse_looks_inside, write_jsonl
 
 
 def test_prices_5m_and_1h_writes_separately(usage_breakdown, tmp_path):
@@ -157,3 +158,39 @@ def test_a_folder_or_transcript_that_cannot_be_read_says_cannot_read(usage_break
     message = str(e.value.code)
     assert "cannot read" in message and "no .jsonl" not in message, message
     assert str(tmp_path if what == "folder" else tmp_path / "t.jsonl") in message, message
+
+
+def _responses(path, n, start=0):
+    write_jsonl(path, [{
+        "type": "assistant",
+        "message": {"id": f"{path.name}-{i}", "usage": {"input_tokens": 1, "output_tokens": 1}, "content": []},
+    } for i in range(start, start + n)])
+
+
+def test_the_count_largest_transcripts_are_read_and_dot_files_are_not(usage_breakdown, tmp_path, capsys):
+    # Review 27, L2: no test passed a COUNT or held transcripts of different sizes, so reading
+    # the smallest first, or reading dot files, went unnoticed.
+    _responses(tmp_path / "a.jsonl", 1)
+    _responses(tmp_path / "b.jsonl", 50)
+    _responses(tmp_path / "c.jsonl", 20)
+    _responses(tmp_path / ".d.jsonl", 100)                          # glob's *.jsonl skips dot files
+    _responses(tmp_path / "E.JSONL", 30)                            # *.jsonl on Windows only
+    assert usage_breakdown.main([str(tmp_path), "2"]) == 0
+    assert f"2 transcripts, {80 if os.name == 'nt' else 70} API responses" in capsys.readouterr().out
+
+
+def test_a_link_to_a_transcript_is_read(usage_breakdown, tmp_path, capsys):
+    # Review 27, L2: an lstat in place of the stat would drop every linked transcript.
+    _responses(tmp_path / "real.txt", 3)
+    link_or_skip(tmp_path / "t.jsonl", tmp_path / "real.txt")
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert "1 transcripts, 3 API responses" in capsys.readouterr().out
+
+
+def test_a_symlink_loop_named_like_a_transcript_is_passed_over(usage_breakdown, tmp_path, capsys):
+    # Review 27, I2: os.stat raised ELOOP and the run stopped with "cannot read"; os.path.isfile
+    # passed over it before pass 26.
+    _responses(tmp_path / "t.jsonl", 2)
+    loop_or_skip(tmp_path / "loop.jsonl")
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert "1 transcripts, 2 API responses" in capsys.readouterr().out
