@@ -138,10 +138,10 @@ def transcripts(folder):
             try:
                 st = os.stat(path)
             except OSError as e:
-                # A link that leads nowhere (to a missing target, or a loop) is passed over.
+                # A link that leads nowhere (to a missing target, through a file, or a loop) is passed over.
                 # Not found otherwise is raised: the name has just been listed, and on Windows a
                 # path past MAX_PATH says "not found" while it is there.
-                if e.errno == errno.ELOOP or (isinstance(e, FileNotFoundError) and os.path.islink(path)):
+                if e.errno == errno.ELOOP or (isinstance(e, (FileNotFoundError, NotADirectoryError)) and os.path.islink(path)):
                     continue
                 raise
             if stat.S_ISREG(st.st_mode):

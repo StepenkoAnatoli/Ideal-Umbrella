@@ -32,13 +32,13 @@ def _is(path, kind):
 
 
 def _listed_file(path):
-    """True for a regular file, False for a link that leads nowhere (to a missing target, or
-    a loop). Not found otherwise is raised, not passed over: the walk has just listed the name,
+    """True for a regular file, False for a link that leads nowhere (to a missing target, a
+    target through a file, or a loop). Not found otherwise is raised, not passed over: the walk has just listed the name,
     and on Windows a path past MAX_PATH says "not found" while it is there."""
     try:
         return stat.S_ISREG(os.stat(path).st_mode)
     except OSError as e:
-        if e.errno == errno.ELOOP or (isinstance(e, FileNotFoundError) and os.path.islink(path)):
+        if e.errno == errno.ELOOP or (isinstance(e, (FileNotFoundError, NotADirectoryError)) and os.path.islink(path)):
             return False
         raise
 

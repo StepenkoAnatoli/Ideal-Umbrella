@@ -216,3 +216,26 @@ def test_a_link_to_a_missing_transcript_is_passed_over(usage_breakdown, tmp_path
     link_or_skip(tmp_path / "b.jsonl", tmp_path / "missing.jsonl")
     assert usage_breakdown.main([str(tmp_path)]) == 0
     assert capsys.readouterr().out.startswith("1 transcripts, 1 API responses")
+
+
+def test_a_link_through_a_file_is_passed_over(usage_breakdown, tmp_path, capsys):
+    # Review 29, L1: its stat gives NotADirectoryError, and pass 28 stopped with "cannot read".
+    _responses(tmp_path / "a.jsonl", 1)
+    (tmp_path / "afile").write_text("x", encoding="utf-8")
+    link_or_skip(tmp_path / "b.jsonl", tmp_path / "afile" / "b.jsonl")
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 API responses")
+
+
+def test_a_link_into_a_folder_that_cannot_be_searched_says_cannot_read(usage_breakdown, tmp_path, capsys,
+                                                                       monkeypatch):
+    # Review 29, L2: nothing failed when every error on a link was passed over.
+    _responses(tmp_path / "a.jsonl", 1)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    _responses(locked / "x.jsonl", 2)
+    link_or_skip(tmp_path / "b.jsonl", locked / "x.jsonl")
+    refuse_looks_inside(locked, monkeypatch)
+    with pytest.raises(SystemExit) as exit_:
+        usage_breakdown.main([str(tmp_path)])
+    assert f"cannot read {tmp_path / 'b.jsonl'}" in str(exit_.value.code), exit_.value.code

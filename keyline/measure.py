@@ -74,7 +74,7 @@ def main(argv):
             except OSError as e:
                 # Not "no longer there" for a name the walk has just listed: on Windows a path
                 # past MAX_PATH says "not found" while it is there.
-                if isinstance(e, FileNotFoundError) and os.path.islink(p):
+                if isinstance(e, (FileNotFoundError, NotADirectoryError)) and os.path.islink(p):
                     why = "symlink to a missing target"
                 else:
                     why = f"cannot read: {e.strerror or e}"

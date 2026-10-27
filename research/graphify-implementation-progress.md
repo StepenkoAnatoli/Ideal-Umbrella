@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-27, review pass 29 next)
+# Graphify-derived improvements: resume point (2026-10-27, review pass 30 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -37,7 +37,9 @@
 - Review pass 27 (fresh agent, default model after the Fable limit; head f72f830): no code defect; 2 low (test gaps), 3 info; fixed in the commit after f72f830; record `research/review-findings-graphify-f72f830.md`. Main changes: tests pin the listing rules of unused_tools (rglob's) and usage_breakdown (glob's, COUNT largest), with an upper-case name counted on Windows only; unused_tools passes over a folder gone during the walk; both pass over an ELOOP `*.jsonl`; measure says "no longer there" for a vanished folder; shared `link_or_skip`/`loop_or_skip` in conftest; README line 149 wording. Mutants (scratchpad `fix27/mut.py`) a03-a06, b01, b04-b06, e1, e2, f1, f2, c1, c2 killed; a02/b02 killed only on Windows CI. Lesson: never put a FIFO in a test of a reader (a regression hangs the suite).
 - 1ebdbbc (pass-27 fixes): CI green on all five jobs.
 - Review pass 28 (fresh agent, default model after the Fable limit; head 1ebdbbc): 2 low (L1 a pass-27 regression, L2 test gap), 1 info; fixed in the commit after 1ebdbbc; record `research/review-findings-graphify-1ebdbbc.md`. Main changes: on Windows a path past MAX_PATH reads as "not found", so a name a walk has just listed that reads as not found is "cannot read" again in unused_tools (`_listed_file`, `_raise` raises all), usage_breakdown and measure; only a link to a missing target and a loop are passed over (pass 27's "folder gone" change reverted, noted as superseded in `-f72f830.md`); test helper `not_found_at`; a test pins measure's skipped folders. Decision: no parent re-listing to tell "gone" from "too long" (more code, its own race; a rerun clears a real removal). Mutants (scratchpad `fix28/mut.py`) h01-h16 killed.
-- Next: review pass 29 (fresh agent; brief as scratchpad `brief29.txt`, Fable first, default model on a 429).
+- a7ab29a (pass-28 fixes): CI green on all five jobs.
+- Review pass 29 (fresh agent, default model after the Fable limit; head a7ab29a): 2 low (L1 a pass-28 regression, L2 test gap), 3 info; fixed in the commit after a7ab29a; record `research/review-findings-graphify-a7ab29a.md`. Main changes: a link whose stat raises FileNotFoundError or NotADirectoryError (target through a file) leads nowhere in all three walks; tests for a link into a folder that cannot be searched ("cannot read") and for unused_tools' looped / through-a-file argument ("not a folder"); CHANGELOG Review 28 wording. Mutants (scratchpad `fix29/mut.py`) j01-j08 killed; k13 near-equivalent.
+- Next: review pass 30 (fresh agent; brief as scratchpad `brief30.txt`, Fable first, default model on a 429).
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -57,8 +59,8 @@
 - Review loop: findings in `research/review-findings-graphify-<sha>.md` (Finding / Fixed / Other hits / Prevention), fixes failing-first and class-wide; repeat with a new agent until a pass finds nothing; then merge with a merge commit on green CI, update this file, one-line reply with the PR link.
 - Other hit noted for item 7's class: `config/install.py merge_settings` merges its only object key (`permissions`) by hand; a future object key in `config/user-settings.json` would need the same.
 
-Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, next `crlf8`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`).
+Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, next `crlf9`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`).
 
 ## Open items
-- Review pass 29 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
+- Review pass 30 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).

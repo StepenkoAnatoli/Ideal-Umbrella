@@ -158,3 +158,41 @@ def test_a_listed_name_that_is_not_found_says_cannot_read(unused_tools, tmp_path
     assert unused_tools.main([str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert f"cannot read {hidden}" in err, err
+
+
+@pytest.mark.parametrize("target", ["missing", "through a file"])
+def test_a_link_that_leads_nowhere_is_passed_over(unused_tools, tmp_path, capsys, target):
+    # Review 29, L1: a dangling link whose target goes through a file gives NotADirectoryError,
+    # not FileNotFoundError, and pass 28 stopped the run with "cannot read" for it.
+    write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
+    (tmp_path / "afile").write_text("x", encoding="utf-8")
+    link_or_skip(tmp_path / "b.jsonl", tmp_path / ("missing" if target == "missing" else "afile/b.jsonl"))
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert capsys.readouterr().out.startswith("1 transcripts, 1 tool calls")
+
+
+def test_a_link_into_a_folder_that_cannot_be_searched_says_cannot_read(unused_tools, tmp_path, capsys, monkeypatch):
+    # Review 29, L2: nothing failed when every error on a link was passed over, so a link to a
+    # transcript in a folder that cannot be searched would have gone uncounted.
+    write_jsonl(tmp_path / "t.jsonl", _calls("Read"))
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    write_jsonl(locked / "x.jsonl", _calls("Edit"))
+    link_or_skip(tmp_path / "b.jsonl", locked / "x.jsonl")
+    refuse_looks_inside(locked, monkeypatch)
+    assert unused_tools.main([str(tmp_path)]) == 1
+    assert f"cannot read {tmp_path / 'b.jsonl'}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("kind", ["through a file", "loop"])
+def test_an_argument_that_leads_nowhere_is_not_a_folder(unused_tools, tmp_path, capsys, kind):
+    # Review 29, info 2: nothing pinned _is's not-a-directory and loop branches, which now judge
+    # only the argument.
+    if kind == "loop":
+        arg = tmp_path / "loop"
+        loop_or_skip(arg)
+    else:
+        (tmp_path / "afile").write_text("x", encoding="utf-8")
+        arg = tmp_path / "afile" / "sub"
+    assert unused_tools.main([str(arg)]) == 2
+    assert f"{arg} is not a folder" in capsys.readouterr().err

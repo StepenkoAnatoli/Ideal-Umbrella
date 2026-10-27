@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT, load_module, not_found_at, python_314_pathlib, refuse_listing, refuse_looks_inside
+from conftest import ROOT, link_or_skip, load_module, not_found_at, python_314_pathlib, refuse_listing, refuse_looks_inside
 
 
 def test_missing_tiktoken_gives_an_install_hint():
@@ -195,3 +195,29 @@ def test_hidden_cache_and_dependency_folders_are_not_walked(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "y.txt" in captured.out and "x.txt" not in captured.out, captured
     assert captured.err == "", captured
+
+
+@pytest.mark.parametrize("target", ["through a file", "locked"])
+def test_a_link_is_a_missing_target_only_when_it_leads_nowhere(tmp_path, capsys, monkeypatch, target):
+    # Review 29: a link whose target goes through a file (NotADirectoryError) was "cannot read:
+    # Not a directory" (L1); nothing failed when a link into a folder that cannot be searched
+    # was called a missing target (L2).
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    link = tmp_path / "b.txt"
+    if target == "locked":
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "x.txt").write_text("hello\n", encoding="utf-8")
+        link_or_skip(link, locked / "x.txt")
+        refuse_looks_inside(locked, monkeypatch)
+        want = f"skip (cannot read: Permission denied): {link}"
+    else:
+        (tmp_path / "afile").write_text("x", encoding="utf-8")
+        link_or_skip(link, tmp_path / "afile" / "b.txt")
+        want = f"skip (symlink to a missing target): {link}"
+    assert measure.main([str(tmp_path)]) == 0
+    captured = capsys.readouterr()
+    assert want in captured.err, captured
+    assert "good.txt" in captured.out
