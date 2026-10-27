@@ -3,37 +3,40 @@
 Tools for Keyline machine notes: keyed, terse, whole-word English notes that an LLM writes for
 itself (one `key: item; item` line per topic), with a deterministic check that no fact was lost
 when a note is rendered to Hebrew or prose. Design and measurements:
-`../machine-language-panel-results.md` (section `=== SPEC ===`).
+`../research/panel-results.md` (section `=== SPEC ===`).
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier, path, CamelCase name, file name or snake_case token of the source, or has fewer negation words. |
+| `keyline_check.py` | Fact check: source note vs one or more renderings. Fails if a rendering is missing any date, time, version, number, percentage, UPPER_CASE identifier (plurals such as `PRs` included), hex hash, path, CamelCase name, proper noun, file name, snake_case or dunder token, or lowercase identifier with a digit (`sha256`, `utf8`) of the source, drops a hedge class, or has fewer negation words. A month or weekday name may appear in its Hebrew form. A source with no extractable invariant and no hedge is `INCONCLUSIVE`, not `PASS`. |
 | `keyline_lint.py` | Style lint for a notes file: markdown furniture and invented abbreviations. |
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
-| `keyline_hook.py` | Claude Code PostToolUse hook: runs the lint, and the check when a sibling `.he.txt` exists. |
-| `hooks-example.json` | The hook entry to paste into a repo's `.claude/settings.json`. |
+| `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
+| `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
 | `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (98 tokens o200k, header included). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
 | `cache/` | Built on first use: tiktoken encodings and the single-token word list. |
 
 ## Setup
 
-The venv lives in `.venv/` and holds only tiktoken 0.14.0. To rebuild it:
+The scripts need Python 3 (CI runs 3.12) and tiktoken (pinned in `requirements.txt`). Install it
+into the interpreter you will run them with, for example a venv in this folder:
 
 ```bash
-py -3.14 -m venv .venv
-.venv/Scripts/python.exe -m pip install -r requirements.txt
-.venv/Scripts/python.exe keyline_lint.py --rebuild-cache
+python -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt        # Windows: .venv\Scripts\python.exe
+.venv/bin/python keyline_lint.py --rebuild-cache
 ```
 
-All commands below use `.venv/Scripts/python.exe` from this folder.
+All commands below are run from this folder with `python` standing for that interpreter. The
+word cache in `cache/` is built on first use, so the first run needs tiktoken; without it the
+scripts stop with a one-line install hint.
 
 ## keyline_check.py
 
 ```bash
-.venv/Scripts/python.exe keyline_check.py tests/incident.keyline.txt tests/incident.keyline.he.txt tests/incident.glyph.txt
+python keyline_check.py tests/incident.keyline.txt tests/incident.keyline.he.txt tests/incident.glyph.txt
 ```
 
 ```
@@ -43,11 +46,20 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
   negations: source 4, rendering 0 (4 lost)
 ```
 
-`--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail, 2 usage error.
+`--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
 Matching is exact and case-sensitive, on ASCII token boundaries: `5` does not count as present
-because `503` is, but a Hebrew prefix glued to an identifier still counts. Markdown list numbers
-(`1. `) are not facts and are skipped.
+because `503` is, a bare number does not count as present inside a time or a grouped number
+(`10` is not in `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still
+counts. Markdown list numbers (`1. `) are not facts and are skipped. Proper nouns are extracted
+when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
+and `Prisma`; so does `- **Stack:** Postgres`). A month or weekday name may appear in its Hebrew
+form (`Monday` as `יום שני`, `October` as `אוקטובר`). Hedges are checked by class, so `could`
+may render as `may` but not as `will`; a Hebrew rendering keeps the class with the Hebrew words
+of the same group (`could` as `עלול`, `should` as `אמור`).
+
+A source with no extractable invariant and no hedge is `INCONCLUSIVE` and exits 1. The checker
+must never report a vacuous `PASS` on a source whose claims it did not understand.
 
 Negations counted, English and Hebrew together in both texts:
 
@@ -59,7 +71,7 @@ Negations counted, English and Hebrew together in both texts:
 ## keyline_lint.py
 
 ```bash
-.venv/Scripts/python.exe keyline_lint.py notes/*.txt
+python keyline_lint.py notes/*.txt
 ```
 
 - Furniture: a line starting with a bullet (`- `, `* `, `+ `), a numbered item (`1. `, `2) `) or a
@@ -83,7 +95,7 @@ Negations counted, English and Hebrew together in both texts:
 ## measure.py
 
 ```bash
-.venv/Scripts/python.exe measure.py tests/notes.markdown.md tests/notes.keyline.txt
+python measure.py tests/notes.markdown.md tests/notes.keyline.txt
 ```
 
 ```
@@ -99,14 +111,18 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 ## Wiring the hook into one repo
 
 1. In the repo, create `.claude/settings.json` to share the hook with the repo, or
-   `.claude/settings.local.json` to keep it personal. Paste the contents of `hooks-example.json`.
+   `.claude/settings.local.json` to keep it personal. Generate a ready-to-paste entry with
+   `python keyline_hook.py --print-config` (it uses this Python and this keyline folder), or
+   replace `__PYTHON__` and `__KEYLINE_DIR__` in `hooks-example.json`. Paste the result.
    If the file already has a `"hooks"` key, add the `PostToolUse` entry to it instead.
-2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path,
-   and only acts on `.txt`, `.md`, `.keyline` or extension-less files. To watch specific files
+2. Keep notes in a `notes/` or `plans/` folder of that repo. The hook ignores every other path
+   (a `notes/` folder outside the project too), and only acts on `.txt`, `.md`, `.keyline` or
+   extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
-   absolute pattern matches the absolute path, a relative one the path from the project dir).
-   Live example: `gittoken/.claude/settings.local.json` and `rk-wt/.claude/settings.local.json`
-   watch only `C:/Users/PC/Desktop/gittoken/rk-wt/PROGRESS.md`.
+   absolute pattern matches the absolute path, a relative one the path from the project dir;
+   the suffix rule still applies, so a watched `.py` file is passed over).
+   Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
+   checks only that file, wherever it is written from.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt`. The hook then checks it whenever
    either file is written or edited.
 4. Optional: add `keyline-allow.txt` at the repo root for project names that split into tokens.
@@ -114,18 +130,18 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
 6. Start a new Claude Code session in the repo so it loads the settings.
 
 How it behaves: the matcher is `Write|Edit`. On findings the hook exits 2 and prints them to
-stderr. For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
-Claude fixes the file. Paths in the hook command are absolute, so the repo can be anywhere.
-The hook has been tested by piping simulated PostToolUse events through the exact command in
-`hooks-example.json`. It has not yet run inside a live Claude Code session.
+stderr; when the note cannot be read or tiktoken is missing it exits 1 (non-blocking, one line on
+stderr). For PostToolUse, Claude Code shows that stderr to Claude after the file is written, so
+Claude fixes the file. The generated command uses absolute paths, so the repo can be anywhere.
+The hook has been tested by piping simulated PostToolUse events through the generated command. It has not yet run inside a live Claude Code session.
 
 ## Reproduction
 
 ```bash
-.venv/Scripts/python.exe tests/run_tests.py
+python tests/run_tests.py
 ```
 
-22 of 22 checks pass. Token counts match the panel exactly:
+The suite prints its final count; the current tree passes `35/35` on Linux and macOS and `36/36` on Windows (one path check is Windows only). Token counts match the panel exactly:
 
 | Fixture | o200k | cl100k |
 |---|---|---|
@@ -143,18 +159,34 @@ Two panel claims do not reproduce exactly:
 - The panel says prose to Keyline passes in both directions. Keyline to prose passes, but prose
   to Keyline fails on `API`: the prose says "Checkout API" and the note lowercased it to
   `checkout-api`. The checker is right that the token changed.
-- The Keyline notes example passes the lint only with `pnpm` in `tests/keyline-allow.txt`.
+- The Keyline notes example passes the lint only because `pnpm` is on the built-in allow list (`--no-allow` fails it on `pnpm`).
 
 ## Honest limits
 
 - Token counts come from OpenAI tokenizers. Claude's tokenizer is not public, so treat every count
   and percentage as a proxy. Check real numbers with Anthropic's count_tokens endpoint.
 - The checker only sees tokens it can extract. It cannot catch a wrong verb, a swapped actor, a
-  reversed causal chain, a dropped hedge (could, may, likely) or an invented sentence.
+  reversed causal chain or an invented sentence.
+- Proper-noun detection is a heuristic: it skips the first word of a sentence/line and common
+  furniture, so a name at the start of a sentence can be missed, and a capitalized common word
+  mid-sentence can be checked. It is meant to fail closed, not to be a parser.
+- Hedges are checked by class (possibility, probability, obligation, ability), not word-for-word:
+  `could` -> `may` passes; `could` -> `will` fails. A hedge that changes class but keeps the
+  same meaning is reported. Hebrew hedges come from a word list (עלול, ייתכן, כנראה, צריך, אמור,
+  יכול, ניתן and their inflections); a Hebrew hedge spelt another way is not seen, and a Hebrew
+  source gains a hedge class only from those words. Some of them have plain senses too (ניתן
+  "was given", סביר "reasonable"), so a Hebrew source with one of those fails against an
+  English rendering that does not hedge.
+- Month and weekday names are accepted in English or in their Hebrew form, with up to three
+  prefix letters (ב, מ, ל, ה, ו, ש, כ) and Hebrew-letter boundaries, so a word that is a prefix
+  plus the name (לשבת, "to sit") still counts as the name; a rendering that writes the date as a number instead of the name is still a miss.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
-  are not extracted as invariants.
+  are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
+  words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,
+  `b07b3b6`, `__init__`, `v2`, `S3`, `1e10` and `0x1f` are. A sign is not part of a number
+  (`-5` is the number `5`), so a rendering that drops it passes.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k
   vocabulary is multilingual, so short shorthands that are already one token pass: rb, cfg, err,
   conn, svc, msg, idx and others. Those are allowed by the spec. k8s, mgmt, dflt and similar are

@@ -1,12 +1,13 @@
 """Reproduce the panel's worked examples with the three scripts.
 
-Run with the keyline venv:   .venv/Scripts/python.exe tests/run_tests.py
+Run from the repository root:   python -I keyline/tests/run_tests.py   (needs tiktoken)
 Fixtures: the "before"/"after" strings of the SPEC worked examples in
-gittoken/machine-language-panel-results.md (lines 265-325): incident.prose.md, incident.keyline.txt,
+research/panel-results.md: incident.prose.md, incident.keyline.txt,
 incident.keyline.he.txt, incident.glyph.txt, notes.markdown.md, notes.keyline.txt. Two Hebrew
 renderings the panel measured but did not print there come from its synth_measure.py:
 notes.keyline.he.txt and incident.prose.he.txt. All are stored LF, no BOM, no trailing newline.
 """
+import os
 import re
 import subprocess
 import sys
@@ -17,7 +18,7 @@ K = T.parent
 sys.path.insert(0, str(K))
 import keyline_check  # noqa: E402
 
-# Panel's measured counts (o200k_base, cl100k_base) from machine-language-panel-results.md.
+# Panel's measured counts (o200k_base, cl100k_base) from research/panel-results.md.
 PANEL = {
     "incident.prose.md": (301, 302),
     "incident.keyline.txt": (204, 206),
@@ -34,7 +35,7 @@ results = []
 
 
 def run(script, *args):
-    r = subprocess.run([sys.executable, str(K / script), *map(str, args)],
+    r = subprocess.run([sys.executable, "-I", str(K / script), *map(str, args)],
                        capture_output=True, text=True, encoding="utf-8")
     return r.returncode, r.stdout + r.stderr
 
@@ -77,6 +78,28 @@ expect("Hebrew prose needs prefixed negations: base list finds 1 of 4",
        base_only == 1 and keyline_check.negations(he_prose) == 4,
        f"base list {base_only}, with prefixes {keyline_check.negations(he_prose)}")
 
+# Regression: this pair used to PASS with "0 invariants present" because the checker did not
+# extract proper nouns or hedges. It must fail, and a source with no invariants must be
+# INCONCLUSIVE rather than a vacuous pass.
+code, out = run("keyline_check.py", T / "false-pass.source.txt", T / "false-pass.rendering.txt")
+expect("check proper nouns and hedge: FAIL", code == 1 and out.startswith("FAIL"), out)
+expect("check proper nouns: Postgres, Prisma and Lucia are missing",
+       {"Postgres", "Prisma", "Lucia"} <= missing_of(out), out)
+expect("check hedge: possibility (could) is reported lost",
+       "hedges lost: possibility (could)" in out, out)
+
+code, out = run("keyline_check.py", T / "false-pass.source.txt", T / "false-pass.source.txt")
+expect("check source against itself: PASS", code == 0, out)
+
+code, out = run("keyline_check.py", T / "no-invariants.source.txt", T / "no-invariants.rendering.txt")
+expect("check source with no invariants: INCONCLUSIVE, exit 1",
+       code == 1 and out.startswith("INCONCLUSIVE"), out)
+
+# An empty source used to PASS with 0 invariants; it has nothing to check and is INCONCLUSIVE.
+empty = keyline_check.check("", "anything at all")
+expect("check empty source: INCONCLUSIVE, not PASS", empty.inconclusive and not empty.ok)
+
+
 # ---- keyline_lint.py ----
 for name in ("incident.keyline.txt", "notes.keyline.txt"):
     code, out = run("keyline_lint.py", T / name)
@@ -116,8 +139,11 @@ target = (T / "notes.keyline.txt").resolve()
 abs_pat = target.as_posix()
 expect("hook --watch: absolute pattern matches forward-slash path",
        keyline_hook.watched(target, K, [abs_pat]))
-expect("hook --watch: absolute pattern matches backslash, other-case path",
-       keyline_hook.watched(Path(str(target).replace("/", "\\").upper()), K, [abs_pat]))
+# Backslash separators and case-insensitive matching are Windows path rules; on Linux and macOS
+# a backslash is an ordinary filename character and case matters, so the check is Windows only.
+if os.name == "nt":
+    expect("hook --watch: absolute pattern matches backslash, other-case path",
+           keyline_hook.watched(Path(str(target).replace("/", "\\").upper()), K, [abs_pat]))
 expect("hook --watch: relative pattern matches from project dir",
        keyline_hook.watched(target, K, ["tests/notes.keyline.txt"]))
 expect("hook --watch: other file in same folder not matched",
@@ -126,7 +152,7 @@ expect("hook --watch: other file in same folder not matched",
 
 def hook(file_path, *args):
     event = json.dumps({"tool_name": "Write", "cwd": str(K), "tool_input": {"file_path": str(file_path)}})
-    r = subprocess.run([sys.executable, str(K / "keyline_hook.py"), *args], input=event,
+    r = subprocess.run([sys.executable, "-I", str(K / "keyline_hook.py"), *args], input=event,
                        capture_output=True, text=True, encoding="utf-8")
     return r.returncode, r.stdout + r.stderr
 

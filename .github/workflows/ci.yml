@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # For pytest and run_tests.py themselves. The scripts they start run with -I, which
+      # ignores PYTHON* variables, so each script sets UTF-8 output on its own.
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            keyline/requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r keyline/requirements.txt -r requirements-dev.txt
+      - name: pytest
+        run: python -m pytest -q
+      - name: Keyline suite
+        run: python -I keyline/tests/run_tests.py
+      - name: JSON configs parse
+        run: |
+          python -m json.tool config/user-settings.json
+          python -m json.tool config/repo-settings.json
+          python -m json.tool .claude/settings.json

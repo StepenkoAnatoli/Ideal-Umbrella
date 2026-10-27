@@ -1,0 +1,1 @@
+stack: Postgres via Prisma; auth could move to Lucia

@@ -13,7 +13,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(HERE / "cache" / "tiktoken"))
-import tiktoken  # noqa: E402
+try:
+    import tiktoken
+except ImportError:
+    sys.exit("tiktoken is not installed; run: python -m pip install -r keyline/requirements.txt")
 
 SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
@@ -49,11 +52,30 @@ def main(argv):
         except FileNotFoundError:
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
+        except OSError as e:
+            # The argument itself cannot be stat'ed (a file in a folder that cannot be searched).
+            print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
+            return 2
         for p in paths:
+            try:
+                # A named pipe or socket in a walked folder would block the read; a symlink to
+                # a missing target would fail it. The stat itself fails in a folder that lists
+                # its names but cannot be searched (mode 0444).
+                regular = p.is_file()
+                why = None if regular else ("symlink to a missing target" if p.is_symlink()
+                                            else "not a regular file")
+            except OSError as e:
+                why = f"cannot read: {e.strerror or e}"
+            if why:
+                print(f"skip ({why}): {p}", file=sys.stderr)
+                continue
             try:
                 text = p.read_bytes().decode("utf-8-sig")
             except UnicodeDecodeError:
                 print(f"skip (not UTF-8 text): {p}", file=sys.stderr)
+                continue
+            except OSError as e:
+                print(f"skip (cannot read: {e.strerror or e}): {p}", file=sys.stderr)
                 continue
             rows.append((p, len(text), *count(text, encs)))
     print(f"{'o200k':>7} {'cl100k':>7} {'chars':>7}  file")

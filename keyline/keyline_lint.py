@@ -5,16 +5,16 @@ or a header ('# ' to '###### '), or any line containing '**' or a backtick.
 Abbreviations: a lowercase ASCII word that is not a single o200k_base token (with its leading
 space, as it appears mid-line) AND has the shape of an invented abbreviation:
   - a numeronym (k8s, i18n, a11y), or
-  - 2-5 letters with no vowel (rst, xh, mgmt, pnpm), or 4-5 letters with one vowel (alrt, srvc).
+  - 2-5 letters with no vowel (rst, xh, mgmt, tmpl), or 4-5 letters with one vowel (alrt, srvc).
 Everything else that splits into several tokens is let through, because it is almost always a real
 word or a real identifier: long words and compounds (uncommitted, harmlessly, worktree), anything
 containing a digit (cp1252, sha256, x2, git hashes such as b07b3b6). Single-token abbreviations
 (cfg, env, prod) cost nothing and pass, and so does a plural whose stem is one token (diffs, slugs).
-Common developer tool names (mcp, npx, venv, pwsh...) are allowed by a built-in list.
+Common developer tool names (mcp, npx, pnpm, venv, pwsh...) are allowed by a built-in list.
 Identifiers, paths and capitalised names are skipped.
 The single-token word list is built once with tiktoken and cached in cache/.
 
-Project words that are real but split into several tokens (tool names such as 'pnpm') go in a
+Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
 keyline-allow.txt, one word per line; every keyline-allow.txt in the file's folder or any parent
 folder is read.
 
@@ -25,6 +25,7 @@ Usage:
   python keyline_lint.py --rebuild-cache              rebuild the single-token word list
 Exit: 0 clean, 1 findings, 2 usage or read error.
 """
+import errno
 import os
 import re
 import sys
@@ -55,10 +56,33 @@ chdir rmdir mkdir chmod chown stdin stdout stderr docx xlsx pptx csv tsv httpx g
 IDENT_CHARS = re.compile(r"[/\\_.=@#$%&*+<>|~]")
 
 
+class TiktokenMissing(ImportError):
+    """tiktoken is not installed; str(error) is the install hint.
+
+    An Exception, not SystemExit: token_count() catches it to report "not counted", and the
+    entry points (main() here, keyline_hook.py) turn it into one line and an exit code.
+    """
+
+
 def _tiktoken():
     os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(CACHE_DIR / "tiktoken"))
-    import tiktoken
+    try:
+        import tiktoken
+    except ImportError:
+        # The single-token word list is built once from the o200k vocabulary; a fresh clone has
+        # no cache/ yet (it is gitignored), so the first run needs tiktoken.
+        raise TiktokenMissing("tiktoken is not installed; run: python -m pip install -r "
+                              "keyline/requirements.txt (needed once, to build keyline/cache/)") from None
     return tiktoken
+
+
+def read(path):
+    """Read a UTF-8 (optionally BOM-marked) text file; any other encoding is a read error."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            return f.read()
+    except UnicodeDecodeError as e:
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
 
 
 def build_cache():
@@ -76,15 +100,44 @@ def build_cache():
     CACHE_DIR.mkdir(exist_ok=True)
     header = (f"# lowercase ASCII words that are one o200k_base token with a leading space; "
               f"built by keyline_lint.py with tiktoken {tiktoken.__version__}; {len(words)} words\n")
-    WORDS_CACHE.write_text(header + "\n".join(sorted(words)) + "\n", encoding="utf-8")
+    # Whole or not at all: a build cut short (disk full, a killed process) must not leave a
+    # short list that the next run would trust.
+    fd, tmp = _new_temp(CACHE_DIR, f".{WORDS_CACHE.name}-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(header + "\n".join(sorted(words)) + "\n")
+        os.replace(tmp, WORDS_CACHE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
     return words
+
+def _new_temp(directory, prefix):
+    """Create a new file in directory with the mode a plain write gives (0666 less the umask,
+    applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
+    read: reading it means setting it, which leaves a window where another thread's files are
+    created unmasked."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for _ in range(100):
+        tmp = os.path.join(directory, prefix + os.urandom(4).hex())
+        try:
+            return os.open(tmp, flags, 0o666), tmp
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
 
 
 def load_words():
     if not WORDS_CACHE.exists():
         return build_cache()
-    with open(WORDS_CACHE, encoding="utf-8") as f:
-        return {w.strip() for w in f if w.strip() and not w.startswith("#")}
+    lines = read(WORDS_CACHE).splitlines()
+    words = {w.strip() for w in lines if w.strip() and not w.startswith("#")}
+    # The header says how many words the build wrote; fewer means the file was cut short.
+    expected = re.search(r"; (\d+) words$", lines[0]) if lines else None
+    if expected is None or int(expected.group(1)) != len(words):
+        return build_cache()
+    return words
 
 
 def load_allow(path, extra, use_files=True):
@@ -96,11 +149,10 @@ def load_allow(path, extra, use_files=True):
             if f.is_file():
                 files.append(f)
     for f in files:
-        with open(f, encoding="utf-8-sig") as fh:
-            for line in fh:
-                w = line.split("#", 1)[0].strip().lower()
-                if w:
-                    allow.add(w)
+        for line in read(f).splitlines():
+            w = line.split("#", 1)[0].strip().lower()
+            if w:
+                allow.add(w)
     return allow
 
 
@@ -110,6 +162,19 @@ def token_count(word):
         return len(enc.encode(" " + word))
     except Exception:
         return None
+
+
+def uncounted_reason():
+    """Why token_count() returned None: the cause itself, not a guess at it. tiktoken being
+    installed but its o200k_base data not loadable (offline on first use, a proxy, a corrupt
+    TIKTOKEN_CACHE_DIR entry) is not "tiktoken is missing"."""
+    try:
+        _tiktoken().get_encoding("o200k_base")
+    except TiktokenMissing:
+        return "tiktoken is missing"
+    except Exception as e:
+        return f"tiktoken could not load o200k_base: {e}"
+    return "tiktoken could not count it"
 
 
 def looks_invented(part, words=frozenset()):
@@ -128,6 +193,7 @@ def looks_invented(part, words=frozenset()):
 
 def lint_text(text, words, allow):
     """Yield (line_no, message) findings."""
+    reason = None                             # why a word was not counted, found once
     for no, line in enumerate(text.splitlines(), 1):
         for pat, what in FURNITURE:
             if pat.search(line):
@@ -144,17 +210,21 @@ def lint_text(text, words, allow):
                 if not looks_invented(part, words):
                     continue
                 n = token_count(part)
-                size = f"{n} tokens" if n else "not one token"
-                yield no, (f"abbreviation: '{part}' is {size} under o200k_base; spell it out, "
+                if n == 1:
+                    continue                  # one token after all: the word list is not complete
+                if n is None:
+                    reason = reason or uncounted_reason()
+                    size = f"not in the one-token word list and was not counted ({reason})"
+                else:
+                    size = f"{n} tokens under o200k_base"
+                yield no, (f"abbreviation: '{part}' is {size}; spell it out, "
                            f"or add it to {ALLOW_NAME} if it is a real name")
 
 
 def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
     words = load_words() if words is None else words
     allow = load_allow(path, extra_allow, use_allow_files)
-    with open(path, encoding="utf-8-sig") as f:
-        text = f.read()
-    return list(lint_text(text, words, allow))
+    return list(lint_text(read(path), words, allow))
 
 
 def main(argv):
@@ -164,7 +234,11 @@ def main(argv):
     it = iter(argv)
     for a in it:
         if a == "--rebuild-cache":
-            print(f"{len(build_cache())} words -> {WORDS_CACHE}")
+            try:
+                print(f"{len(build_cache())} words -> {WORDS_CACHE}")
+            except (TiktokenMissing, OSError) as e:
+                print(f"error: {e}", file=sys.stderr)
+                return 2
             return 0
         elif a == "--allow":
             extra.append(next(it, None))
@@ -178,7 +252,13 @@ def main(argv):
     if not files or None in extra:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    words = load_words()
+    try:
+        words = load_words()
+    except (TiktokenMissing, OSError) as e:
+        # No cache and no tiktoken, or the cache folder is in the way: one line, like a note
+        # that cannot be read.
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     bad = False
     for path in files:
         try:

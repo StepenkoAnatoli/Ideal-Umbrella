@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Measure token cost of the SAME incident report in different notations."""
-import sys, gzip, base64, json, io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+import sys, gzip, base64
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 A = ("I've completed the investigation into the outage. The authentication service began failing at 15:00 UTC "
      "shortly after the deployment of version 2.4.1. The root cause was that the database connection pool, which "
@@ -31,17 +32,18 @@ try:
 except Exception as e:
     print("tiktoken unavailable:", e)
 
+def count_claude(text):
+    return c.messages.count_tokens(model="claude-opus-5-5", messages=[{"role":"user","content":text}]).input_tokens
+
 claude = None
 try:
     import anthropic
     c = anthropic.Anthropic()
-    def claude(text):
-        return c.messages.count_tokens(model="claude-opus-5-5", messages=[{"role":"user","content":text}]).input_tokens
-    claude("ping")
+    count_claude("ping")
+    claude = count_claude
     print("Claude count_tokens: available (claude-opus-5-5)")
 except Exception as e:
     print("Claude count_tokens unavailable:", type(e).__name__)
-    claude = None
 
 cols = ["sample","chars","bytes"] + list(encs) + (["claude-opus-5-5"] if claude else [])
 print("\t".join(cols))
