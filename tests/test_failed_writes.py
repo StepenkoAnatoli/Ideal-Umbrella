@@ -208,3 +208,63 @@ def test_a_rerun_settles_a_record_left_pending_by_its_last_write(uninstall_modul
     uninstall_module.uninstall(home)
     settings = json.loads((claude(home) / "settings.json").read_text(encoding="utf-8"))
     assert settings.get("autoCompactWindow") == earlier
+
+
+# Review 5, finding L1: the tests above fail only install's writes. Uninstall also deletes
+# files (the hook, the backups it no longer needs, the state folder), and a failed delete after
+# the legacy backup was restored left a backup and a record entry that no rerun cleared.
+def not_converted(inst, home, tmp_path, monkeypatch):
+    """The whole-file installer's state, uninstalled by the new code without an install first."""
+    return from_the_whole_file_installer(inst, home, tmp_path, monkeypatch)
+
+
+UNINSTALLS = [(run, True) for run in RUNS] + [(not_converted, False)]
+STEPS = 12   # more than uninstall makes
+
+
+def fail_step(monkeypatch, inst, number):
+    """Make the number-th file write or delete (from 0) of a run fail; returns a function
+    that ends the failure."""
+    import pathlib
+    import shutil
+    real = {"write": inst._write_bytes, "unlink": pathlib.Path.unlink, "rmtree": shutil.rmtree}
+    calls = []
+
+    def failing(kind):
+        def step(*args, **kwargs):
+            calls.append(kind)
+            if len(calls) - 1 == number:
+                raise OSError(28, "No space left on device")
+            return real[kind](*args, **kwargs)
+        return step
+    monkeypatch.setattr(inst, "_write_bytes", failing("write"))
+    monkeypatch.setattr(pathlib.Path, "unlink", failing("unlink"))
+    monkeypatch.setattr(shutil, "rmtree", failing("rmtree"))
+
+    def stop():
+        monkeypatch.setattr(inst, "_write_bytes", real["write"])
+        monkeypatch.setattr(pathlib.Path, "unlink", real["unlink"])
+        monkeypatch.setattr(shutil, "rmtree", real["rmtree"])
+    return stop
+
+
+@pytest.mark.parametrize("number", range(STEPS))
+@pytest.mark.parametrize("run, installed", UNINSTALLS, ids=[f"{r.__name__}" for r, _ in UNINSTALLS])
+def test_a_rerun_of_an_uninstall_that_failed_part_way_finishes_it(uninstall_module, tmp_path, monkeypatch,
+                                                                   run, installed, number):
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    md = run(inst, home, tmp_path, monkeypatch)
+    if installed:
+        inst.install(home)
+    stop = fail_step(monkeypatch, inst, number)
+    try:
+        uninstall_module.uninstall(home)
+    except OSError:
+        pass
+    stop()
+    _, notices = uninstall_module.uninstall(home)
+    assert_undone(home, md, notices)
+    assert "CLAUDE.md differs" not in " ".join(notices), notices
+    # And a third run has nothing left to do or say (review 5, finding L2).
+    assert uninstall_module.uninstall(home) == ([], [])

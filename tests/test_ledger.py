@@ -100,6 +100,9 @@ def test_a_note_and_a_path_outside_ascii_round_trip(ledger, tmp_path, capsys):
     ["--note", "only a note"],                  # a note is not a measurement
     ["--fixed-tokens", "-1"],
     ["--fixed-tokens", "many"],
+    # Review 5, info I3: a count of hundreds of digits was taken, and the delta to a smaller
+    # earlier value then raised OverflowError after the line was written.
+    ["--fixed-tokens", "1" + "0" * 15],
     ["--tools", "1.5"],
     ["--deny-applied", "maybe", "--tools", "3"],
     ["--date", "27/10/2026", "--tools", "3"],
@@ -110,6 +113,16 @@ def test_bad_arguments_exit_2_and_write_nothing(ledger, tmp_path, capsys, args):
         ledger.main(["--file", str(path), *args])
     assert stop.value.code == 2
     assert not path.exists()
+
+
+def test_a_count_of_fifteen_digits_after_a_small_one_is_compared(ledger, tmp_path, capsys):
+    # Review 5, info I3: the largest count taken, padded with zeros, still gives a delta.
+    path = tmp_path / "m.jsonl"
+    ledger.main(["--file", str(path), "--fixed-tokens", "1", "--date", "2026-10-19"])
+    capsys.readouterr()
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "000" + "9" * 15, "--date", "2026-10-27"]) == 0
+    assert lines(path)[-1]["fixed_tokens"] == int("9" * 15)
+    assert "fixed_tokens: 1 -> " in capsys.readouterr().out
 
 
 def test_a_file_it_cannot_write_is_a_one_line_error_not_a_traceback(tmp_path):

@@ -821,3 +821,210 @@ def test_an_edited_backup_left_by_a_failed_write_goes_with_uninstall(install_mod
     uninstall_module.uninstall(home)
     assert read_md(home) == edited
     assert backups(home) == [safety]
+
+
+def changed_template(module, tmp_path, monkeypatch, text):
+    path = tmp_path / "template-CLAUDE.md"
+    path.write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(module, "CLAUDE_MD", path)
+
+
+# Review 5, finding L3: a section the user added by hand (README "By hand") became the
+# installer's on the first run that changed it: the run said the section "had edits", and
+# uninstall then removed the user's section.
+@pytest.mark.parametrize("hand_rules, then_template", [
+    (RULES, RULES + "- a rule added later\n"),        # current rules, then a git pull
+    ("- older rules\n", None),                        # older rules at the first install
+])
+def test_a_section_added_by_hand_stays_the_users(install_module, uninstall_module, tmp_path, monkeypatch,
+                                                  hand_rules, then_template):
+    home = tmp_path / "home"
+    before = f"mine\n{BEGIN}\n{hand_rules}{END}\n"
+    write_md(home, before)
+    install_module.install(home)
+    if then_template is not None:
+        changed_template(install_module, tmp_path, monkeypatch, then_template)
+        monkeypatch.setattr(uninstall_module.install, "CLAUDE_MD", install_module.CLAUDE_MD)
+    _, notices = install_module.install(home)
+    assert not any("had edits" in n for n in notices), notices
+    rules = (then_template or RULES)
+    assert read_md(home) == f"mine\n{BEGIN}\n{rules}{END}\n"
+    _, notices = uninstall_module.uninstall(home)
+    # The section is the user's: it stays whole with the new rules, and the file from before
+    # is in the backup the notice names.
+    assert read_md(home) == f"mine\n{BEGIN}\n{rules}{END}\n"
+    [backup] = backups(home)
+    assert (home / ".claude" / backup).read_bytes() == before.encode("utf-8")
+    assert any(backup in n for n in notices), notices
+
+
+def test_a_section_added_by_hand_stays_the_users_over_later_runs(install_module, uninstall_module, tmp_path,
+                                                                  monkeypatch):
+    # Review 5, finding L3: the flag is carried over a second template change, and when the
+    # user then deletes the marker lines the copy is wrapped as theirs again.
+    home = tmp_path / "home"
+    before = f"mine\n{BEGIN}\n- older rules\n{END}\n"
+    write_md(home, before)
+    install_module.install(home)
+    second = RULES + "- a rule added later\n"
+    changed_template(install_module, tmp_path, monkeypatch, second)
+    monkeypatch.setattr(uninstall_module.install, "CLAUDE_MD", install_module.CLAUDE_MD)
+    _, notices = install_module.install(home)
+    assert not any("had edits" in n for n in notices), notices
+    assert read_md(home) == f"mine\n{BEGIN}\n{second}{END}\n"
+    write_md(home, f"mine\n{second}")   # the marker lines deleted by hand
+    install_module.install(home)
+    assert read_md(home) == f"mine\n{BEGIN}\n{second}{END}\n"
+    uninstall_module.uninstall(home)
+    assert read_md(home) == f"mine\n{second}"
+
+
+@pytest.mark.parametrize("fail_at_uninstall", [False, True])
+def test_a_failed_write_over_a_section_added_by_hand_leaves_nothing(install_module, uninstall_module, tmp_path,
+                                                                     monkeypatch, fail_at_uninstall):
+    # Review 5, finding L3 (related): a first install over a hand section with older rules
+    # recorded the section, then its CLAUDE.md write failed; uninstall then said the section
+    # "differs" on every run, and a rerun of install said it "had edits".
+    home = tmp_path / "home"
+    before = f"mine\n{BEGIN}\n- older rules\n{END}\n"
+    write_md(home, before)
+    real_write = install_module._write_bytes
+
+    def failing(path, data):
+        if path == md(home):
+            raise OSError(28, "No space left on device")
+        real_write(path, data)
+    monkeypatch.setattr(install_module, "_write_bytes", failing)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_bytes", real_write)
+    if fail_at_uninstall:
+        _, notices = uninstall_module.uninstall(home)
+        assert not any("differs" in n for n in notices), notices
+        assert read_md(home) == before
+        assert backups(home) == []
+        return
+    _, notices = install_module.install(home)
+    assert not any("had edits" in n for n in notices), notices
+    assert len(backups(home)) == 1
+
+
+def test_a_backup_of_edits_the_user_changed_again_is_kept(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Review 5, finding L4 (m07): the edited backup is deleted only when CLAUDE.md holds the
+    # same bytes; here the user edited the section again after the update.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    first_rule = next(line for line in RULES.splitlines() if line.startswith("- "))
+    write_md(home, read_md(home).replace(first_rule, "- my edit 1", 1))
+    changed_template(install_module, tmp_path, monkeypatch, RULES + "- a rule added later\n")
+    install_module.install(home)
+    write_md(home, read_md(home).replace(first_rule, "- my edit 2", 1))
+    uninstall_module.uninstall(home)
+    assert any(b"my edit 1" in (home / ".claude" / name).read_bytes() for name in backups(home))
+
+
+def test_the_backup_from_before_the_install_stays_when_the_user_rewrote_the_file(install_module, uninstall_module,
+                                                                                  tmp_path):
+    # Review 5, finding L4 (m08): the section taken out by hand and the user's text rewritten;
+    # the backup differs from the file and is the only copy of the original.
+    home = tmp_path / "home"
+    write_md(home, "original\n")
+    install_module.install(home)
+    write_md(home, "rewritten by me\n")
+    uninstall_module.uninstall(home)
+    assert [(home / ".claude" / name).read_bytes() for name in backups(home)] == [b"original\n"]
+
+
+def test_a_created_file_is_still_deleted_after_a_template_change(install_module, uninstall_module, tmp_path,
+                                                                 monkeypatch):
+    # Review 5, finding L4 (m44): the update path must carry "created" over.
+    home = tmp_path / "home"
+    install_module.install(home)
+    changed_template(install_module, tmp_path, monkeypatch, RULES + "- a rule added later\n")
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert not md(home).exists()
+
+
+def test_the_legacy_file_is_restored_after_a_template_change(install_module, uninstall_module, tmp_path,
+                                                            monkeypatch):
+    # Review 5, finding L4 (m45): the update path must carry "legacy_backup" over.
+    home = tmp_path / "home"
+    old_install(install_module, home, before="mine\n")
+    install_module.install(home)
+    changed_template(install_module, tmp_path, monkeypatch, RULES + "- a rule added later\n")
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n"
+    assert backups(home) == []
+
+
+# Review 5, info I1: mutants that survived with a small effect.
+def test_two_copies_of_the_rules_are_not_wrapped(install_module):
+    plan = install_module.plan_claude_md(RULES + "\n" + RULES, RULES, None)
+    assert plan["change"] == "CLAUDE.md section added"
+
+
+def test_a_backtick_in_the_info_string_of_a_backtick_fence_opens_none(install_module):
+    # The fence line after the section would close it, were the first line an opener.
+    text = "```a`b\n" + SECTION + "```\n"
+    assert install_module.find_section(text) is not None
+    assert install_module.fenced_line(text, install_module.find_section(text)) is None
+
+
+def test_an_earlier_numbered_backup_with_the_same_bytes_is_reused(install_module, tmp_path):
+    path = tmp_path / "CLAUDE.md"
+    path.write_bytes(b"mine\n")
+    earlier = tmp_path / "CLAUDE.md.bak-20250101-000000-1"
+    earlier.write_bytes(b"mine\n")
+    assert install_module._backup_name(path) == earlier
+
+
+def test_a_symlinked_backup_is_never_reused(install_module, tmp_path):
+    path = tmp_path / "CLAUDE.md"
+    path.write_bytes(b"mine\n")
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"mine\n")
+    link = tmp_path / "CLAUDE.md.bak-20250101-000000"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks not permitted here")
+    assert install_module._backup_name(path) != link
+
+
+def test_a_whole_file_install_with_crlf_is_still_recognised(install_module):
+    entry = {"backup": None, "sha256": hashlib.sha256(RULES.encode("utf-8")).hexdigest()}
+    assert install_module._describes(entry, RULES.replace("\n", "\r\n"))
+
+
+def test_a_record_naming_a_backup_outside_the_folder_names_none(uninstall_module, tmp_path):
+    # Path.with_name refuses most of these itself, but takes ".." (the folder above).
+    for name in ("../x", "sub/x", "", "..", "CLAUDE.md.bak-mine", "notes.md", 5):
+        assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) is None
+    for name in ("CLAUDE.md.bak-20250101-000000", "CLAUDE.md.bak-20250101-000000-2"):
+        assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) == tmp_path / name
+
+
+@pytest.mark.parametrize("field", ["safety_backup", "legacy_backup", "edited_backup"])
+@pytest.mark.parametrize("name", ["notes.md", "CLAUDE.md.bak-mine", "CLAUDE.md.bak-20250101-000000.txt"])
+def test_a_file_of_the_users_a_record_names_is_never_deleted(install_module, uninstall_module, tmp_path, field, name):
+    # Review 5 (found while killing m50): uninstall deletes a backup the record names when it
+    # holds the same bytes as CLAUDE.md. A record edited by hand or by a sync tool may name a
+    # file of the user's; only names the installer gives are backups.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    record = json.loads(record_path(home).read_text(encoding="utf-8"))
+    record["claude_md"][field] = name
+    record_path(home).write_text(json.dumps(record), encoding="utf-8")
+    write_md(home, "mine\n")   # the section taken out by hand
+    (home / ".claude" / name).write_bytes(b"mine\n")
+    uninstall_module.uninstall(home)
+    assert (home / ".claude" / name).read_bytes() == b"mine\n"
+
+
+def test_the_template_holds_no_fence_line(install_module):
+    # Review 5, info I4: the fence rules assume the section holds no fence of its own.
+    assert not any(line.lstrip(" ").startswith(("```", "~~~")) for line in RULES.splitlines())

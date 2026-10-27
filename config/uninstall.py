@@ -165,14 +165,9 @@ def _leftover_record(record, left, claude_md_left):
 
 
 def _backup_of(claude_md, name):
-    """The backup file a record names, beside CLAUDE.md; None when the name is not a plain
-    file name (not a string, empty, or holding a separator), which the install never writes."""
-    if not isinstance(name, str) or not name or Path(name).name != name:
-        return None
-    try:
-        return claude_md.with_name(name)
-    except ValueError:
-        return None
+    """The backup file a record names, beside CLAUDE.md; None when the name is not one the
+    installer gives (install.backup_of)."""
+    return install.backup_of(claude_md, name)
 
 
 def _rest_without_section(current, found, entry):
@@ -207,21 +202,39 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
     is with the record entry kept, so a later run can still undo it."""
     legacy = entry.get("legacy_backup")
     legacy_path = _backup_of(claude_md, legacy) if legacy else None
+    safety = _backup_of(claude_md, entry.get("safety_backup"))
+    if safety is not None and safety.is_file() and not safety.is_symlink() \
+            and safety.read_bytes() == claude_md.read_bytes():
+        # The install recorded its section and made this backup, then stopped before its
+        # CLAUDE.md write (or the user put the file back as it was): the file is the backup,
+        # and a section in it is one the user had before the install.
+        apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)", safety.unlink)
+        return False
     if found is None:
-        safety = _backup_of(claude_md, entry.get("safety_backup"))
-        if safety is not None and safety.is_file() and not safety.is_symlink() \
-                and safety.read_bytes() == claude_md.read_bytes():
-            # The install recorded its section and made this backup, then stopped before its
-            # CLAUDE.md write (or the user took the section out by hand): the file is the backup.
-            apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)", safety.unlink)
-        elif safety is not None and not (safety.exists() or safety.is_symlink()):
+        if safety is not None and not (safety.exists() or safety.is_symlink()):
             # The install recorded its section, then stopped before it made the backup it
             # named: CLAUDE.md was never touched.
+            pass
+        elif legacy_path is not None and legacy_path.is_file() and not legacy_path.is_symlink() \
+                and legacy_path.read_bytes() == claude_md.read_bytes():
+            # An earlier uninstall restored the file from this backup, then stopped before it
+            # deleted the backup.
+            apply(f"CLAUDE.md backup {legacy} deleted (CLAUDE.md holds the same bytes)", legacy_path.unlink)
+        elif legacy and not (legacy_path is not None and (legacy_path.exists() or legacy_path.is_symlink())):
+            # An earlier uninstall restored the file from this backup and deleted it, then
+            # stopped before it wrote the record: nothing is left to undo.
             pass
         else:
             notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
                            + (f" (your file from before the first install is in {legacy})"
                               if legacy_path and legacy_path.exists() else ""))
+        return False
+    if entry.get("hand_section") is True:
+        # The user added the section by hand before the install updated its rules: it is theirs,
+        # and it stays whole, marker lines included.
+        notices.append("CLAUDE.md's Ideal-Umbrella section was added by hand; left as is"
+                       + (f" (your file from before the install changed its rules is in {safety.name})"
+                          if safety is not None and safety.is_file() else ""))
         return False
     number = install.fenced_line(current, found)
     if number is not None:
@@ -396,6 +409,11 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 else:
                     claude_md.unlink()
                     done(f"CLAUDE.md deleted (copy kept as {backup.name})")
+    elif record is not None and entry is None:
+        # The record names no CLAUDE.md change: this install never wrote it (the file already
+        # matched the template), or an earlier uninstall undid it. Either way it is the user's.
+        if install._lf(current_md) == install._lf(template_md):
+            notices.append("CLAUDE.md matches the template but was not written by this install; left as is")
     else:
         # A record of the whole-file installer (or none, from before records existed): the
         # whole file was the rules.
@@ -404,7 +422,18 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         else:
             ours = install._lf(current_md) == install._lf(template_md)
         backup = _backup_of(claude_md, entry.get("backup") if isinstance(entry, dict) else None)
-        if not ours:
+        if backup is not None and backup.is_file() and not backup.is_symlink() \
+                and backup.read_bytes() == raw_md:
+            # An earlier uninstall restored the file from this backup, then stopped before it
+            # deleted the backup (or the user copied it back by hand).
+            apply(f"CLAUDE.md backup {backup.name} deleted (CLAUDE.md holds the same bytes)", backup.unlink)
+        elif not ours and backup is not None and not (backup.exists() or backup.is_symlink()):
+            # The file is not the one installed and there is no backup to give back: an earlier
+            # uninstall restored it and stopped before it wrote the record, or the user replaced
+            # both. Nothing is left to undo; say so once, and the record entry goes.
+            notices.append(f"CLAUDE.md is not the file the install wrote, and the backup {backup.name} "
+                           "is gone; left as is")
+        elif not ours:
             claude_md_left = True
             notices.append("CLAUDE.md differs from what was installed; left as is"
                            + (f" (your earlier file is in {backup.name})" if backup and backup.exists() else ""))
@@ -423,17 +452,13 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             claude_md_left = True
             notices.append(f"CLAUDE.md left as is: the backup {backup.name} it should be restored "
                            "from is missing")
-        elif record is not None and entry is not None:
+        elif record is not None:
             if dry_run:
                 changes.append("CLAUDE.md deleted")
             else:
                 claude_md.unlink()
                 done("CLAUDE.md deleted")
-        elif record is not None and entry is None:
-            # The record says this install never wrote CLAUDE.md (the file already matched the
-            # template), so it is the user's own: say so rather than pass over it in silence.
-            notices.append("CLAUDE.md matches the template but was not written by this install; left as is")
-        elif record is None and evidence:
+        elif evidence:
             # Without a record it may be the user's own copy: keep one.
             if dry_run:
                 changes.append("CLAUDE.md deleted (a backup is kept)")

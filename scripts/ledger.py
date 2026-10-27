@@ -22,12 +22,18 @@ from pathlib import Path
 DEFAULT_FILE = Path(__file__).resolve().parents[1] / "research" / "measurements.jsonl"
 MEASURES = ("fixed_tokens", "first_call_cache_write", "tools", "deny_applied")
 COMPARED = ("cc_version",) + MEASURES
+MAX_DIGITS = 15   # as --handoff-at in config/add_to_repo.py and hooks/context_check.py
 
 
 def _count(text):
     if not (text.isascii() and text.isdigit()):
         raise argparse.ArgumentTypeError(f"{text!r} is not a whole number of 0 or more")
-    return int(text)
+    digits = text.lstrip("0") or "0"
+    if len(digits) > MAX_DIGITS:
+        # A longer count is no token count; and the change from the previous line is a
+        # division, which overflows a float well before int() refuses the digits.
+        raise argparse.ArgumentTypeError(f"{text!r} has more than {MAX_DIGITS} digits")
+    return int(digits)
 
 
 def _yes_no(text):

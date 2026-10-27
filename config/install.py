@@ -311,6 +311,15 @@ def _backup_name(path):
     return backup
 
 
+def backup_of(path, name):
+    """The backup of path a record names, beside it; None unless name is one this installer
+    gives (a record edited by hand or by a sync tool may name "..", a folder, or a file of
+    the user's, and the uninstall deletes what it names)."""
+    if not isinstance(name, str) or not re.fullmatch(re.escape(path.name) + _BACKUP_NAME, name):
+        return None
+    return path.with_name(name)
+
+
 def _backup(path, backup=None):
     """Copy path to a timestamped backup beside it (or to backup, from _backup_name) and
     return the backup's path. An existing backup with the same bytes is not copied again."""
@@ -542,10 +551,12 @@ def plan_claude_md(current, rules, old):
         if old.get("backup"):
             entry["legacy_backup"] = old["backup"]
     elif old is not None:
-        entry.update({k: old[k] for k in ("created", "legacy_backup", "safety_backup", "wrapped") if k in old})
+        entry.update({k: old[k] for k in ("created", "legacy_backup", "safety_backup", "wrapped", "hand_section")
+                      if k in old})
     if current is None:
         entry["created"] = True
         entry.pop("wrapped", None)   # the copy that was the user's is gone with the file
+        entry.pop("hand_section", None)
         return {"text": section, "entry": entry, "backup": None, "change": "CLAUDE.md written"}
 
     newline = "\r\n" if "\r\n" in current else "\n"
@@ -569,7 +580,16 @@ def plan_claude_md(current, rules, old):
             entry["joined"] = old.get("joined", "")
         plan = {"text": current[:start] + ours + current[end:], "entry": entry,
                 "backup": None if still_ours else "edited", "change": "CLAUDE.md section updated"}
-        if entry.get("wrapped") is True:
+        if old is None or entry.get("hand_section") is True:
+            # No record names this section, or it names one the user added by hand (README "By
+            # hand"): it stays theirs, as a hand copy of the rules does. It now holds the new
+            # rules, uninstall leaves it whole, and a first run backs the file up as it is now.
+            entry["hand_section"] = True
+            if old is None:
+                plan["backup"] = "user"
+            plan["notice"] = ("the Ideal-Umbrella section of CLAUDE.md was added by hand, not by the installer; "
+                              "it now holds the new rules, and uninstall leaves it in place")
+        elif entry.get("wrapped") is True:
             # The section was the user's own copy of the rules; it now holds the new rules,
             # and uninstall leaves them (only the marker lines go). The file from before the
             # first install is the backup the record names.
@@ -595,7 +615,8 @@ def plan_claude_md(current, rules, old):
         # begin with: uninstall removes it, and only marker lines are added, so no backup is
         # needed. Without one it is a hand copy and the user's: backed up, and uninstall takes
         # only the marker lines away again.
-        entry["wrapped"] = old is None or entry.get("wrapped") is True
+        entry["wrapped"] = old is None or entry.get("wrapped") is True or entry.get("hand_section") is True
+        entry.pop("hand_section", None)   # its marker lines are gone; the copy is wrapped again
         if old is not None and not old_format:
             entry["joined"] = old.get("joined", "")
         text = current[:at] + SECTION_BEGIN + newline + copy + SECTION_END + newline + current[at + len(copy):]
@@ -603,6 +624,7 @@ def plan_claude_md(current, rules, old):
                 "change": "CLAUDE.md rules marked as a section"}
 
     entry.pop("wrapped", None)   # a new section holds no copy of the user's
+    entry.pop("hand_section", None)
     if current:
         entry["joined"] = ("" if current.endswith("\n") else newline) + newline
     return {"text": current + entry["joined"] + ours, "entry": entry,
@@ -647,7 +669,31 @@ def read_record(path):
     if not isinstance(data, dict):
         raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
     _check_json(data, path, "fix it or delete it first")
+    _check_record_fields(data, path)
+    if "pending" in data:
+        _check_record_fields(data["pending"], path, "pending.")
     return data
+
+
+# The shape of each field install writes; a field that is missing is fine (older records).
+_RECORD_FIELDS = {
+    "added_keys": ("a list of setting names", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
+    "deny_added": ("a list of tool names", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
+    "created": ("a list of setting names", lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)),
+    "replaced": ("an object", lambda v: isinstance(v, dict)),
+    "installed": ("an object", lambda v: isinstance(v, dict)),
+    "pending": ("an object", lambda v: isinstance(v, dict)),
+    "claude_md": ("an object or null", lambda v: v is None or isinstance(v, dict)),
+}
+
+
+def _check_record_fields(record, path, prefix=""):
+    """Raise ValueError when a field of the record has a type install never writes (a hand
+    edit, a sync tool): read on, it would stop install or uninstall with a traceback, or make
+    uninstall match tool names by substring."""
+    for field, (shape, fits) in _RECORD_FIELDS.items():
+        if field in record and not fits(record[field]):
+            raise ValueError(f'{path}: "{prefix}{field}" must be {shape}; fix it or delete it first')
 
 
 def _describes(entry, text):
@@ -784,7 +830,13 @@ def install(home, force=False, progress=None, config_dir=None):
         entry = md_plan["entry"]
         if md_plan.get("notice"):
             notices.append(md_plan["notice"])
-        if md_plan["backup"]:
+        kept = backup_of(paths["claude_md"], (old_record.get("claude_md") or {}).get("safety_backup"))
+        if md_plan["backup"] == "edited" and kept is not None and kept.is_file() and not kept.is_symlink() \
+                and kept.read_bytes() == paths["claude_md"].read_bytes():
+            # An earlier run backed the file up before adding its section, then stopped before
+            # its CLAUDE.md write: the section is the one that was there, and the backup holds it.
+            md_backup = None
+        elif md_plan["backup"]:
             md_backup = _backup_name(paths["claude_md"])
             if md_plan["backup"] == "edited":
                 notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {md_backup.name}")

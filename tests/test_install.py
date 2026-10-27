@@ -654,3 +654,48 @@ def test_a_home_path_that_is_not_utf8_stops_before_any_write_and_verify_has_no_t
     result = subprocess.run(run + [b"--verify-only"], cwd=ROOT, capture_output=True)
     assert result.returncode != 0
     assert b"Traceback" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("depth, ok", [(100, True), (101, False)])
+def test_settings_nested_up_to_the_limit_are_read(install_module, tmp_path, depth, ok):
+    # Review 5, info I1 (m16): the limit itself was not tested. The outermost list is level 1.
+    value = 1
+    for _ in range(depth):
+        value = [value]
+    if ok:
+        install_module._check_json(value, "settings.json")
+    else:
+        with pytest.raises(ValueError, match="nested"):
+            install_module._check_json(value, "settings.json")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_private_settings_file_stays_private(install_module, tmp_path):
+    # Review 5, info I2 (m35): nothing checked that a rewrite keeps the file's mode.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    settings.chmod(0o600)
+    install_module.install(home)
+    assert settings.stat().st_mode & 0o777 == 0o600
+
+
+# Review 5, finding L5: a record field of the wrong JSON type ended in a TypeError traceback
+# (or a cryptic message) instead of the one-line error a broken record gives.
+BAD_FIELDS = [("added_keys", 5), ("added_keys", None), ("added_keys", [1]), ("replaced", None),
+              ("replaced", ["a"]), ("replaced", "ab"), ("installed", ["autoCompactWindow"]),
+              ("deny_added", 5), ("deny_added", "Artifact"), ("created", 5), ("claude_md", "x"),
+              ("pending", 5), ("pending", {"added_keys": 5})]
+
+
+@pytest.mark.parametrize("field, value", BAD_FIELDS)
+def test_a_record_field_of_the_wrong_type_is_a_one_line_error(install_module, tmp_path, field, value):
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="install-record.json"):
+        install_module.install(home)

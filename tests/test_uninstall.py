@@ -600,3 +600,19 @@ def test_settings_that_cannot_be_written_back_stop_the_undo_before_any_write(ins
     err = capsys.readouterr().err
     assert message in err and "nothing written" in err and "Traceback" not in err
     assert sorted(p.name for p in (home / ".claude").rglob("*")) == before
+
+
+@pytest.mark.parametrize("field, value", [("added_keys", None), ("replaced", None), ("installed", ["a"]),
+                                          ("deny_added", "Artifact"), ("created", 5)])
+def test_a_record_field_of_the_wrong_type_stops_uninstall_with_one_line(install_module, uninstall_module, tmp_path,
+                                                                        capsys, field, value):
+    # Review 5, finding L5.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert uninstall_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err and "nothing written" in err and field in err
