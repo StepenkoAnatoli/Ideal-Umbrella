@@ -48,8 +48,8 @@ C5. Finding:
     written.
 
     Tests: `test_a_dangling_symlink_stops_uninstall_before_anything_is_written[settings|claude_md|hook|record]`.
-    Each case then puts the folder back, checks that one uninstall undoes everything, and checks
-    that the second run is clean.
+    Each case then puts the folder back and checks that one uninstall undoes the settings, the
+    section and the record.
 
     Other hits: `config/add_to_repo.py` has the same check (its own copy: it does not import
     install). The ledger writes only its own file, and a dangling `--file` link is created by
