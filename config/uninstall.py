@@ -347,12 +347,6 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             install._write_json(paths["settings"], settings)
             progress.append("settings.json written")
 
-    if paths["hook"].exists():
-        if dry_run:
-            changes.append("hook deleted")
-        else:
-            install.remove(paths["hook"])
-            done("hook deleted")
     # What the hook wrote while it ran: the per-session state files and its log. A state folder
     # that is a symlink, or a junction on Windows, is unlinked, not followed (shutil.rmtree
     # refuses both; Path.is_symlink() sees only the symlink).
@@ -406,6 +400,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 changes.append("CLAUDE.md: Ideal-Umbrella section removed (a backup is kept)")
             else:
                 backup = install._backup(claude_md)
+                progress.append(f"CLAUDE.md backup: {backup.name}")
                 if not _blank(rest):
                     install._write_bytes(claude_md, rest.encode("utf-8"))
                     done(f"CLAUDE.md: Ideal-Umbrella section removed (copy kept as {backup.name})")
@@ -468,8 +463,18 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 changes.append("CLAUDE.md deleted (a backup is kept)")
             else:
                 backup = install._backup(claude_md)
+                progress.append(f"CLAUDE.md backup: {backup.name}")
                 claude_md.unlink()
                 done(f"CLAUDE.md deleted (copy kept as {backup.name})")
+
+    # The hook file goes last: without a record it is the only evidence of an install left once
+    # settings.json is written, so a rerun after a failure before this point still finds one.
+    if paths["hook"].exists():
+        if dry_run:
+            changes.append("hook deleted")
+        else:
+            install.remove(paths["hook"])
+            done("hook deleted")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
         install._write_json(paths["record"], _leftover_record(record, left, claude_md_left))

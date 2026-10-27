@@ -339,12 +339,25 @@ def _backup(path, backup=None):
 
 def remove(path):
     """Delete a file of the installer's (a backup, the hook, the log). Windows cannot delete
-    a read-only file, so a read-only bit set by an earlier version, the user or a sync tool
-    is cleared first; a symlink is removed, and its target left as it is."""
+    a read-only file, so when the delete is refused, a read-only bit set by an earlier version,
+    the user or a sync tool is cleared and the delete tried once more (and the bit set back if
+    that fails too). The delete comes first: on Linux and macOS it needs only the folder, and a
+    file another user owns (a log left by `sudo claude`) cannot be chmodded. A symlink is
+    removed, and its target left as it is."""
     path = Path(path)
-    if not path.is_symlink() and not os.access(path, os.W_OK):
-        os.chmod(path, path.stat().st_mode | stat.S_IWUSR)
-    path.unlink()
+    try:
+        path.unlink()
+        return
+    except PermissionError:
+        if path.is_symlink() or os.access(path, os.W_OK):
+            raise
+    mode = path.stat().st_mode
+    os.chmod(path, mode | stat.S_IWUSR)
+    try:
+        path.unlink()
+    except OSError:
+        os.chmod(path, mode)
+        raise
 
 
 def _new_temp(directory, prefix):

@@ -268,3 +268,50 @@ def test_a_rerun_of_an_uninstall_that_failed_part_way_finishes_it(uninstall_modu
     assert "CLAUDE.md differs" not in " ".join(notices), notices
     # And a third run has nothing left to do or say (review 5, finding L2).
     assert uninstall_module.uninstall(home) == ([], [])
+
+
+# Review 7, finding L2: with no install record, the hook file and the hook entry are the only
+# evidence of an install. Uninstall removed both before its CLAUDE.md step, so a rerun after a
+# failure there said "Nothing to undo." and left the section (or the whole-file rules) for good.
+def a_section_without_a_record(inst, home):
+    seed(home)
+    inst.install(home)
+    (claude(home) / "ballast" / "install-record.json").unlink()
+    return lambda text: "<!-- Ideal-Umbrella rules: begin -->" not in text and "mine\n" in text
+
+
+def the_whole_file_without_a_record(inst, home):
+    seed(home, RULES.encode("utf-8"))
+    inst.install(home)
+    (claude(home) / "ballast" / "install-record.json").unlink()
+    for name in claude(home).glob("CLAUDE.md.bak-*"):
+        name.unlink()
+    return None
+
+
+@pytest.mark.parametrize("number", range(STEPS))
+@pytest.mark.parametrize("run", [a_section_without_a_record, the_whole_file_without_a_record])
+def test_a_rerun_of_an_uninstall_without_a_record_finishes_it(uninstall_module, tmp_path, monkeypatch,
+                                                              run, number):
+    inst = uninstall_module.install
+    home = tmp_path / "home"
+    undone = run(inst, home)
+    backups = set(claude(home).glob("CLAUDE.md.bak-*"))
+    progress = []
+    stop = fail_step(monkeypatch, inst, number)
+    try:
+        uninstall_module.uninstall(home, progress=progress)
+    except OSError:
+        # Every backup the stopped run made is named in what it lists as done.
+        for backup in set(claude(home).glob("CLAUDE.md.bak-*")) - backups:
+            assert any(backup.name in line for line in progress), (backup.name, progress)
+    stop()
+    uninstall_module.uninstall(home)
+    md = claude(home) / "CLAUDE.md"
+    if undone is None:
+        assert not md.exists()
+    else:
+        assert undone(md.read_text(encoding="utf-8"))
+    assert not (claude(home) / "ballast" / "context_check.py").exists()
+    settings = json.loads((claude(home) / "settings.json").read_text(encoding="utf-8"))
+    assert "context_check" not in json.dumps(settings.get("hooks", {}))

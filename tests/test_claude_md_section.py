@@ -1001,9 +1001,10 @@ def test_a_whole_file_install_with_crlf_is_still_recognised(install_module):
 
 def test_a_record_naming_a_backup_outside_the_folder_names_none(uninstall_module, tmp_path):
     # Path.with_name refuses most of these itself, but takes ".." (the folder above).
-    # Review 6, info I2: digits outside ASCII are not the installer's (\\d matched them).
+    # Review 6, info I2: digits outside ASCII are not the installer's (\d matched them).
     for name in ("../x", "sub/x", "", "..", "CLAUDE.md.bak-mine", "notes.md", 5,
-                 "CLAUDE.md.bak-" + "\u0662" * 8 + "-" + "\u0662" * 6):
+                 "CLAUDE.md.bak-" + "\u0662" * 8 + "-" + "\u0662" * 6,
+                 "CLAUDE.md.bak-20250101-000000-"):  # review 7, info I1: a dash with no number
         assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) is None
     for name in ("CLAUDE.md.bak-20250101-000000", "CLAUDE.md.bak-20250101-000000-2"):
         assert uninstall_module._backup_of(tmp_path / "CLAUDE.md", name) == tmp_path / name

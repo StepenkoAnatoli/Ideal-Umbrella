@@ -87,11 +87,33 @@ def test_a_read_only_file_stops_install_before_any_write(install_module, windows
     assert snapshot(home) == before
 
 
-def test_a_read_only_file_with_nothing_to_write_does_not_stop_install(install_module, windows_read_only, tmp_path):
+@pytest.mark.parametrize("name", ["CLAUDE.md", "settings.json", "ballast/context_check.py"])
+def test_a_read_only_file_with_nothing_to_write_does_not_stop_install(install_module, windows_read_only, tmp_path,
+                                                                      name):
+    # Review 7, finding L3: only a read-only file the run would write is refused.
     home = tmp_path / "home"
     install_module.install(home)
-    read_only(claude(home) / "CLAUDE.md")
+    read_only(claude(home) / name)
     assert install_module.install(home) == ([], [])
+
+
+def test_a_read_only_claude_md_does_not_stop_install_when_only_the_record_changes(install_module, windows_read_only,
+                                                                                 tmp_path):
+    # Review 7, finding L3 (p05): the user put the markers around the whole-file install by hand,
+    # so the record moves to the section format and CLAUDE.md is not written.
+    home = tmp_path / "home"
+    install_module.install(home)
+    md = claude(home) / "CLAUDE.md"
+    record_path = claude(home) / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["claude_md"] = {"backup": None, "sha256": hashlib.sha256(RULES).hexdigest()}
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    before = md.read_bytes()
+    read_only(md)
+    changes, _ = install_module.install(home)
+    assert changes == ["CLAUDE.md section recorded"]
+    assert md.read_bytes() == before
+    assert json.loads(record_path.read_text(encoding="utf-8"))["claude_md"]["format"] == "section"
 
 
 def test_a_backup_of_a_read_only_file_can_be_deleted(install_module, windows_read_only, tmp_path):
@@ -141,6 +163,19 @@ def test_a_read_only_settings_file_stops_add_to_repo_before_any_write(add_to_rep
     assert snapshot(repo) == before
 
 
+def test_a_read_only_file_with_nothing_to_write_does_not_stop_add_to_repo(add_to_repo, windows_read_only, tmp_path):
+    # Review 7, finding L3 (p09): a second run writes nothing, so its read-only files are fine.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    add_to_repo._add(str(repo), False)
+    written = [p for p in repo.rglob("*") if p.is_file()]
+    assert len(written) == 2
+    for path in written:
+        read_only(path)
+    before = snapshot(repo)
+    add_to_repo._add(str(repo), False)
+    assert snapshot(repo) == before
+
 
 @pytest.mark.parametrize("name", ["CLAUDE.md", "settings.json", "ballast/install-record.json"])
 def test_an_uninstall_stopped_by_a_read_only_file_is_finished_once_it_is_writable(
@@ -162,3 +197,173 @@ def test_an_uninstall_stopped_by_a_read_only_file_is_finished_once_it_is_writabl
     assert not (claude(home) / "ballast" / "context_check.py").exists()
     assert list(claude(home).glob("CLAUDE.md.bak-*")) == []
     assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_file_another_user_owns_is_deleted_without_a_chmod(install_module, monkeypatch, tmp_path):
+    # Review 7, finding L1: on Linux and macOS deleting a file needs write access to its folder
+    # only. A log left by `sudo claude` is root's: os.access says it is not writable, and a chmod
+    # of it fails with EPERM, so a chmod before the delete stopped every uninstall there.
+    path = tmp_path / "context_check.log"
+    path.write_bytes(b"log\n")
+    real_access = os.access
+
+    def access(p, mode, *args, **kwargs):
+        return False if os.fspath(p) == os.fspath(path) and mode & os.W_OK else real_access(p, mode, *args, **kwargs)
+
+    def chmod(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", str(path))
+    monkeypatch.setattr(os, "access", access)
+    monkeypatch.setattr(os, "chmod", chmod)
+    install_module.remove(path)
+    assert not path.exists()
+
+
+def test_a_read_only_file_that_still_cannot_be_deleted_keeps_its_mode(install_module, windows_read_only, monkeypatch,
+                                                                       tmp_path):
+    # Review 7, finding L1: a delete that fails for another reason (a read-only folder) must not
+    # leave the file's read-only bit cleared.
+    path = tmp_path / "CLAUDE.md.bak-20250101-000000"
+    path.write_bytes(b"mine\n")
+    read_only(path)
+    mode = path.stat().st_mode
+    real_unlink = pathlib.Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    with pytest.raises(PermissionError):
+        install_module.remove(path)
+    assert path.stat().st_mode == mode
+
+
+def test_a_symlinked_read_only_hook_is_removed_and_its_target_left_read_only(install_module, windows_read_only,
+                                                                            tmp_path):
+    target = tmp_path / "dotfiles" / "context_check.py"
+    target.parent.mkdir()
+    target.write_bytes(b"# hook\n")
+    read_only(target)
+    link = tmp_path / "context_check.py"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks need a privilege on this Windows")
+    mode = target.stat().st_mode
+    install_module.remove(link)
+    assert not link.is_symlink() and target.exists()
+    assert target.stat().st_mode == mode
+
+
+def _record(home):
+    return claude(home) / "ballast" / "install-record.json"
+
+
+def _set_entry(home, entry):
+    record = json.loads(_record(home).read_text(encoding="utf-8"))
+    record["claude_md"] = entry
+    _record(home).write_text(json.dumps(record), encoding="utf-8")
+
+
+def _entry(home):
+    return json.loads(_record(home).read_text(encoding="utf-8"))["claude_md"]
+
+
+def _whole_file_install(inst, home):
+    """The whole-file installer's state: CLAUDE.md is the rules, the user's file a backup."""
+    claude(home).mkdir(parents=True)
+    inst.install(home)
+    (claude(home) / "CLAUDE.md").write_bytes(RULES)
+    (claude(home) / "CLAUDE.md.bak-20250101-000000").write_bytes(b"mine\n")
+    _set_entry(home, {"backup": "CLAUDE.md.bak-20250101-000000", "sha256": hashlib.sha256(RULES).hexdigest()})
+
+
+def safety_same_bytes(inst, home):
+    # The install made its safety backup, then stopped before its CLAUDE.md write.
+    claude(home).mkdir(parents=True)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+    inst.install(home)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+
+
+def converted_whole_file(inst, home):
+    # A whole-file install moved to the section format: uninstall restores the old file.
+    _whole_file_install(inst, home)
+    inst.install(home)
+    assert _entry(home)["legacy_backup"] == "CLAUDE.md.bak-20250101-000000"
+
+
+def converted_whole_file_restored(inst, home):
+    # An uninstall restored the file from the legacy backup, then stopped before deleting it.
+    converted_whole_file(inst, home)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+
+
+def whole_file_restored(inst, home):
+    # The same, for a record the whole-file installer wrote.
+    _whole_file_install(inst, home)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+
+
+def edited_same_bytes(inst, home):
+    # The install backed up the user's edits to the section, then stopped before its write.
+    claude(home).mkdir(parents=True)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+    inst.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(md.read_bytes().replace(b"\n# ", b"\n# Edited: ", 1))
+    (claude(home) / "CLAUDE.md.bak-20250101-000001").write_bytes(md.read_bytes())
+    _set_entry(home, {**_entry(home), "edited_backup": "CLAUDE.md.bak-20250101-000001"})
+
+
+@pytest.mark.parametrize("state", [safety_same_bytes, converted_whole_file, converted_whole_file_restored,
+                                   whole_file_restored, edited_same_bytes])
+def test_uninstall_deletes_read_only_files_of_its_own_in_every_branch(install_module, uninstall_module,
+                                                                      windows_read_only, tmp_path, state):
+    # Review 7, finding L3: every file uninstall deletes goes through install.remove(), so a
+    # read-only bit on a backup, the hook or the log does not stop it on Windows.
+    home = tmp_path / "home"
+    state(install_module, home)
+    (claude(home) / "ballast" / "context_check.log").write_bytes(b"log\n")
+    names = sorted(p.name for p in claude(home).glob("CLAUDE.md.bak-*"))
+    assert names
+    for path in [*claude(home).glob("CLAUDE.md.bak-*"), claude(home) / "ballast" / "context_check.py",
+                 claude(home) / "ballast" / "context_check.log"]:
+        read_only(path)
+    changes, _ = uninstall_module.uninstall(home)
+    assert not (claude(home) / "ballast" / "context_check.py").exists()
+    assert not (claude(home) / "ballast" / "context_check.log").exists()
+    left = sorted(p.name for p in claude(home).glob("CLAUDE.md.bak-*"))
+    if state is edited_same_bytes:
+        # The section the user edited stays, and with it the copy from before the install.
+        assert left == [n for n in names if n != "CLAUDE.md.bak-20250101-000001"] != [], changes
+    else:
+        assert left == [], changes
+        assert (claude(home) / "CLAUDE.md").read_bytes() == b"mine\n"
+
+
+def test_a_symlink_whose_delete_is_refused_never_has_its_target_chmodded(install_module, windows_read_only,
+                                                                         monkeypatch, tmp_path):
+    # Review 7, finding L3 (p03): os.chmod and os.access follow a symlink, so clearing the
+    # read-only bit after a refused delete of a link would change the target (dotfiles) instead.
+    target = tmp_path / "dotfiles" / "context_check.py"
+    target.parent.mkdir()
+    target.write_bytes(b"# hook\n")
+    read_only(target)
+    link = tmp_path / "context_check.py"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlinks need a privilege on this Windows")
+    mode = target.stat().st_mode
+    real_unlink, refused = pathlib.Path.unlink, []
+
+    def unlink(self, *args, **kwargs):
+        if self == link and not refused:
+            refused.append(self)
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    with pytest.raises(PermissionError):
+        install_module.remove(link)
+    assert link.is_symlink() and target.stat().st_mode == mode
