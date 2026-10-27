@@ -125,8 +125,9 @@ JSON_DEPTH = 100
 def _check_json(data, path):
     """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
     than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
-    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8) or a number
-    json.dumps would write as Infinity or NaN.
+    json.loads reads) or holding a number json.dumps would write as Infinity or NaN. A lone
+    surrogate (valid JSON, but not valid Unicode) is refused too: this script's writer would
+    write it back as \\ud800, but install.py's cannot, and both refuse the same files.
     The same check as config/install.py's (this script runs on its own, without it)."""
     stack = [(data, 1)]
     while stack:

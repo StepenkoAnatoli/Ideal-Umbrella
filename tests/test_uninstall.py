@@ -154,7 +154,7 @@ def test_dry_run_writes_nothing(install_module, tmp_path):
         capture_output=True, text=True, encoding="utf-8",
     )
     assert result.returncode == 0, result.stderr
-    assert "nothing written" in result.stdout
+    assert "Would change:" in result.stdout and "nothing written" in result.stdout
     assert tree(claude) == snapshot
 
 
@@ -435,6 +435,35 @@ def test_unreadable_record_is_not_overwritten(install_module, uninstall_module, 
     assert record.read_text(encoding="utf-8") == "{broken"
     assert settings_file(home).read_text(encoding="utf-8") == settings_before
     assert (home / ".claude" / "ballast" / "context_check.py").exists()
+
+
+@pytest.mark.parametrize("run", ["install", "uninstall"])
+def test_a_record_saved_with_a_bom_is_read(install_module, uninstall_module, tmp_path, capsys, run):
+    # Review 20, finding B1: an editor that saves UTF-8 with a BOM (Notepad before 2019,
+    # PowerShell 5) made both runs stop, and the error advised deleting the record, which
+    # holds what uninstall puts back.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record = home / ".claude" / "ballast" / "install-record.json"
+    record.write_bytes(b"\xef\xbb\xbf" + record.read_bytes())
+    module = install_module if run == "install" else uninstall_module
+    assert module.main(["--home", str(home)]) == 0, capsys.readouterr().err
+    if run == "uninstall":
+        assert not (home / ".claude" / "ballast" / "context_check.py").exists()
+
+
+@pytest.mark.parametrize("content", ["{broken", "[1]", '{"added_keys": 5}', '{"a": "\\ud800"}',
+                                     pytest.param("[" * 100000, id="deep")])
+def test_the_error_for_a_bad_record_does_not_advise_deleting_it(install_module, uninstall_module, tmp_path, capsys,
+                                                               content):
+    # Review 20, finding B1: deleting the record loses the values uninstall puts back.
+    home = tmp_path / "home"
+    install_module.install(home)
+    (home / ".claude" / "ballast" / "install-record.json").write_text(content, encoding="utf-8")
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", str(home)]) == 1
+        err = capsys.readouterr().err
+        assert "fix it" in err and "delete it" not in err, err
 
 
 def test_an_os_error_before_any_step_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys):

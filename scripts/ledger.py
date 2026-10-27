@@ -22,7 +22,7 @@ from pathlib import Path
 DEFAULT_FILE = Path(__file__).resolve().parents[1] / "research" / "measurements.jsonl"
 MEASURES = ("fixed_tokens", "first_call_cache_write", "tools", "deny_applied")
 COMPARED = ("cc_version",) + MEASURES
-MAX_DIGITS = 15   # as --handoff-at in config/add_to_repo.py and hooks/context_check.py
+MAX_DIGITS = 15   # as --handoff-at in config/add_to_repo.py
 
 
 def _count(text):

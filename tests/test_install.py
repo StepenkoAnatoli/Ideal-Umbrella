@@ -116,6 +116,58 @@ def test_verify_only_does_not_create_files(install_module, tmp_path, capsys):
     assert "[FAIL] Verification failed" in capsys.readouterr().out
 
 
+def _edit_settings(home, change):
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    change(settings)
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+
+
+def _point_hook_elsewhere(settings):
+    for entry in settings["hooks"]["UserPromptSubmit"]:
+        for hook in entry.get("hooks", []):
+            hook["command"] = hook["command"].replace("ballast", "elsewhere")
+
+
+def _drop_a_required_tool(settings):
+    settings["permissions"]["deny"].remove("Artifact")
+
+
+def _edit_the_section(home):
+    path = home / ".claude" / "CLAUDE.md"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("# Side sessions and subagents") == 1
+    path.write_text(text.replace("# Side sessions and subagents", "# Side sessions"), encoding="utf-8")
+
+
+@pytest.mark.parametrize("breaks, line", [
+    (lambda home: settings_file(home).unlink(), "Missing: {settings}"),
+    (lambda home: _edit_settings(home, lambda s: s.update(permissions=[])), "permissions is not an object"),
+    (lambda home: _edit_settings(home, _drop_a_required_tool), "permissions.deny is missing: Artifact"),
+    (lambda home: _edit_settings(home, lambda s: s.update(hooks=[])), "hooks is not an object"),
+    (lambda home: _edit_settings(home, lambda s: s["hooks"].update(UserPromptSubmit=[])),
+     "Ideal-Umbrella hook not found in UserPromptSubmit"),
+    (lambda home: _edit_settings(home, _point_hook_elsewhere), "Hook command does not point at {hook}"),
+    (_edit_the_section, "the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md"),
+    (lambda home: (home / ".claude" / "CLAUDE.md").unlink(), "Missing: {claude_md}"),
+    (lambda home: (home / ".claude" / "ballast" / "context_check.py").unlink(), "Missing: {hook}"),
+    (lambda home: (home / ".claude" / "ballast" / "context_check.py").write_bytes(b"print()\n"),
+     "Hook content differs from hooks/context_check.py"),
+], ids=["no-settings", "permissions", "deny", "hooks", "no-hook-entry", "hook-elsewhere", "section",
+        "no-claude-md", "no-hook", "hook-content"])
+def test_verify_only_names_each_kind_of_broken_install(install_module, tmp_path, capsys, breaks, line):
+    # Review 20, finding T1: no test reached these branches of verify(), so a regression could
+    # have made --verify-only print OK for a broken install.
+    home = tmp_path / "home"
+    install_module.install(home)
+    breaks(home)
+    capsys.readouterr()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    out = capsys.readouterr().out
+    paths = {name: str(path) for name, path in install_module.layout(home).items()}
+    assert line.format(**paths) in out, out
+    assert "[FAIL] Verification failed" in out
+
+
 def test_non_object_settings_are_rejected(install_module, tmp_path):
     home = tmp_path / "home"
     claude = home / ".claude"
@@ -308,7 +360,7 @@ def test_a_record_written_before_a_failed_settings_write_undoes_cleanly(install_
 
 def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
     # The record holds the values an uninstall puts back. It used to be read as "no record"
-    # and overwritten; now the user is told to fix or delete it first.
+    # and overwritten; now the user is told to fix it first.
     home = tmp_path / "home"
     install_module.install(home)
     record = install_module.layout(home)["record"]

@@ -783,26 +783,32 @@ def _unfenced_copy(current, copy):
     return found[0] if len(found) == 1 else None
 
 
+# The record holds the values uninstall puts back, so deleting it is never the advice.
+RECORD_ADVICE = "fix it first (deleting it loses what uninstall puts back)"
+
+
 def read_record(path):
     """The saved install record, or None when there is none.
 
     A record that exists but cannot be read is an error, not "no record": it holds the values
-    an uninstall must put back, so neither install nor uninstall may silently overwrite it.
+    an uninstall must put back, so neither install nor uninstall may silently overwrite it, and
+    the error does not advise deleting it. A BOM (an editor that saves UTF-8 with one) is read
+    as settings.json's is.
     """
     if not path.exists():
         return None
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except ValueError as e:
-        raise ValueError(f"{path} is not valid JSON ({e}); fix it or delete it first") from e
+        raise ValueError(f"{path} is not valid JSON ({e}); {RECORD_ADVICE}") from e
     except RecursionError:
-        raise ValueError(f"{path} is nested too deeply to be read; fix it or delete it first") from None
+        raise ValueError(f"{path} is nested too deeply to be read; {RECORD_ADVICE}") from None
     except OSError as e:
         raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
-        raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
-    _check_json(data, path, "fix it or delete it first")
+        raise ValueError(f"{path} must be a JSON object; {RECORD_ADVICE}")
+    _check_json(data, path, RECORD_ADVICE)
     _check_record_fields(data, path)
     if "pending" in data:
         _check_record_fields(data["pending"], path, "pending.")
@@ -827,7 +833,7 @@ def _check_record_fields(record, path, prefix=""):
     uninstall match tool names by substring."""
     for field, (shape, fits) in _RECORD_FIELDS.items():
         if field in record and not fits(record[field]):
-            raise ValueError(f'{path}: "{prefix}{field}" must be {shape}; fix it or delete it first')
+            raise ValueError(f'{path}: "{prefix}{field}" must be {shape}; {RECORD_ADVICE}')
 
 
 def _describes(entry, text):

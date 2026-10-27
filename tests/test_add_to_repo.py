@@ -194,6 +194,42 @@ def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_pa
         assert path.stat().st_mode & 0o777 == 0o644, name
 
 
+def test_a_symlinked_settings_file_stays_a_link_and_its_target_is_updated(add_to_repo, tmp_path):
+    # Review 20, finding T2: nothing tested the write through a link.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "settings.json").write_text('{"customKey": 1}\n', encoding="utf-8")
+    link = repo / ".claude" / "settings.json"
+    try:
+        link.symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    add_to_repo._add(str(repo), force=False)
+    assert link.is_symlink()
+    settings = json.loads((dotfiles / "settings.json").read_text(encoding="utf-8"))
+    assert settings["customKey"] == 1 and "UserPromptSubmit" in settings["hooks"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_an_existing_file_keeps_its_mode(add_to_repo, tmp_path):
+    # Review 20, finding T2: nothing tested that a rewrite keeps the mode.
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    settings = repo / ".claude" / "settings.json"
+    hook = repo / ".claude" / "hooks" / "context_check.py"
+    settings.write_text("{}\n", encoding="utf-8")
+    hook.write_text("old\n", encoding="utf-8")
+    settings.chmod(0o640)   # neither is a mode a new file gets (0644 or 0600)
+    hook.chmod(0o750)
+    add_to_repo._add(str(repo), force=False)
+    assert "UserPromptSubmit" in settings.read_text(encoding="utf-8")
+    assert hook.read_text(encoding="utf-8") != "old\n"
+    assert settings.stat().st_mode & 0o777 == 0o640
+    assert hook.stat().st_mode & 0o777 == 0o750
+
+
 def test_writing_a_new_file_never_touches_the_process_umask(add_to_repo, tmp_path, monkeypatch):
     # The mode came from reading the umask, which os.umask can only do by setting it: files
     # another thread created in that window were made 0666.
