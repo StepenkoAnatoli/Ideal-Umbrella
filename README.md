@@ -12,6 +12,8 @@ Earlier versions of this README said 58% cache reads / 27% cache writes / 15% ou
 
 ## Quick start
 
+Needs Python 3.10 or later and nothing outside the standard library (CI runs 3.10, 3.12 and 3.13 on Ubuntu and 3.12 on Windows; the keyline tools also need `tiktoken`).
+
 ```bash
 # 1. Clone and install user-level config. The installer is idempotent and backs up files it replaces.
 git clone https://github.com/StepenkoAnatoli/Ideal-Umbrella.git
@@ -175,11 +177,16 @@ Run tests: `python -I keyline/tests/run_tests.py` (needs `tiktoken`: `python -m 
 ## Tests
 
 ```bash
+python -m pip install -r keyline/requirements.txt -r requirements-dev.txt
+python -m pyflakes $(git ls-files '*.py')
 python -m pytest -q
 python -I keyline/tests/run_tests.py
+python -m json.tool config/user-settings.json
+python -m json.tool config/repo-settings.json
+python -m json.tool .claude/settings.json
 ```
 
-The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook, and the calibration fixture path. GitHub Actions (`.github/workflows/ci.yml`) runs both on Ubuntu and Windows for every pull request and push to `main`. Run both commands above before opening a pull request.
+The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook, the calibration fixture path, and the docs that repeat a source file (`tests/test_docs_match_source.py`: the cloud setup script against `config/CLAUDE.md`, the README settings table against `config/user-settings.json`, the "Contents" paths, and these commands against CI). GitHub Actions (`.github/workflows/ci.yml`) runs every command above for every pull request and push to `main`, on Ubuntu with Python 3.10, 3.12 and 3.13 and on Windows with 3.12. Run them before opening a pull request; `CONTRIBUTING.md` has the rest of the checklist.
 
 ## Research
 

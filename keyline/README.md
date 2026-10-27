@@ -20,7 +20,7 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 
 ## Setup
 
-The scripts need Python 3 (CI runs 3.12) and tiktoken (pinned in `requirements.txt`). Install it
+The scripts need Python 3.10 or later (CI runs 3.10, 3.12 and 3.13) and tiktoken (pinned in `requirements.txt`). Install it
 into the interpreter you will run them with, for example a venv in this folder:
 
 ```bash

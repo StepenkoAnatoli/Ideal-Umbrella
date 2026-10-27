@@ -4,6 +4,8 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 
 ## [Unreleased]
 ### Added
+- `tests/test_docs_match_source.py`: the heredoc in `config/cloud-setup.sh` must equal `config/CLAUDE.md` plus the cloud-only line, every path in README "Contents" must exist, the README settings table must match `config/user-settings.json` (deny list and the two numeric keys), and every command in README "Tests" must be a CI step. Each check also runs on a drifted copy to show it catches the drift.
+- CI runs pyflakes over the tracked Python files and tests Python 3.10 and 3.13 on Ubuntu besides 3.12; Windows stays on 3.12. README "Quick start" states the supported range (3.10 and later); `pyflakes` is in `requirements-dev.txt`.
 - `config/uninstall.py` (with `--dry-run`): undoes `config/install.py` from the install record, restoring earlier values and the CLAUDE.md backup.
 - `config/install.py` writes `~/.claude/ballast/install-record.json` with what it added or replaced.
 - `IDEAL_UMBRELLA_TAIL_BYTES` for how much of the transcript end `hooks/context_check.py` reads.
