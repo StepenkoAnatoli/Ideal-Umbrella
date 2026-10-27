@@ -916,7 +916,7 @@ def test_a_failed_write_over_a_section_added_by_hand_leaves_nothing(install_modu
     if linked:
         dotfiles = tmp_path / "dotfiles" / "CLAUDE.md"
         dotfiles.parent.mkdir()
-        dotfiles.write_text(before, encoding="utf-8")
+        dotfiles.write_bytes(before.encode("utf-8"))
         md(home).parent.mkdir(parents=True)
         try:
             md(home).symlink_to(dotfiles)

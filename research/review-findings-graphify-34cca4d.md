@@ -92,6 +92,10 @@ E4. Finding: mutant z14 (`not install._is_link(claude_md)` for `not _is_target(.
     the hook path through a symlinked home) and z22 (`_absolute(Path.home())`) are equivalent or
     near-equivalent.
 
+    Follow-up: the `linked` kind first wrote the dotfiles file with `write_text`, which writes
+    CRLF on Windows, and compared bytes (Windows CI red on 4bbd9d2). It writes bytes now; the
+    whole suite passes with `write_text` forced to CRLF, so no other test depends on it.
+
 E6. Finding: the dry-run change lines were not tested (w03-w05), and `test_dry_run_writes_nothing`
     saw only regular files, so a dry run that removed the state link passed (w06).
 
