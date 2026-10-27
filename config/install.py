@@ -1019,7 +1019,7 @@ def install(home, force=False, progress=None, config_dir=None):
             notices.append(md_plan["notice"])
         kept = backup_of(paths["claude_md"], (old_record.get("claude_md") or {}).get("safety_backup"))
         if md_plan["backup"] == "edited" and kept is not None and kept.is_file() and not kept.is_symlink() \
-                and _holds(kept, paths["claude_md"].read_bytes()) \
+                and kept.read_bytes() == paths["claude_md"].read_bytes() \
                 and not same_file(kept, paths["claude_md"]):
             # An earlier run backed the file up before adding its section, then stopped before
             # its CLAUDE.md write: the section is the one that was there, and the backup holds it.

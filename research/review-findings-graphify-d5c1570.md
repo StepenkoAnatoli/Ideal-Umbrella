@@ -22,7 +22,7 @@ Status: all three findings are fixed class-wide in the next commit on PR #27.
   nothing), l1 and l4 (`_look` swallows other OSErrors), l2 and l5 (`_dangling` without one of
   its looks), l3 (`verify` without the gate), r1 (`read_record` without NotADirectoryError),
   m1-m4 (add_to_repo's `_look`, `_read_bytes` for the repo hook and the shipped hook, and the
-  link check), v1, v2 and k1 (F3 other hits).
+  link check), v1 and v2 (F3 other hits).
 - CI now also runs Python 3.14 on Ubuntu.
 
 Counts: 0 high, 1 medium (F1), 2 low (F2, F3).
@@ -84,12 +84,10 @@ F3. Finding: add_to_repo read the repo's hook and the shipped hook outside any h
     Other hits, fixed the same way with failing-first tests: `verify` read the installed hook
     and `CLAUDE.md` with `read_bytes()` outside any handler (a folder in their place gave a bare
     `[Errno 21]` in `--verify-only`); they now go through `install._read_bytes`
-    (`test_verify_names_a_file_it_cannot_read`). `install` compared an earlier safety backup
-    with `read_bytes()`; one it cannot read (root-owned after a `sudo` run) stopped the install,
-    and is now no match through `_holds`, as in `_backup_name`
-    (`test_a_backup_that_cannot_be_read_does_not_stop_install`). Mutants v1, v2 and k1 killed.
-    Not changed: `_backup` reads only a backup `_backup_name` already read, or a new name (its
-    mutant is equivalent); install's other reads go through `_read_text`, `_read_bytes` or
+    (`test_verify_names_a_file_it_cannot_read`). Mutants v1 and v2 killed.
+    Not changed: install's kept-backup check still stops on a backup it cannot read (accepted
+    earlier: the backups hold the undo); `_backup` reads only a backup `_backup_name` already
+    read, or a new name; install's other reads go through `_read_text`, `_read_bytes` or
     `_read_json`; uninstall reads `CLAUDE.md` inside a handler, and an OSError on a backup during
     the undo gives "fix the cause and run uninstall again", which is right (it cannot tell
     whether the backup is a copy).

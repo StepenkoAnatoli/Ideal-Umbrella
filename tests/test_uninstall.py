@@ -1795,25 +1795,3 @@ def test_verify_names_a_file_it_cannot_read(install_module, tmp_path, capsys, na
     assert install_module.main(["--home", str(home), "--verify-only"]) == 1
     err = capsys.readouterr().err
     assert "cannot read" in err and "[Errno" not in err, err
-
-
-def test_a_backup_that_cannot_be_read_does_not_stop_install(install_module, tmp_path, monkeypatch):
-    # Review 24, F3 other hits: an earlier safety backup was compared with read_bytes() outside
-    # any handler; one left root-owned by a sudo run is no match, as in _backup_name.
-    home = tmp_path / "home"
-    md = home / ".claude" / "CLAUDE.md"
-    md.parent.mkdir(parents=True)
-    md.write_bytes(b"mine\n")
-    install_module.install(home)
-    md.write_bytes(md.read_bytes().replace(b"\n# ", b"\n# Edited: ", 1))
-    real = Path.read_bytes
-
-    def read_bytes(self):
-        if ".bak-" in self.name:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real(self)
-    monkeypatch.setattr(Path, "read_bytes", read_bytes)
-    notices = install_module.install(home)[1]
-    monkeypatch.undo()
-    assert any("had edits" in n for n in notices), notices
-    assert b"# Edited: " not in md.read_bytes()
