@@ -97,6 +97,8 @@ Cloud sessions don't read `~/.claude/`; they only read the repository's committe
 
 `add_to_repo.py` preserves other keys and hooks, updates an existing Ideal-Umbrella hook in place, and changes nothing on a second run. A scalar value the repository already sets (its own `autoCompactWindow`, say) is kept and reported; pass `--force` to replace it.
 
+To give one repository its own hand-off threshold, add `--handoff-at 120000` (tokens, a whole number above 0). It writes `"env": {"IDEAL_UMBRELLA_HANDOFF_AT": "120000"}` into `.claude/settings.json`; Claude Code passes `env` to the session and its hooks, and the hook reads that variable instead of the default 150,000. Other `env` keys stay. A different value already there is kept and reported unless you pass `--force`; running without `--handoff-at` leaves an existing value alone.
+
 ### Multi-repository cloud sessions (limitation)
 
 In multi-repo cloud sessions the repo-level compact window and hook are not applied. Workaround: set `CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000` in the cloud environment's environment variables (claude.ai/code -> environment selector -> settings icon -> Environment variables). That applies the compact window to all cloud sessions regardless of repository count.

@@ -200,3 +200,95 @@ def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monke
     err = capsys.readouterr().err
     assert "Done before the error" in err and "context_check.py written" in err, err
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+
+
+def run_with(repo, *flags):
+    return subprocess.run([sys.executable, "-I", str(ADD), *flags, str(repo)], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def settings_of(repo):
+    return json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))
+
+
+def repo_with(tmp_path, settings=None):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    if settings is not None:
+        (repo / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    return repo
+
+
+@pytest.mark.parametrize("flags", [["--handoff-at", "120000"], ["--handoff-at=120000"]])
+def test_handoff_at_writes_the_env_key_as_a_string(tmp_path, context_check, monkeypatch, flags):
+    repo = repo_with(tmp_path)
+    result = run_with(repo, *flags)
+    assert result.returncode == 0, result.stderr
+    assert "env.IDEAL_UMBRELLA_HANDOFF_AT: added '120000'" in result.stdout
+    value = settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"]
+    assert value == "120000"   # Claude Code env values are strings
+    monkeypatch.setenv("IDEAL_UMBRELLA_HANDOFF_AT", value)
+    assert context_check.parse_int("IDEAL_UMBRELLA_HANDOFF_AT", 150000) == 120000
+
+
+def test_handoff_at_keeps_other_env_keys_and_is_idempotent(tmp_path):
+    repo = repo_with(tmp_path, {"env": {"FOO": "1"}})
+    assert run_with(repo, "--handoff-at", "90000").returncode == 0
+    assert settings_of(repo)["env"] == {"FOO": "1", "IDEAL_UMBRELLA_HANDOFF_AT": "90000"}
+    before = (repo / ".claude" / "settings.json").read_bytes()
+    again = run_with(repo, "--handoff-at", "90000")
+    assert again.returncode == 0 and "already up to date" in again.stdout
+    assert (repo / ".claude" / "settings.json").read_bytes() == before
+
+
+def test_a_different_handoff_value_is_kept_unless_forced(tmp_path):
+    repo = repo_with(tmp_path, {"env": {"IDEAL_UMBRELLA_HANDOFF_AT": "100000", "FOO": "1"}})
+    kept = run_with(repo, "--handoff-at", "120000")
+    assert kept.returncode == 0, kept.stderr
+    assert "note: env.IDEAL_UMBRELLA_HANDOFF_AT is '100000'" in kept.stdout and "--force" in kept.stdout
+    assert settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"] == "100000"
+    forced = run_with(repo, "--force", "--handoff-at", "120000")
+    assert forced.returncode == 0, forced.stderr
+    assert settings_of(repo)["env"] == {"IDEAL_UMBRELLA_HANDOFF_AT": "120000", "FOO": "1"}
+
+
+def test_without_handoff_at_no_env_key_is_written_or_removed(tmp_path):
+    repo = repo_with(tmp_path)
+    assert run_with(repo).returncode == 0
+    assert "env" not in settings_of(repo)
+    (repo / ".claude" / "settings.json").write_text(
+        json.dumps({**settings_of(repo), "env": {"IDEAL_UMBRELLA_HANDOFF_AT": "100000"}}), encoding="utf-8")
+    assert run_with(repo, "--force").returncode == 0
+    assert settings_of(repo)["env"] == {"IDEAL_UMBRELLA_HANDOFF_AT": "100000"}
+
+
+@pytest.mark.parametrize("flags", [
+    ["--handoff-at", "0"], ["--handoff-at", "-5"], ["--handoff-at", "abc"], ["--handoff-at", "1.5"],
+    ["--handoff-at", "١٢٠"], ["--handoff-at="], ["--handoff-at"], ["--handoff-at", "1", "--handoff-at", "2"],
+    ["--handof-at", "1"],
+])
+def test_a_bad_handoff_value_is_a_usage_error_and_nothing_is_written(tmp_path, flags):
+    repo = repo_with(tmp_path)
+    result = run_with(repo, *flags)
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+def test_env_that_is_not_an_object_stops_before_any_write(tmp_path):
+    repo = repo_with(tmp_path, {"env": ["IDEAL_UMBRELLA_HANDOFF_AT=1"]})
+    before = (repo / ".claude" / "settings.json").read_bytes()
+    result = run_with(repo, "--handoff-at", "120000")
+    assert result.returncode == 1
+    assert "env must be an object" in result.stderr and "nothing written" in result.stderr
+    assert (repo / ".claude" / "settings.json").read_bytes() == before
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_an_object_valued_template_key_merges_key_by_key(add_to_repo):
+    # Class of the env case: a template key whose value is an object used to be compared as a
+    # whole, so a repository with any other key in it got none of the template's keys.
+    settings = {"env": {"FOO": "1"}}
+    changes, notices = add_to_repo.merge(settings, {"env": {"BAR": "2"}})
+    assert settings == {"env": {"FOO": "1", "BAR": "2"}, "hooks": {}}
+    assert changes == ["env.BAR: added '2'"] and notices == []

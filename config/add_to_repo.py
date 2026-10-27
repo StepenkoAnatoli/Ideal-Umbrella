@@ -10,8 +10,9 @@ updated in place, not duplicated. Running it again changes nothing.
 
 The hook exits at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep
 only the user-level hook. Stdlib only; run with
-`python -I config/add_to_repo.py [--force] <repo>`, then commit the two files in
-that repository.
+`python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo>`, then
+commit the two files in that repository. --handoff-at sets the repository's own
+hand-off threshold as env.IDEAL_UMBRELLA_HANDOFF_AT (other env keys stay).
 """
 import errno
 import json
@@ -55,6 +56,27 @@ def _replace_hook(entry, replacement):
     return changed
 
 
+def _merge_value(settings, key, value, force, changes, notices, label):
+    """Merge one template key. An object value (env) is merged key by key, so a repository's
+    own keys in it stay; any other value the repository already sets differently is kept
+    unless force is true."""
+    if isinstance(value, dict):
+        if not isinstance(settings.setdefault(key, {}), dict):
+            raise ValueError(f"settings {label} must be an object")
+        for sub, sub_value in value.items():
+            _merge_value(settings[key], sub, sub_value, force, changes, notices, f"{label}.{sub}")
+    elif key not in settings:
+        changes.append(f"{label}: added {value!r}")
+        settings[key] = value
+    elif settings[key] != value:
+        if force:
+            changes.append(f"{label}: {settings[key]!r} -> {value!r}")
+            settings[key] = value
+        else:
+            notices.append(f"{label} is {settings[key]!r}, template has {value!r}; "
+                           "left unchanged (use --force)")
+
+
 def merge(settings, template, force=False):
     """Merge template into settings in place; return (changes, notices), both human-readable.
 
@@ -66,18 +88,8 @@ def merge(settings, template, force=False):
         raise ValueError("template must be a JSON object")
     changes, notices = [], []
     for key, value in template.items():
-        if key == "hooks":
-            continue
-        if key not in settings:
-            changes.append(f"{key}: added {value!r}")
-            settings[key] = value
-        elif settings[key] != value:
-            if force:
-                changes.append(f"{key}: {settings[key]!r} -> {value!r}")
-                settings[key] = value
-            else:
-                notices.append(f"{key} is {settings[key]!r}, template has {value!r}; "
-                               "left unchanged (use --force)")
+        if key != "hooks":
+            _merge_value(settings, key, value, force, changes, notices, key)
 
     template_hooks = template.get("hooks", {})
     if not isinstance(template_hooks, dict):
@@ -173,17 +185,46 @@ def _write_json(path, data):
     _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
+USAGE = "usage: python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo folder>"
+
+
+def _take_handoff_at(argv):
+    """Return (tokens or None, the other arguments). TOKENS is a whole number above 0 in ASCII
+    digits, the values hooks/context_check.py accepts; anything else is a ValueError."""
+    rest, values = [], []
+    args = iter(argv)
+    for arg in args:
+        if arg == "--handoff-at":
+            values.append(next(args, ""))
+        elif arg.startswith("--handoff-at="):
+            values.append(arg[len("--handoff-at="):])
+        else:
+            rest.append(arg)
+    if not values:
+        return None, rest
+    if len(values) > 1:
+        raise ValueError("--handoff-at is given more than once")
+    value = values[0]
+    if not (value.isascii() and value.isdigit() and int(value) > 0):
+        raise ValueError(f"--handoff-at needs a whole number of tokens above 0, not {value!r}")
+    return int(value), rest
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")   # the repo path may not fit the ANSI code page
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
+    try:
+        handoff_at, argv = _take_handoff_at(argv)
+    except ValueError as e:
+        sys.exit(f"{e}\n{USAGE}")
     if len(argv) != 1 or not os.path.isdir(argv[0]):
-        sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
+        sys.exit(USAGE)
     progress = []
     try:
-        changes, notices = _add(argv[0], force, progress=progress)
+        changes, notices = _add(argv[0], force, progress=progress, handoff_at=handoff_at)
     except ValueError as e:
         # Raised while reading or merging, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
@@ -205,7 +246,7 @@ def main(argv=None):
     return 0
 
 
-def _add(repo, force, progress=None):
+def _add(repo, force, progress=None, handoff_at=None):
     """Merge the template into <repo>/.claude/settings.json and copy the hook; return
     (changes, notices). Each file written is appended to `progress` (when given) as it is
     done. The hook is copied before settings.json is written: a hook entry that points at a
@@ -220,6 +261,9 @@ def _add(repo, force, progress=None):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
+    if handoff_at is not None:
+        # Claude Code passes `env` to the session and its hooks; its values are strings.
+        template["env"] = {"IDEAL_UMBRELLA_HANDOFF_AT": str(handoff_at)}
     try:
         changes, notices = merge(settings, template, force=force)
     except ValueError as e:
