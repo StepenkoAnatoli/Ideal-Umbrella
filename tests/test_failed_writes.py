@@ -281,21 +281,40 @@ def a_section_without_a_record(inst, home):
 
 
 def the_whole_file_without_a_record(inst, home):
-    seed(home, RULES.encode("utf-8"))
+    # Review 8, finding L3: install wraps an unmarked copy of the rules in markers, so the file
+    # is put back as the whole-file installer left it after the install, with no backups.
+    seed(home)
     inst.install(home)
     (claude(home) / "ballast" / "install-record.json").unlink()
     for name in claude(home).glob("CLAUDE.md.bak-*"):
         name.unlink()
+    (claude(home) / "CLAUDE.md").write_bytes(RULES.encode("utf-8"))
     return None
 
 
+def without_the_hook_file(run):
+    # Review 8, finding L2: the hook entry in settings.json is then the only evidence left.
+    def state(inst, home):
+        undone = run(inst, home)
+        (claude(home) / "ballast" / "context_check.py").unlink()
+        return undone
+    state.__name__ = f"{run.__name__}_or_hook_file"
+    return state
+
+
+NO_RECORD = [a_section_without_a_record, the_whole_file_without_a_record,
+             without_the_hook_file(a_section_without_a_record), without_the_hook_file(the_whole_file_without_a_record)]
+
+
 @pytest.mark.parametrize("number", range(STEPS))
-@pytest.mark.parametrize("run", [a_section_without_a_record, the_whole_file_without_a_record])
+@pytest.mark.parametrize("run", NO_RECORD, ids=[r.__name__ for r in NO_RECORD])
 def test_a_rerun_of_an_uninstall_without_a_record_finishes_it(uninstall_module, tmp_path, monkeypatch,
                                                               run, number):
     inst = uninstall_module.install
     home = tmp_path / "home"
     undone = run(inst, home)
+    md = claude(home) / "CLAUDE.md"
+    assert ("<!-- Ideal-Umbrella rules: begin -->" in md.read_text(encoding="utf-8")) == (undone is not None)
     backups = set(claude(home).glob("CLAUDE.md.bak-*"))
     progress = []
     stop = fail_step(monkeypatch, inst, number)
@@ -306,12 +325,16 @@ def test_a_rerun_of_an_uninstall_without_a_record_finishes_it(uninstall_module, 
         for backup in set(claude(home).glob("CLAUDE.md.bak-*")) - backups:
             assert any(backup.name in line for line in progress), (backup.name, progress)
     stop()
-    uninstall_module.uninstall(home)
-    md = claude(home) / "CLAUDE.md"
+    _, notices = uninstall_module.uninstall(home)
+    # Review 8, finding L1: without a record nothing says what was installed.
+    assert not any("what was installed" in n for n in notices), notices
     if undone is None:
         assert not md.exists()
+        # A copy of the rules is kept: without a record it may be the user's own.
+        assert any(b.read_text(encoding="utf-8") == RULES for b in claude(home).glob("CLAUDE.md.bak-*"))
     else:
         assert undone(md.read_text(encoding="utf-8"))
     assert not (claude(home) / "ballast" / "context_check.py").exists()
     settings = json.loads((claude(home) / "settings.json").read_text(encoding="utf-8"))
     assert "context_check" not in json.dumps(settings.get("hooks", {}))
+    assert "autoCompactWindow" not in settings

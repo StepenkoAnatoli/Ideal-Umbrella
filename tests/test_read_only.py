@@ -218,6 +218,45 @@ def test_a_file_another_user_owns_is_deleted_without_a_chmod(install_module, mon
     assert not path.exists()
 
 
+def test_a_refused_delete_is_reported_when_the_chmod_fails_too(install_module, monkeypatch, tmp_path):
+    # Review 8, info I1: a log another user owns in a folder that is not writable. The delete is
+    # refused because of the folder; the error must say so, not the chmod's "not permitted".
+    path = tmp_path / "context_check.log"
+    path.write_bytes(b"log\n")
+    real_access = os.access
+
+    def access(p, mode, *args, **kwargs):
+        return False if os.fspath(p) == os.fspath(path) and mode & os.W_OK else real_access(p, mode, *args, **kwargs)
+
+    def unlink(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied (the folder)", str(self))
+
+    def chmod(*args, **kwargs):
+        raise PermissionError(1, "Operation not permitted", str(path))
+    monkeypatch.setattr(os, "access", access)
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    monkeypatch.setattr(os, "chmod", chmod)
+    with pytest.raises(PermissionError) as refused:
+        install_module.remove(path)
+    assert refused.value.errno == 13 and "the folder" in str(refused.value)
+
+
+def test_a_writable_file_whose_delete_is_refused_is_never_chmodded(install_module, monkeypatch, tmp_path):
+    # Review 8, mutant q04: a read-only bit is not why the delete failed, so a chmod cannot help,
+    # and on POSIX it needs the file's owner.
+    path = tmp_path / "context_check.log"
+    path.write_bytes(b"log\n")
+    chmodded = []
+
+    def unlink(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied (the folder)", str(self))
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    monkeypatch.setattr(os, "chmod", lambda *args, **kwargs: chmodded.append(args))
+    with pytest.raises(PermissionError) as refused:
+        install_module.remove(path)
+    assert "the folder" in str(refused.value) and chmodded == []
+
+
 def test_a_read_only_file_that_still_cannot_be_deleted_keeps_its_mode(install_module, windows_read_only, monkeypatch,
                                                                        tmp_path):
     # Review 7, finding L1: a delete that fails for another reason (a read-only folder) must not

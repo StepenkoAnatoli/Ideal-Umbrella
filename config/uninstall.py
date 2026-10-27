@@ -337,15 +337,9 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     template_md = install._read_text(install.CLAUDE_MD)
     evidence = paths["hook"].exists() or (settings is not None and has_our_hook(settings))
 
-    left = []
+    left, setting_changes = [], []
     if settings is not None:
         setting_changes, notices, left = undo_settings(settings, template, record, evidence)
-        changes.extend(setting_changes)
-        if setting_changes and not dry_run:
-            backup = install._backup(paths["settings"])
-            done(f"settings backup: {backup.name}")
-            install._write_json(paths["settings"], settings)
-            progress.append("settings.json written")
 
     # What the hook wrote while it ran: the per-session state files and its log. A state folder
     # that is a symlink, or a junction on Windows, is unlinked, not followed (shutil.rmtree
@@ -432,6 +426,11 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             # both. Nothing is left to undo; say so once, and the record entry goes.
             notices.append(f"CLAUDE.md is not the file the install wrote, and the backup {backup.name} "
                            "is gone; left as is")
+        elif not ours and record is None:
+            # Without a record nothing says what was installed: a file with no section that is
+            # not the rules is the user's, or one an earlier run took the section out of.
+            if evidence:
+                notices.append("CLAUDE.md has no Ideal-Umbrella section and is not the rules file; left as is")
         elif not ours:
             claude_md_left = True
             notices.append("CLAUDE.md differs from what was installed; left as is"
@@ -467,8 +466,16 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 claude_md.unlink()
                 done(f"CLAUDE.md deleted (copy kept as {backup.name})")
 
-    # The hook file goes last: without a record it is the only evidence of an install left once
-    # settings.json is written, so a rerun after a failure before this point still finds one.
+    # Without a record the hook entry in settings.json and the hook file are the only evidence
+    # of an install, so both stay until the CLAUDE.md step is done, and the hook file goes last:
+    # a rerun after a failure before this point still finds one.
+    if setting_changes:
+        changes.extend(setting_changes)
+        if not dry_run:
+            backup = install._backup(paths["settings"])
+            done(f"settings backup: {backup.name}")
+            install._write_json(paths["settings"], settings)
+            progress.append("settings.json written")
     if paths["hook"].exists():
         if dry_run:
             changes.append("hook deleted")

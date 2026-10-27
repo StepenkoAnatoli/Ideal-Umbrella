@@ -122,6 +122,25 @@ def test_without_record_leaves_deny_alone(install_module, uninstall_module, tmp_
     assert any("permissions.deny" in n for n in notices)
 
 
+@pytest.mark.parametrize("evidence", [False, True])
+def test_without_a_record_a_claude_md_of_the_users_is_not_said_to_differ(install_module, uninstall_module, tmp_path,
+                                                                         evidence):
+    # Review 8, finding L1: with no record nothing says what was installed, yet a CLAUDE.md with
+    # no section was reported as differing "from what was installed", even in a home where
+    # nothing was ever installed, and after an earlier run had removed the section.
+    home = tmp_path / "home"
+    seed(home, {"model": "opus"}, "mine\n")
+    if evidence:
+        install_module.install(home)
+        (home / ".claude" / "ballast" / "install-record.json").unlink()
+        (home / ".claude" / "CLAUDE.md").write_text("mine, rewritten\n", encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert not any("what was installed" in n for n in notices), notices
+    assert [n for n in notices if "CLAUDE.md" in n] == (
+        ["CLAUDE.md has no Ideal-Umbrella section and is not the rules file; left as is"] if evidence else [])
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == ("mine, rewritten\n" if evidence else "mine\n")
+
+
 def test_dry_run_writes_nothing(install_module, tmp_path):
     home = tmp_path / "home"
     install_module.install(home)

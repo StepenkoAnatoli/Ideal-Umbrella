@@ -56,8 +56,10 @@ L2. Finding: an uninstall without a record (an install from before records exist
     - The hook file is deleted last, after the `CLAUDE.md` step, so evidence survives any earlier
       failure.
     - The no-record backup is added to the progress as soon as it exists.
-    Tests: `test_a_rerun_of_an_uninstall_without_a_record_finishes_it` covers a section and a
-    whole file, with each of the run's writes and deletes failing in turn. It checks that every
+    Tests: `test_a_rerun_of_an_uninstall_without_a_record_finishes_it` covers a section, with
+    each of the run's writes and deletes failing in turn. (Correction from review 8, L3: its
+    "whole file" kind was a wrapped section too, because the install wraps an unmarked copy of the
+    rules; the true whole-file kind was added in `-ded6960.md`.) It checks that every
     new backup is named and that the rerun leaves no section, no hook file and no hook entry.
     4 cases failed before the fix; all 24 pass now.
     Other hits:

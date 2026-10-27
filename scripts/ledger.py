@@ -67,8 +67,9 @@ def previous_entry(path):
         return None, None, 0
     found, number, skipped = None, None, 0
     # Lines end at "\n" only: str.splitlines() also splits on U+2028, form feed and others,
-    # which json.dumps(ensure_ascii=False) leaves raw inside a string.
-    for index, raw in enumerate(data.decode("utf-8", errors="replace").split("\n"), 1):
+    # which json.dumps(ensure_ascii=False) leaves raw inside a string. A BOM (Notepad, PowerShell
+    # 5) is dropped: json.loads refuses one.
+    for index, raw in enumerate(data.decode("utf-8-sig", errors="replace").split("\n"), 1):
         if not raw.strip():
             continue
         try:

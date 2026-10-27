@@ -343,16 +343,21 @@ def remove(path):
     the user or a sync tool is cleared and the delete tried once more (and the bit set back if
     that fails too). The delete comes first: on Linux and macOS it needs only the folder, and a
     file another user owns (a log left by `sudo claude`) cannot be chmodded. A symlink is
-    removed, and its target left as it is."""
+    removed, and its target left as it is. When the chmod fails too, the refused delete is
+    what is reported: its cause (a folder that is not writable) is the one to fix."""
     path = Path(path)
     try:
         path.unlink()
         return
-    except PermissionError:
+    except PermissionError as refused:
         if path.is_symlink() or os.access(path, os.W_OK):
             raise
+        first = refused
     mode = path.stat().st_mode
-    os.chmod(path, mode | stat.S_IWUSR)
+    try:
+        os.chmod(path, mode | stat.S_IWUSR)
+    except OSError:
+        raise first from None
     try:
         path.unlink()
     except OSError:

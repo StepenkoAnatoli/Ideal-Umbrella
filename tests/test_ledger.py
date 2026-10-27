@@ -70,6 +70,16 @@ def test_a_file_without_a_final_newline_is_not_glued_to(ledger, tmp_path):
     assert path.read_bytes() == b'{"fixed_tokens": 71396}\n{"date": "2026-10-27", "fixed_tokens": 70000}\n'
 
 
+def test_a_byte_order_mark_before_the_first_line_is_not_an_unreadable_line(ledger, tmp_path, capsys):
+    # Review 8, finding L4: Notepad before 2019 and PowerShell 5 save UTF-8 with a BOM, and
+    # json.loads refuses one, so the first measurement was skipped as unreadable on every run.
+    path = tmp_path / "m.jsonl"
+    path.write_bytes(b'\xef\xbb\xbf{"fixed_tokens": 71396}\r\n')
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "70000"]) == 0
+    out = capsys.readouterr().out
+    assert "unreadable" not in out and "71,396 -> 70,000" in out
+
+
 def test_crlf_and_non_utf8_bytes_in_the_file_do_not_stop_the_run(ledger, tmp_path, capsys):
     path = tmp_path / "m.jsonl"
     path.write_bytes(b'{"fixed_tokens": 71396, "note": "caf\xe9"}\r\n')
