@@ -135,7 +135,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 ## Biggest costs still left
 
 - In two long sessions: one large skill load 15% of context characters, 55 reports from other sessions 15%, another skill load 6%, Bash output 15%.
-- Fixed load of a new session is **71,396 tokens** (get_usage, Code Browser off), mostly the app's own tools (System tools ~39.6k, MCP tools ~15.0k).
+- Fixed load of a new session is **71,396 tokens** (get_usage, Code Browser off, 2026-10-19; `research/measurements.jsonl` line 1), mostly the app's own tools (System tools ~39.6k, MCP tools ~15.0k). A Claude Code update can move it: measure again in a new session and record it with `python -I scripts/ledger.py --fixed-tokens N --cc-version V`, which appends a line and prints the change since the last one.
 
 ## Contents
 
@@ -144,7 +144,7 @@ Thresholds can be tuned with `IDEAL_UMBRELLA_HANDOFF_AT` (default 150000) and `I
 - `hooks/` - the long-chat hand-off reminder (stdlib Python)
 - `keyline/` - Keyline note format: fact checker, lint, PostToolUse hook, tests (`python -I keyline/tests/run_tests.py`, needs `tiktoken`)
 - `research/` - the full progress log, the 13-agent panel results, and the resume point for the PR clean-up (`pr-cleanup-progress.md`)
-- `scripts/` - measurement scripts (token counts, transcript breakdowns). `lint_validate.py` and `plugin_cost.py` take their input folder as an argument (defaults: the folder holding this repo, and the Claude app folder for your OS or `CLAUDE_APP_DIR`). `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts.
+- `scripts/` - measurement scripts (token counts, transcript breakdowns). `lint_validate.py` and `plugin_cost.py` take their input folder as an argument (defaults: the folder holding this repo, and the Claude app folder for your OS or `CLAUDE_APP_DIR`). `unused_tools.py` counts tool calls in transcripts and flags denied tools that were used; it exits with an error when the folder is missing or holds no transcripts. `ledger.py` appends a measurement to `research/measurements.jsonl` (run by hand; nothing runs it for you).
 - `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` - the rules every change follows and the PR checklist
 - `tests/` - pytest coverage for the hook, installers, cost model and calibration path
 

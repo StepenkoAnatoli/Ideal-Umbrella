@@ -8,6 +8,8 @@
 4. Every command README "Tests" lists is a step in `.github/workflows/ci.yml`.
 5. README "Security model of the hook" repeats the hook timeout and three limits of
    `hooks/context_check.py`.
+6. The fixed load in README "Biggest costs still left" cites a line of
+   `research/measurements.jsonl` and states that line's number.
 
 Each check is a function over text, and a test feeds it a drifted copy to show it catches the
 drift, so a parser that silently finds nothing cannot pass.
@@ -189,3 +191,29 @@ def test_security_model_drift_is_caught():
     settings[1]["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"] = 30
     readme = read("README.md").replace("removed after 30 days", "removed after a while")
     assert set(security_drift(readme, settings, hook)) == {"timeout", "state_days"}
+
+
+def fixed_load_drift(markdown, ledger_text):
+    """None when the bold fixed-load number cites a ledger line holding the same number."""
+    text = section(markdown, "Biggest costs still left")
+    match = re.search(r"Fixed load of a new session is \*\*([\d,]+) tokens\*\*.*?"
+                      r"`research/measurements\.jsonl` line (\d+)", text)
+    if not match:
+        return "the fixed-load line cites no line of research/measurements.jsonl"
+    stated, number = int(match.group(1).replace(",", "")), int(match.group(2))
+    rows = ledger_text.splitlines()
+    if not 1 <= number <= len(rows):
+        return f"research/measurements.jsonl has no line {number}"
+    actual = json.loads(rows[number - 1]).get("fixed_tokens")
+    return None if actual == stated else f"README says {stated}, line {number} says {actual}"
+
+
+def test_readme_fixed_load_cites_the_ledger():
+    assert fixed_load_drift(read("README.md"), read("research/measurements.jsonl")) is None
+
+
+def test_fixed_load_drift_is_caught():
+    readme, ledger = read("README.md"), read("research/measurements.jsonl")
+    assert fixed_load_drift(readme.replace("**71,396 tokens**", "**70,000 tokens**"), ledger)
+    assert fixed_load_drift(readme, ledger.replace("71396", "70000"))
+    assert fixed_load_drift(readme.replace("measurements.jsonl` line 1", "measurements.jsonl` line 9"), ledger)
