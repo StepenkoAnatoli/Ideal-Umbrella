@@ -2,8 +2,8 @@
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
-- Done and pushed: item 2 drift tests (3f30b51), item 3 pyflakes + Python 3.10/3.13 CI (3f30b51), item 4 CONTRIBUTING / PR template / hook security model (06c3224), item 1 first half, marker section in `~/.claude/CLAUDE.md` (a9b35d3; premortem `research/premortem-marker-section.md`).
-- Next: item 5 `scripts/ledger.py`, item 7 `add_to_repo.py --handoff-at N`, then the review loop, then merge.
+- Done and pushed: item 2 drift tests (3f30b51), item 3 pyflakes + Python 3.10/3.13 CI (3f30b51), item 4 CONTRIBUTING / PR template / hook security model (06c3224), item 1 first half, marker section in `~/.claude/CLAUDE.md` (a9b35d3; premortem `research/premortem-marker-section.md`), item 5 `scripts/ledger.py` + `research/measurements.jsonl` (c7c3fa2), item 7 `add_to_repo.py --handoff-at` with object-valued template keys merged key by key (a59ed16). PR #27 body updated.
+- Next: CI green on the head, then the review loop (fresh fable agent per pass), then merge.
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -20,11 +20,10 @@
 - `first-pass:premortem`, `first-pass:fix-the-class`, `first-pass:breaker` are not installed: done by hand; review passes are fresh general-purpose agents on model `fable` with a breaker brief.
 
 ## Plan for the rest
-- Item 5: `scripts/ledger.py` (stdlib, `-I`, never raises, utf-8 stdout, opt-in manual): appends one JSON line per run to `research/measurements.jsonl`, prints the delta to the previous line. Seed the file with the 71,396 observation labelled as transcribed from the README; cite it in README fixed-load row; README Contents; CHANGELOG; tests.
-- Item 7: `--handoff-at N` positive int -> `env.IDEAL_UMBRELLA_HANDOFF_AT` (string) in `.claude/settings.json`; other env keys kept; a differing value kept unless `--force`. Tests, README "Single-repository cloud sessions", CHANGELOG.
-- Review loop: findings in `research/review-findings-graphify-<sha>.md` (Finding / Fixed / Other hits / Prevention), fixes failing-first and class-wide.
+- Review loop: findings in `research/review-findings-graphify-<sha>.md` (Finding / Fixed / Other hits / Prevention), fixes failing-first and class-wide; repeat with a new agent until a pass finds nothing; then merge with a merge commit on green CI, update this file, one-line reply with the PR link.
+- Other hit noted for item 7's class: `config/install.py merge_settings` merges its only object key (`permissions`) by hand; a future object key in `config/user-settings.json` would need the same.
 
 Before every push: `python -m pytest -q`, `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`. Python 3.10 venv for local runs: scratchpad `py310/bin/python`.
 
 ## Open items
-- Items 5 and 7, review loop, merge, PR #27 body update.
+- Review loop, merge.
