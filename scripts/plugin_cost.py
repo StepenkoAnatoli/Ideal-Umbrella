@@ -54,7 +54,7 @@ def plugin_rows(app_dir, enc):
     for r in plugin_roots(app_dir):
         try:
             man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             man = {}
         if not isinstance(man, dict):
             man = {}
@@ -73,7 +73,7 @@ def plugin_rows(app_dir, enc):
         if os.path.isfile(mf):
             try:
                 mcp = len(json.load(open(mf, encoding="utf-8")).get("mcpServers") or {})
-            except (OSError, ValueError, AttributeError):
+            except (OSError, ValueError, RecursionError, AttributeError):
                 pass
         hooks = os.path.isfile(os.path.join(r, "hooks", "hooks.json")) or bool(man.get("hooks"))
         agents = len(glob.glob(os.path.join(glob.escape(r), "agents", "*.md")))

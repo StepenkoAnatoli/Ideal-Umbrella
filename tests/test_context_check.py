@@ -61,6 +61,13 @@ def test_tail_bytes_bounds_how_far_back_the_hook_reads(context_check, tmp_path, 
     assert context_check.context_tokens(str(path)) == 0
 
 
+def test_a_transcript_line_nested_too_deep_is_skipped(context_check, tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 200_000})
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("[" * 100000 + "\n")
+    assert context_check.context_tokens(str(path)) == 200_000
+
+
 def test_context_tokens_uses_compaction_boundary(context_check, tmp_path):
     path = transcript(
         tmp_path,

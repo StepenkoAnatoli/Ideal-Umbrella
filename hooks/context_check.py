@@ -120,7 +120,7 @@ def context_tokens(path):
     for raw in reversed(lines):
         try:
             event = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: a line nested too deep
             continue
         if not isinstance(event, dict) or event.get("isSidechain"):
             continue

@@ -79,6 +79,16 @@ def test_non_object_json_is_rejected_without_writing(tmp_path):
     assert not (repo / ".claude" / "hooks").exists()
 
 
+def test_json_nested_too_deep_is_rejected_without_writing(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text("[" * 100000, encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "nested too deeply" in result.stderr and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "hooks").exists()
+
+
 def test_second_run_is_idempotent(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

@@ -22,6 +22,11 @@
    folder on `sys.path`. A module run (`-m`) is not a script of this repository and is not
    checked; `-c code` is. `tests/test_utf8_output.py` is the exception: it sets
    `PYTHONIOENCODING` on purpose, which `-I` would discard.
+6. A `json.load()` / `json.loads()` call runs under a `try` that handles `RecursionError` (or
+   `Exception` / `BaseException`). A line or file nested a few thousand levels deep (a hand
+   edit, a damaged file) raises RecursionError, not ValueError, so `except ValueError` let
+   `scripts/ledger.py` end with a traceback (review 1 of the graphify branch, finding 5). The
+   hook's `run()` reads stdin outside a `try` on purpose: its `main()` catches every Exception.
 """
 import ast
 
@@ -33,6 +38,8 @@ FOLDERS = ["config", "hooks", "keyline", "scripts"]
 TEST_FOLDERS = ["tests", "keyline/tests"]
 RUNS_WITHOUT_ISOLATION = {"tests/test_utf8_output.py"}
 DECODE_HANDLERS = {"UnicodeDecodeError", "ValueError", "Exception", "BaseException"}
+DEPTH_HANDLERS = {"RecursionError", "Exception", "BaseException"}
+JSON_READS_CAUGHT_BY_CALLER = {("hooks/context_check.py", "run")}
 
 
 def sources():
@@ -49,28 +56,28 @@ def _name(node):
     return ""
 
 
-def _handles_decode(handler):
+def _handles(handler, handled):
     types = handler.type
     if types is None:
         return True
     names = [_name(e) for e in types.elts] if isinstance(types, ast.Tuple) else [_name(types)]
-    return any(n in DECODE_HANDLERS for n in names)
+    return any(n in handled for n in names)
 
 
-def _walk(node, in_function=None, guarded=False):
-    """Yield (node, enclosing function name, under a decode-handling try) for every node."""
+def _walk(node, in_function=None, guarded=False, handled=DECODE_HANDLERS):
+    """Yield (node, enclosing function name, under a try handling one of `handled`) for every node."""
     yield node, in_function, guarded
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         in_function = node.name
     if isinstance(node, ast.Try):
-        body_guarded = guarded or any(_handles_decode(h) for h in node.handlers)
+        body_guarded = guarded or any(_handles(h, handled) for h in node.handlers)
         for child in node.body:
-            yield from _walk(child, in_function, body_guarded)
+            yield from _walk(child, in_function, body_guarded, handled)
         for child in [*node.handlers, *node.orelse, *node.finalbody]:
-            yield from _walk(child, in_function, guarded)
+            yield from _walk(child, in_function, guarded, handled)
         return
     for child in ast.iter_child_nodes(node):
-        yield from _walk(child, in_function, guarded)
+        yield from _walk(child, in_function, guarded, handled)
 
 
 def _is_exit(node):
@@ -128,6 +135,21 @@ def test_text_reads_handle_a_decode_error():
             if _is_text_read(node) and not guarded:
                 bad.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not bad, "text read with no errors= and no UnicodeDecodeError handler:\n" + "\n".join(bad)
+
+
+def _is_json_read(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("load", "loads") and _name(node.func.value) == "json")
+
+
+def test_json_reads_handle_a_recursion_error():
+    bad = []
+    for path, tree in sources():
+        relative = path.relative_to(ROOT).as_posix()
+        for node, function, guarded in _walk(tree, handled=DEPTH_HANDLERS):
+            if _is_json_read(node) and not guarded and (relative, function) not in JSON_READS_CAUGHT_BY_CALLER:
+                bad.append(f"{relative}:{node.lineno}")
+    assert not bad, "json.load/json.loads with no RecursionError handler:\n" + "\n".join(bad)
 
 
 def test_scripts_that_print_set_utf8_stdout():

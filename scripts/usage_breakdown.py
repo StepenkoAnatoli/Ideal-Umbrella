@@ -67,7 +67,7 @@ def summarize(files):
             for line in f:
                 try:
                     event = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
                 if not isinstance(event, dict) or event.get("type") != "assistant":
                     continue

@@ -43,6 +43,15 @@ def _date(text):
         raise argparse.ArgumentTypeError(f"{text!r} is not a date like 2026-10-27") from None
 
 
+def _text(text):
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # A command-line byte that is not UTF-8 arrives as a lone surrogate: it cannot be written.
+        raise argparse.ArgumentTypeError(f"{text!r} is not valid UTF-8 text") from None
+    return text
+
+
 def previous_entry(path):
     """Return (line number, entry, skipped) for the last line that is a JSON object.
     A missing file is (None, None, 0); a file that cannot be read raises OSError."""
@@ -51,12 +60,14 @@ def previous_entry(path):
     except FileNotFoundError:
         return None, None, 0
     found, number, skipped = None, None, 0
-    for index, raw in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
+    # Lines end at "\n" only: str.splitlines() also splits on U+2028, form feed and others,
+    # which json.dumps(ensure_ascii=False) leaves raw inside a string.
+    for index, raw in enumerate(data.decode("utf-8", errors="replace").split("\n"), 1):
         if not raw.strip():
             continue
         try:
             entry = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: a hand edit nested too deep
             entry = None
         if isinstance(entry, dict):
             found, number = entry, index
@@ -115,16 +126,19 @@ def main(argv=None):
                         help="cache write of the first API call in a fresh transcript")
     parser.add_argument("--tools", type=_count, help="number of tools a new session loads")
     parser.add_argument("--deny-applied", type=_yes_no, help="yes when permissions.deny was in place")
-    parser.add_argument("--cc-version", help="Claude Code version (claude --version)")
-    parser.add_argument("--note", help="free text kept with the line")
+    parser.add_argument("--cc-version", type=_text, help="Claude Code version (claude --version)")
+    parser.add_argument("--note", type=_text, help="free text kept with the line")
     parser.add_argument("--date", type=_date, default=datetime.date.today().isoformat())
     parser.add_argument("--file", default=str(DEFAULT_FILE))
     parser.add_argument("--dry-run", action="store_true", help="print, write nothing")
     args = parser.parse_args(argv)
     if all(getattr(args, key) is None for key in MEASURES):
         parser.error("give at least one of --fixed-tokens, --first-call-cache-write, --tools, --deny-applied")
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            # -I ignores PYTHONUTF8: set UTF-8 output here. A file name that is not UTF-8 holds
+            # lone surrogates, printed as escapes rather than raising after the line is written.
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     entry = {"date": args.date}
     for key in ("cc_version",) + MEASURES + ("note",):

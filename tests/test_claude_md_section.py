@@ -362,3 +362,171 @@ def test_dry_run_names_the_section_and_writes_nothing(install_module, uninstall_
     assert "CLAUDE.md: Ideal-Umbrella section removed" in changes
     assert read_md(home) == installed
     assert len(backups(home)) == 1
+
+
+FENCED = [
+    pytest.param("# Mine\n\nExample:\n```markdown\n" + BEGIN + "\n- example A\n" + END + "\n```\n- more\n", id="backticks"),
+    pytest.param("~~~\n" + BEGIN + "\n- example A\n" + END + "\n~~~\n", id="tildes"),
+    pytest.param("````md\n```\n" + BEGIN + "\n- a\n" + END + "\n```\n````\n", id="longer-fence-holds-a-shorter-one"),
+    pytest.param("  ```\n" + BEGIN + "\n- a\n```\n", id="begin-only-inside-a-fence"),
+]
+
+
+@pytest.mark.parametrize("before", FENCED)
+def test_marker_lines_inside_a_code_fence_are_an_example_not_the_section(install_module, uninstall_module, tmp_path, before):
+    # Review 1, finding 1: a fenced example of the managed block was taken for the section,
+    # replaced with the rules, and then removed by uninstall, losing the example lines.
+    home = tmp_path / "home"
+    write_md(home, before)
+    install_module.install(home)
+    assert read_md(home) == before + "\n" + SECTION
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    changes, _ = install_module.install(home)
+    assert changes == []
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+    assert backups(home) == []
+
+
+def test_a_fence_never_closed_does_not_hide_the_section(install_module, tmp_path):
+    # An opening fence line with no closing one would, read as Markdown, run to the end of the
+    # file and swallow the section install appends; then every run would append another.
+    home = tmp_path / "home"
+    write_md(home, "mine\n```\nstray\n")
+    install_module.install(home)
+    changes, _ = install_module.install(home)
+    assert changes == []
+    assert read_md(home).count(BEGIN) == 1
+
+
+def test_a_hand_wrapped_old_install_is_migrated_and_undone(install_module, uninstall_module, tmp_path):
+    # Review 1, finding 2: a user of the whole-file installer put the markers around the rules
+    # by hand (the new manual install step). The record kept the whole-file format, so
+    # uninstall refused and the file the old install moved aside stayed in its backup.
+    home = tmp_path / "home"
+    old_install(install_module, home, before="my own rules\n")
+    write_md(home, SECTION)
+    install_module.install(home)
+    assert read_md(home) == SECTION
+    entry = read_record(home)["claude_md"]
+    assert entry["format"] == "section" and entry["legacy_backup"] == OLD_BACKUP
+    assert install_module.install(home) == ([], [])
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "my own rules\n"
+    assert backups(home) == []
+
+
+def test_a_hand_wrapped_old_install_that_created_the_file_is_deleted(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    old_install(install_module, home)
+    write_md(home, SECTION)
+    install_module.install(home)
+    assert read_record(home)["claude_md"]["created"] is True
+    uninstall_module.uninstall(home)
+    assert not md(home).exists()
+
+
+BOM = "﻿"
+
+
+def test_a_bom_before_the_section_is_kept(install_module, uninstall_module, tmp_path):
+    # Review 1, finding 3: the BOM was dropped when the begin marker was line 1.
+    home = tmp_path / "home"
+    install_module.install(home)
+    write_md(home, BOM + read_md(home) + "my text\n")
+    edit_section(home)
+    install_module.install(home)
+    assert read_md(home) == BOM + SECTION + "my text\n"
+    uninstall_module.uninstall(home)
+    assert read_md(home) == BOM + "my text\n"
+
+
+def test_a_created_file_holding_a_bom_and_the_section_is_deleted(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    write_md(home, BOM + read_md(home))
+    uninstall_module.uninstall(home)
+    assert not md(home).exists()
+
+
+def test_a_hand_copy_after_a_bom_is_wrapped_not_added_again(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    write_md(home, BOM + RULES)
+    install_module.install(home)
+    assert read_md(home) == BOM + SECTION
+    uninstall_module.uninstall(home)
+    assert read_md(home) == BOM + RULES
+    assert backups(home) == []
+
+
+def test_removing_only_the_marker_lines_keeps_the_rules_ours(install_module, uninstall_module, tmp_path):
+    # Review 1, finding 6: the rules the install added were wrapped as the user's own on the
+    # next run, so uninstall left them, and a second backup was made and never removed.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    write_md(home, read_md(home).replace(BEGIN + "\n", "").replace(END + "\n", ""))
+    install_module.install(home)
+    assert read_md(home) == "mine\n\n" + SECTION
+    assert len(backups(home)) == 1
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n"
+    assert backups(home) == []
+
+
+def test_a_new_backup_before_the_section_is_added_again_is_the_one_recorded(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    first = backups(home)
+    write_md(home, "mine\nmore\n")   # the user deleted the whole section and wrote more
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\nmore\n"
+    assert backups(home) == first   # the newer backup equals the file again and goes
+
+
+def test_a_failed_write_after_the_backup_leaves_no_orphan_backup(install_module, uninstall_module, tmp_path, monkeypatch):
+    # Review 1, finding 7: the rerun made a second backup and recorded only that one.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    real = install_module._write_bytes
+
+    def failing(path, data):
+        if path.name == "CLAUDE.md":
+            raise OSError(28, "No space left on device")
+        real(path, data)
+    monkeypatch.setattr(install_module, "_write_bytes", failing)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_bytes", real)
+    install_module.install(home)
+    assert len(backups(home)) == 1
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n"
+    assert backups(home) == []
+
+
+def test_uninstall_reports_an_edited_section_this_install_did_not_write(install_module, uninstall_module, tmp_path):
+    # Review 1, finding 8: the record has no CLAUDE.md entry (the section was already there),
+    # and the user edited it: uninstall said nothing.
+    home = tmp_path / "home"
+    write_md(home, "mine\n\n" + SECTION)
+    install_module.install(home)
+    assert "claude_md" not in read_record(home)
+    edited = edit_section(home)
+    _, notices = uninstall_module.uninstall(home)
+    assert read_md(home) == edited
+    assert any("section" in n and "left as is" in n for n in notices), notices
+
+
+def test_an_old_install_saved_with_a_bom_is_migrated_and_undone(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    old_install(install_module, home, before="mine\n")
+    write_md(home, BOM + RULES)
+    install_module.install(home)
+    assert read_md(home) == BOM + SECTION
+    uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n"
+    assert backups(home) == []

@@ -20,7 +20,7 @@ for path in sys.argv[1:]:
         sys.exit(f"error: {e}")
     for line in f:
         try: e = json.loads(line)
-        except ValueError: continue
+        except (ValueError, RecursionError): continue
         m = e.get("message") if isinstance(e, dict) else None
         if not isinstance(e, dict) or e.get("isSidechain") or not isinstance(m, dict) or m.get("role") != "user": continue
         parts = [m["content"]] if isinstance(m.get("content"), str) else [b.get("text", "") for b in m.get("content") or [] if isinstance(b, dict) and b.get("type") == "text"]

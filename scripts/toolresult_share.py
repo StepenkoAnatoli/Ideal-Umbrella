@@ -41,7 +41,7 @@ for path in sys.argv[1:]:
         for line in f:
             try:
                 e = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if not isinstance(e, dict) or e.get("isSidechain"):
                 continue

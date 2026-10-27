@@ -128,6 +128,8 @@ def _read_json(path):
         raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data

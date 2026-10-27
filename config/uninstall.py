@@ -185,6 +185,11 @@ def _rest_without_section(current, found, entry):
     return before + after
 
 
+def _blank(text):
+    """True when text holds nothing but whitespace and a BOM, which no editor shows."""
+    return not text.lstrip("\ufeff").strip()
+
+
 def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
     """Remove the section install added to CLAUDE.md; return True when the file is left as
     is with the record entry kept, so a later run can still undo it."""
@@ -204,7 +209,7 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
         notices.append("CLAUDE.md is not UTF-8; left as is with its Ideal-Umbrella section")
         return True
     rest = _rest_without_section(current, found, entry)
-    if not rest.strip():
+    if _blank(rest):
         if legacy:
             if legacy_path is None or not legacy_path.exists():
                 # The install replaced a file of yours and its backup is gone: removing the
@@ -328,6 +333,9 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 # so it is the user's own: say so rather than pass over it in silence.
                 notices.append("CLAUDE.md's Ideal-Umbrella section matches the template but was not "
                                "written by this install; left as is")
+            else:
+                notices.append("the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md "
+                               "and was not written by this install; left as is")
         elif evidence and not ours:
             notices.append("the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md; left as is")
         elif evidence and not md_utf8:
@@ -339,7 +347,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
                 changes.append("CLAUDE.md: Ideal-Umbrella section removed (a backup is kept)")
             else:
                 backup = install._backup(claude_md)
-                if rest.strip():
+                if not _blank(rest):
                     install._write_bytes(claude_md, rest.encode("utf-8"))
                     done(f"CLAUDE.md: Ideal-Umbrella section removed (copy kept as {backup.name})")
                 else:

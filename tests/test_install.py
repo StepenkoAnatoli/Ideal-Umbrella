@@ -281,6 +281,20 @@ def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
     assert settings_file(home).read_text(encoding="utf-8") == settings_before
 
 
+@pytest.mark.parametrize("name", ["settings", "record"])
+def test_json_nested_too_deep_is_a_one_line_error(install_module, tmp_path, capsys, name):
+    # json.load raises RecursionError, not ValueError, for a file nested thousands of levels
+    # deep; it used to end the install with a traceback instead of the one-line error.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)[name]
+    path.write_text("[" * 100000, encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err and "nothing written" in err and "Traceback" not in err
+    assert path.read_text(encoding="utf-8") == "[" * 100000
+
+
 def test_record_that_is_not_an_object_is_an_error(install_module, tmp_path):
     record = tmp_path / "install-record.json"
     record.write_text("[1, 2]", encoding="utf-8")

@@ -24,7 +24,7 @@ def tool_calls(folder):
             for line in f:
                 try:
                     event = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
                 message = event.get("message") if isinstance(event, dict) else None
                 content = message.get("content") if isinstance(message, dict) else None
@@ -61,7 +61,7 @@ def main(argv=None):
     try:
         with open(USER_SETTINGS, encoding="utf-8") as f:
             denied = json.load(f).get("permissions", {}).get("deny", [])
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         print(f"error: cannot read {USER_SETTINGS}: {e}", file=sys.stderr)
         return 1
     print("\nDenied in config/user-settings.json:")

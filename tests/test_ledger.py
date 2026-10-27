@@ -15,7 +15,7 @@ def ledger():
 
 
 def lines(path):
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    return [json.loads(line) for line in path.read_bytes().decode("utf-8").split("\n") if line]
 
 
 def test_first_run_creates_the_file_and_says_there_is_nothing_to_compare(ledger, tmp_path, capsys):
@@ -132,3 +132,46 @@ def test_the_repository_ledger_is_valid(ledger):
     for entry in entries:
         assert isinstance(entry, dict) and isinstance(entry.get("date"), str)
         assert set(entry) & set(ledger.MEASURES), entry
+
+
+def test_a_line_separator_in_a_note_does_not_split_the_line(ledger, tmp_path, capsys):
+    # Review 1, finding 4: str.splitlines() also splits on U+2028, U+2029, NEL, FF and VT,
+    # which json.dumps(ensure_ascii=False) leaves raw; the line read back as two broken ones.
+    path = tmp_path / "m.jsonl"
+    ledger.main(["--file", str(path), "--fixed-tokens", "71396", "--note", "before after\x0c\x85"])
+    ledger.main(["--file", str(path), "--fixed-tokens", "70000", "--note", "second"])
+    capsys.readouterr()
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "69000"]) == 0
+    out = capsys.readouterr().out
+    assert "unreadable" not in out
+    assert "change since line 2 " in out and "70,000 -> 69,000" in out
+    assert lines(path)[0]["note"] == "before after\x0c\x85"
+
+
+def test_a_deeply_nested_hand_edit_is_skipped_not_a_traceback(ledger, tmp_path, capsys):
+    # Review 1, finding 5: json.loads raises RecursionError, not ValueError, for deep nesting.
+    path = tmp_path / "m.jsonl"
+    path.write_text('{"fixed_tokens": 71396}\n' + "[" * 100000 + "\n", encoding="utf-8")
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "70000"]) == 0
+    out = capsys.readouterr().out
+    assert "1 unreadable line(s) skipped" in out and "71,396 -> 70,000" in out
+
+
+@pytest.mark.parametrize("option", ["--note", "--cc-version"])
+def test_text_that_is_not_unicode_is_a_usage_error(ledger, tmp_path, option):
+    # A command-line byte that is not UTF-8 arrives as a lone surrogate, which cannot be written.
+    path = tmp_path / "m.jsonl"
+    with pytest.raises(SystemExit) as stop:
+        ledger.main(["--file", str(path), "--tools", "3", option, "caf\udce9"])
+    assert stop.value.code == 2
+    assert not path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="file names that are not UTF-8 are a Linux case")
+def test_a_file_name_that_is_not_utf8_is_printed_not_a_traceback(tmp_path):
+    folder = tmp_path / "d\udcff"
+    result = subprocess.run([sys.executable, "-I", str(SCRIPT), "--file", str(folder / "m.jsonl"), "--tools", "3"],
+                            capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert b"Traceback" not in result.stderr and b"appended to" in result.stdout
+    assert lines(folder / "m.jsonl") == [{"date": lines(folder / "m.jsonl")[0]["date"], "tools": 3}]

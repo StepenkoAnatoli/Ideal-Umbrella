@@ -201,7 +201,7 @@ def fixed_load_drift(markdown, ledger_text):
     if not match:
         return "the fixed-load line cites no line of research/measurements.jsonl"
     stated, number = int(match.group(1).replace(",", "")), int(match.group(2))
-    rows = ledger_text.splitlines()
+    rows = ledger_text.split("\n")   # newlines only, as ledger.py and editors count lines
     if not 1 <= number <= len(rows):
         return f"research/measurements.jsonl has no line {number}"
     actual = json.loads(rows[number - 1]).get("fixed_tokens")
@@ -217,3 +217,11 @@ def test_fixed_load_drift_is_caught():
     assert fixed_load_drift(readme.replace("**71,396 tokens**", "**70,000 tokens**"), ledger)
     assert fixed_load_drift(readme, ledger.replace("71396", "70000"))
     assert fixed_load_drift(readme.replace("measurements.jsonl` line 1", "measurements.jsonl` line 9"), ledger)
+
+
+def test_fixed_load_line_numbers_count_newlines_only():
+    # Review 1, finding 4: a U+2028 kept raw in a note is not a line break for the ledger, an
+    # editor or `sed -n N p`, so it must not shift the line the README cites.
+    readme = read("README.md").replace("measurements.jsonl` line 1", "measurements.jsonl` line 2")
+    ledger = '{"date": "2026-10-01", "tools": 3, "note": "a\u2028b"}\n' + read("research/measurements.jsonl")
+    assert fixed_load_drift(readme, ledger) is None

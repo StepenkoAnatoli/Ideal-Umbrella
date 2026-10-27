@@ -25,9 +25,11 @@ config/uninstall.py can put back the values that were there before.
 import argparse
 import datetime
 import errno
+import glob
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -42,6 +44,7 @@ HOOK_SRC = HERE.parent / "hooks" / "context_check.py"
 # not a heading: config/CLAUDE.md itself has two H1 headings.
 SECTION_BEGIN = "<!-- Ideal-Umbrella rules: begin -->"
 SECTION_END = "<!-- Ideal-Umbrella rules: end -->"
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)")
 
 REQUIRED_TOOLS = (
     "Artifact",
@@ -241,12 +244,21 @@ def _read_json(path):
         raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
     return data
 
 
 def _backup(path):
+    """Copy path to a timestamped backup beside it and return the backup's path. A backup
+    already holding the same bytes is returned instead: a run that failed after its backup
+    would otherwise leave one that no record names and no uninstall removes."""
+    data = path.read_bytes()
+    for earlier in sorted(path.parent.glob(glob.escape(path.name) + ".bak-*")):
+        if earlier.is_file() and not earlier.is_symlink() and earlier.read_bytes() == data:
+            return earlier
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
     n = 1
@@ -348,21 +360,45 @@ def section_text(rules):
     return f"{SECTION_BEGIN}\n{rules}{SECTION_END}\n"
 
 
+def _fenced(lines):
+    """Numbers of the lines inside a closed Markdown code fence (``` or ~~~), fence lines
+    included. A fence never closed hides nothing: read as Markdown it would run to the end
+    of the file and swallow the section install appends there."""
+    inside, opened = set(), None
+    for number, line in enumerate(lines, 1):
+        match = FENCE.match(line)
+        if opened is None:
+            # A backtick fence's info string holds no backtick (CommonMark).
+            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
+                opened = (number, match.group(1))
+        elif match and match.group(1)[0] == opened[1][0] and len(match.group(1)) >= len(opened[1]) \
+                and not match.group(2).strip():
+            inside.update(range(opened[0], number + 1))
+            opened = None
+    return inside
+
+
 def find_section(text):
     """Where the Ideal-Umbrella section is in text: (start, body_start, body_end, end) as
     offsets, from the begin marker line to past the end marker line's line break; None when
     text has no marker line. A marker is a whole line (trailing whitespace ignored), so a line
-    that only mentions one is not one. A marker without its pair, a second section, or an end
-    before the begin is a ValueError: guessing where the section ends could delete the
-    user's text."""
+    that only mentions one is not one, and neither is a marker line inside a code fence (an
+    example the user wrote). A BOM before a begin marker on line 1 stays outside the section.
+    A marker without its pair, a second section, or an end before the begin is a ValueError:
+    guessing where the section ends could delete the user's text."""
     begins, ends = [], []
     offset = 0
-    for number, line in enumerate(text.split("\n"), 1):
+    lines = text.split("\n")
+    if lines[0].startswith("\ufeff"):
+        lines[0] = lines[0][1:]
+        offset = 1
+    fenced = _fenced(lines)
+    for number, line in enumerate(lines, 1):
         bare = line.rstrip()
-        if number == 1:
-            bare = bare.lstrip("\ufeff")
         after = min(offset + len(line) + 1, len(text))
-        if bare == SECTION_BEGIN:
+        if number in fenced:
+            pass
+        elif bare == SECTION_BEGIN:
             begins.append((number, offset, after))
         elif bare == SECTION_END:
             ends.append((number, offset, after))
@@ -388,10 +424,10 @@ def plan_claude_md(current, rules, old):
 
     current is the file's text (None when there is none), rules the template, old the
     record's claude_md entry from an earlier install. Returns None when the section is
-    already the template, else a dict: text (the whole new file), entry (for the record),
-    backup ("user" for the file before the section is added, "edited" for a section the
-    user changed, None) and change (the line to report). Raises ValueError for broken
-    markers.
+    already the template, else a dict: text (the whole new file; None when only the record
+    changes), entry (for the record), backup ("user" for the file before the section is
+    added, "edited" for a section the user changed, None) and change (the line to report).
+    Raises ValueError for broken markers.
     """
     old = old if isinstance(old, dict) else None
     old_format = old is not None and "format" not in old   # the whole-file installer's entry
@@ -412,7 +448,13 @@ def plan_claude_md(current, rules, old):
         start, _, _, end = found
         present = section_text(section_body(current, found))
         if present == section:
-            return None
+            if not old_format:
+                return None
+            # The user put the markers around the whole-file install by hand: nothing to
+            # write, but the record must move to the section format, or uninstall would
+            # compare the whole file and never give back the file that install moved aside.
+            entry["created"] = old.get("backup") is None
+            return {"text": None, "entry": entry, "backup": None, "change": "CLAUDE.md section recorded"}
         still_ours = not old_format and old is not None and old.get("sha256") == text_hash(present)
         if not old_format and old is not None:
             entry["joined"] = old.get("joined", "")
@@ -429,13 +471,19 @@ def plan_claude_md(current, rules, old):
     copy = _lf(rules)
     copy = (copy if copy.endswith("\n") else copy + "\n").replace("\n", newline)
     at = current.find(copy)
-    if copy.strip() and at >= 0 and current.find(copy, at + 1) < 0 and (at == 0 or current[at - 1] == "\n"):
-        # An unmarked copy of the rules (left by the whole-file installer, or copied by hand) is
-        # wrapped in the marker lines, not added a second time. A hand copy is the user's, so
-        # uninstall takes only the marker lines away again.
-        entry["wrapped"] = not old_format
+    line_start = at >= 0 and (current[:at] in ("", "\ufeff") or current[at - 1] == "\n")
+    if copy.strip() and line_start and current.find(copy, at + 1) < 0:
+        # An unmarked copy of the rules is wrapped in the marker lines, not added a second
+        # time. With a record it is the installer's own (the whole-file install, or a section
+        # whose marker lines were deleted): uninstall removes it, and only marker lines are
+        # added, so no backup is needed. Without one it is a hand copy and the user's: backed
+        # up, and uninstall takes only the marker lines away again.
+        entry["wrapped"] = old is None
+        if old is not None and not old_format:
+            entry["joined"] = old.get("joined", "")
         text = current[:at] + SECTION_BEGIN + newline + copy + SECTION_END + newline + current[at + len(copy):]
-        return {"text": text, "entry": entry, "backup": "user", "change": "CLAUDE.md rules marked as a section"}
+        return {"text": text, "entry": entry, "backup": "user" if old is None else None,
+                "change": "CLAUDE.md rules marked as a section"}
 
     if current:
         entry["joined"] = ("" if current.endswith("\n") else newline) + newline
@@ -456,6 +504,8 @@ def read_record(path):
             data = json.load(f)
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it or delete it first") from e
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deeply to be read; fix it or delete it first") from None
     except OSError as e:
         raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
@@ -554,8 +604,10 @@ def install(home, force=False, progress=None, config_dir=None):
             if md_plan["backup"] == "edited":
                 notices.append(f"the Ideal-Umbrella section of CLAUDE.md had edits; they are kept in {backup.name}")
             else:
-                entry.setdefault("safety_backup", backup.name)
-        _write_bytes(paths["claude_md"], md_plan["text"].encode("utf-8"))
+                # The file as it is now, before the section: the bytes an uninstall gives back.
+                entry["safety_backup"] = backup.name
+        if md_plan["text"] is not None:
+            _write_bytes(paths["claude_md"], md_plan["text"].encode("utf-8"))
         changes.append(md_plan["change"])
         progress.append(changes[-1])
         record["claude_md"] = entry

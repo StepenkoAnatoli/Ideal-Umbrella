@@ -7,7 +7,7 @@ section between two exact marker lines; `config/uninstall.py` removes only that 
 
 "It is a month later and the change hurt someone. What happened?"
 
-| # | Failure story | Likelihood | Guard (test name in tests/test_install.py or tests/test_uninstall.py) |
+| # | Failure story | Likelihood | Guard (test name in tests/test_claude_md_section.py) |
 |---|---|---|---|
 | 1 | The section boundary is the next `# ` heading (graphify's design); `config/CLAUDE.md` itself has two H1 headings, so install found half a section and appended a second copy every run. | certain with heading markers | Explicit begin/end comment lines, not headings. `test_reinstall_is_idempotent_with_user_text` |
 | 2 | A user line that merely contains the marker text (a note quoting it) was taken as the marker and their text between was deleted (graphify issue #2062: substring match). | medium | Whole-line match only. `test_a_line_that_mentions_the_marker_is_not_one` |
@@ -23,7 +23,12 @@ section between two exact marker lines; `config/uninstall.py` removes only that 
 | 12 | `--verify-only` passed on an old whole-file install, so users never migrated; or failed on any user line. | medium | Verify needs the section; text outside it is ignored. `test_verify_ignores_user_text_outside_the_section`, `test_verify_fails_without_a_section` |
 | 13 | Section at EOF without a trailing newline was seen as edited. | low | Canonical form adds the final newline before comparing. `test_section_without_final_newline_is_ours` |
 | 14 | A marker line with trailing spaces (editor) stopped matching. | low | Trailing whitespace ignored on marker lines. Covered by #2 test |
-| 15 | The marker lines cost tokens in every session. | certain, small | Two short HTML comment lines, about 16 tokens at most; stated in the README. |
+| 15 | The marker lines cost tokens in every session. | certain, small | Two short HTML comment lines, about 18 tokens (tiktoken `cl100k_base`); stated in the README. |
+| 16 | A fenced example of the marker lines in the user's own text was taken for the section, replaced, and removed by uninstall (review 1, finding 1). | low | Marker lines inside a closed ``` or ~~~ fence are ignored; a fence never closed hides nothing. `test_marker_lines_inside_a_code_fence_are_an_example_not_the_section`, `test_a_fence_never_closed_does_not_hide_the_section` |
+| 17 | A whole-file install the user wrapped in the markers by hand kept its old record, so uninstall refused and never restored the old backup (finding 2). | low | The record is migrated even when CLAUDE.md needs no write. `test_a_hand_wrapped_old_install_is_migrated_and_undone` |
+| 18 | A BOM before a begin marker on line 1 was dropped on update and uninstall (finding 3). | low | The BOM stays outside the section; a rest of only a BOM counts as empty. `test_a_bom_before_the_section_is_kept` |
+| 19 | The user deleted only the marker lines; the next install wrapped the rules as the user's own, so uninstall left them (finding 6). | low | With a record, an unmarked copy is the installer's. `test_removing_only_the_marker_lines_keeps_the_rules_ours` |
+| 20 | A write that failed after the backup left a backup no record names (finding 7). | low | A backup with the same bytes is reused. `test_a_failed_write_after_the_backup_leaves_no_orphan_backup` |
 
 Not changed on purpose: `config/cloud-setup.sh` still writes the whole file with `cat >`, because
 a cloud machine starts empty and is discarded; the drift test keeps it equal to the template.
