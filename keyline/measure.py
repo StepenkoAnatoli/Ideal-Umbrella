@@ -40,7 +40,7 @@ def count(text, encs):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if not argv or argv[0].startswith("-"):
         print(__doc__.strip(), file=sys.stderr)
         return 2

@@ -564,12 +564,51 @@ def test_a_fence_closed_only_after_the_section_does_not_hide_it(install_module, 
     later = "```\ncode\n```\n"
     write_md(home, read_md(home) + later)
     assert install_module.install(home) == ([], [])
-    ok, issues, _ = install_module.verify(home)
+    ok, issues, warnings = install_module.verify(home)
     assert ok, issues
+    assert any("code fence" in w for w in warnings), warnings
+    # Review 3, finding 3: the same text is also what a fenced example of the section looks
+    # like after the live one is deleted, so uninstall leaves it and says how to finish.
+    _, notices = uninstall_module.uninstall(home)
+    assert read_md(home) == "mine\n```\nstray\n\n" + SECTION + later
+    assert any("code fence" in n and "line 5" in n for n in notices), notices
+    assert read_record(home)["claude_md"]["format"] == "section"
+    write_md(home, "mine\n```\nstray\n```\n\n" + SECTION + later)   # the fence closed by hand
     uninstall_module.uninstall(home)
-    assert read_md(home) == "mine\n```\nstray\n\n" + later
-    # The user added text after the section, so the file differs from the backup: it stays.
-    assert [(home / ".claude" / b).read_bytes() for b in backups(home)] == [b"mine\n```\nstray\n"]
+    assert read_md(home) == "mine\n```\nstray\n```\n\n" + later
+
+
+def test_a_fenced_example_of_the_section_is_never_taken_for_it(install_module, uninstall_module, tmp_path):
+    # Review 3, finding 3: the user keeps the installed block as a fenced example and deletes
+    # the live section. Its body hashes to the record, so the fallback for a section that only
+    # looks fenced took it, and uninstall deleted the user's example.
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    user = "mine\n\nThe block the installer adds looks like this:\n\n```markdown\n" + SECTION + "```\n"
+    write_md(home, user)
+    assert install_module.install(home) == ([], [])
+    ok, issues, warnings = install_module.verify(home)
+    assert any("code fence" in w for w in warnings), warnings
+    _, notices = uninstall_module.uninstall(home)
+    assert read_md(home) == user
+    assert any("code fence" in n for n in notices), notices
+
+
+def test_a_template_change_does_not_rewrite_a_fenced_section(install_module, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    write_md(home, "mine\n")
+    install_module.install(home)
+    user = "mine\n\n```markdown\n" + SECTION + "```\n"
+    write_md(home, user)
+    record = record_path(home).read_bytes()
+    new_md = tmp_path / "CLAUDE.md"
+    new_md.write_bytes((RULES + "- a rule added later\n").encode("utf-8"))
+    monkeypatch.setattr(install_module, "CLAUDE_MD", new_md)
+    with pytest.raises(ValueError, match="code fence"):
+        install_module.install(home)
+    assert read_md(home) == user
+    assert record_path(home).read_bytes() == record
 
 
 def test_a_wrapped_copy_stays_the_users_after_the_template_changes(install_module, uninstall_module, tmp_path, monkeypatch):
@@ -642,3 +681,45 @@ def test_a_failed_restore_of_the_legacy_backup_keeps_both_files(install_module, 
         uninstall_module.uninstall(home)
     assert read_md(home) == SECTION
     assert (home / ".claude" / OLD_BACKUP).read_bytes() == b"my own rules\n"
+
+
+def test_a_hand_copy_wrapped_again_after_its_marker_lines_were_deleted_stays_the_users(
+        install_module, uninstall_module, tmp_path):
+    # Review 3, finding 1: the wrap path set "wrapped" from "is there a record" alone, so the
+    # second wrap of the user's own copy recorded it as the installer's and uninstall removed it.
+    home = tmp_path / "home"
+    before = "my notes\n\n" + RULES
+    write_md(home, before)
+    install_module.install(home)
+    write_md(home, before)   # the user deletes the two marker lines
+    install_module.install(home)
+    assert read_record(home)["claude_md"]["wrapped"] is True
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+
+
+def test_a_long_fence_with_only_shorter_closers_is_ordinary_text(install_module):
+    # A ```` line is closed only by a fence of four or more; with none after it, it is text.
+    text = "````\n```\n" + SECTION
+    assert install_module.find_section(text) is not None
+
+
+@pytest.mark.parametrize("later, after", [
+    pytest.param(None, None, id="file-deleted"),
+    pytest.param("other\n", "other\n", id="file-rewritten"),
+])
+def test_a_new_section_after_a_wrapped_copy_is_the_installers(install_module, uninstall_module, tmp_path,
+                                                             later, after):
+    # The wrapped copy is gone with the file it was in; the section the next install writes is
+    # the installer's, so uninstall takes it away (and the file, when install created it).
+    home = tmp_path / "home"
+    write_md(home, "my notes\n\n" + RULES)
+    install_module.install(home)
+    if later is None:
+        md(home).unlink()
+    else:
+        write_md(home, later)
+    install_module.install(home)
+    assert "wrapped" not in read_record(home)["claude_md"]
+    uninstall_module.uninstall(home)
+    assert (read_md(home) if md(home).exists() else None) == after

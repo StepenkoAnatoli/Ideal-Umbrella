@@ -136,7 +136,7 @@ def main():
     patterns = parse_watch(sys.argv[1:])
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
-            s.reconfigure(encoding="utf-8")
+            s.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         event = json.load(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"))
         path = Path(event["tool_input"]["file_path"])

@@ -28,6 +28,7 @@ import errno
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -240,7 +241,8 @@ JSON_DEPTH = 100
 def _check_json(data, path, fix="fix it first"):
     """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
     than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
-    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8).
+    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8) or a number
+    json.dumps would write as Infinity or NaN.
     Called right after reading, so the run stops before its first write."""
     stack = [(data, 1)]
     while stack:
@@ -251,6 +253,11 @@ def _check_json(data, path, fix="fix it first"):
             except UnicodeEncodeError:
                 raise ValueError(f"{path} holds text that is not valid Unicode (a lone surrogate "
                                  f"such as \\ud800); {fix}") from None
+        elif isinstance(value, float) and not math.isfinite(value):
+            # json.loads reads 1e400 as inf and NaN as nan; json.dumps would write them back as
+            # Infinity and NaN, which are not JSON, so the next reader fails on the file.
+            raise ValueError(f"{path} holds a number that is not a JSON number ({value!r}, from "
+                             f"1e400, NaN or Infinity); {fix}")
         elif isinstance(value, (dict, list)):
             if depth > JSON_DEPTH:
                 raise ValueError(f"{path} is nested more than {JSON_DEPTH} levels deep; {fix}")
@@ -308,8 +315,12 @@ def _backup(path, backup=None):
     """Copy path to a timestamped backup beside it (or to backup, from _backup_name) and
     return the backup's path. An existing backup with the same bytes is not copied again."""
     backup = backup or _backup_name(path)
-    if not (backup.is_file() and not backup.is_symlink() and backup.read_bytes() == path.read_bytes()):
-        shutil.copy2(path, backup)
+    data = path.read_bytes()
+    if not (backup.is_file() and not backup.is_symlink() and backup.read_bytes() == data):
+        # Whole or not at all, like every other write: a copy cut short by a full disk would
+        # leave a truncated backup that no record names and no uninstall removes.
+        _write_bytes(backup, data)
+        shutil.copystat(path, backup)
     return backup
 
 
@@ -366,7 +377,7 @@ def _write_bytes(path, data):
 
 
 def _write_json(path, data):
-    _write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    _write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
 
 
 def _read_text(path):
@@ -491,6 +502,21 @@ def find_section(text, recorded=None):
     return begins[0][1], begins[0][2], ends[0][1], ends[0][2]
 
 
+def fenced_line(text, found):
+    """The line number of the begin marker when the section find_section found is inside a
+    code fence (found by the recorded hash), else None. Such a section is either the
+    installed one behind a fence line the user left open, or a fenced example of it the user
+    kept after deleting the live one; no tool can tell which, so none of them changes it."""
+    number = text.count("\n", 0, found[0]) + 1
+    return number if number in _fenced(_lines(text)[0]) else None
+
+
+def fence_advice(number):
+    return (f"the Ideal-Umbrella section of CLAUDE.md (line {number}) is inside a code fence, so it "
+            "may be an example you wrote; if it is the installed section, close the code fence "
+            "opened above it")
+
+
 def section_body(text, found):
     """The rules between the marker lines found by find_section, with LF line ends."""
     return _lf(text[found[1]:found[2]])
@@ -528,6 +554,9 @@ def plan_claude_md(current, rules, old):
     if found:
         start, _, _, end = found
         present = section_text(section_body(current, found))
+        number = fenced_line(current, found)
+        if number is not None and present != section:
+            raise ValueError(f"{fence_advice(number)}; nothing is changed until then")
         if present == section:
             if not old_format:
                 return None
@@ -562,10 +591,11 @@ def plan_claude_md(current, rules, old):
     if copy.strip() and at is not None:
         # An unmarked copy of the rules is wrapped in the marker lines, not added a second
         # time. With a record it is the installer's own (the whole-file install, or a section
-        # whose marker lines were deleted): uninstall removes it, and only marker lines are
-        # added, so no backup is needed. Without one it is a hand copy and the user's: backed
-        # up, and uninstall takes only the marker lines away again.
-        entry["wrapped"] = old is None
+        # whose marker lines were deleted), unless the record says the copy was the user's to
+        # begin with: uninstall removes it, and only marker lines are added, so no backup is
+        # needed. Without one it is a hand copy and the user's: backed up, and uninstall takes
+        # only the marker lines away again.
+        entry["wrapped"] = old is None or entry.get("wrapped") is True
         if old is not None and not old_format:
             entry["joined"] = old.get("joined", "")
         text = current[:at] + SECTION_BEGIN + newline + copy + SECTION_END + newline + current[at + len(copy):]
@@ -618,6 +648,46 @@ def read_record(path):
         raise ValueError(f"{path} must be a JSON object; fix it or delete it first")
     _check_json(data, path, "fix it or delete it first")
     return data
+
+
+def _describes(entry, text):
+    """True when the record's claude_md entry matches CLAUDE.md as text holds it."""
+    if not isinstance(entry, dict) or text is None:
+        return False
+    if "format" not in entry:   # the whole-file installer's entry: the hash of the whole file
+        return entry.get("sha256") == text_hash(_lf(text))
+    try:
+        found = find_section(text, entry.get("sha256"))
+    except ValueError:
+        return False
+    return found is not None and text_hash(section_text(section_body(text, found))) == entry.get("sha256")
+
+
+def settle_record(record, settings, claude_md_text):
+    """The record as it describes the files on disk now.
+
+    install writes its record before its other writes, so that a write that fails still
+    leaves every change named; the record it replaces goes in "pending" until the run ends.
+    When a write failed, a part of the new record may describe a change that never landed:
+    for that part the earlier description is used when it is the one the files match (an
+    installed value still in settings.json, a CLAUDE.md that is still the earlier section or
+    whole-file install). settings is the parsed settings.json (None when there is none).
+    """
+    if not isinstance(record, dict) or not isinstance(record.get("pending"), dict):
+        return record
+    earlier = record["pending"]
+    settled = {key: value for key, value in record.items() if key != "pending"}
+    installed, before = settled.get("installed"), earlier.get("installed")
+    if isinstance(installed, dict) and isinstance(before, dict) and isinstance(settings, dict):
+        installed = dict(installed)
+        for key, value in before.items():
+            if key in settings and settings[key] == value and installed.get(key) != value:
+                installed[key] = value
+        settled["installed"] = installed
+    entry, before = settled.get("claude_md"), earlier.get("claude_md")
+    if isinstance(before, dict) and not _describes(entry, claude_md_text) and _describes(before, claude_md_text):
+        settled["claude_md"] = before
+    return settled
 
 
 def _merge_record(old, new):
@@ -675,6 +745,16 @@ def install(home, force=False, progress=None, config_dir=None):
         progress = []
     record = {}
 
+    command = hook_command(home, config_dir)
+    try:
+        command.encode("utf-8")
+    except UnicodeEncodeError:
+        # A path holding bytes that are not UTF-8 (possible on Linux): settings.json is UTF-8,
+        # so the hook command could never be written, after the other files were.
+        raise ValueError(f"the hook command {command!r} holds a path that is not UTF-8, and "
+                         "settings.json can only hold UTF-8; install from, and into, folders whose "
+                         "names are UTF-8") from None
+
     # Read and check everything before writing anything, and write settings.json after the
     # hook file: its hook entry must never point at a hook file that was not copied (a missing
     # hook file exits 2, which blocks every prompt).
@@ -683,9 +763,9 @@ def install(home, force=False, progress=None, config_dir=None):
             raise ValueError(f"{paths[name]} is a symlink to a missing target; fix or remove it first")
     existing = _read_json(paths["settings"]) if paths["settings"].exists() else {}
     template = _read_json(USER_SETTINGS)
-    old_record = read_record(paths["record"]) or {}
     claude_md = _read_text(CLAUDE_MD)
     current_md = _read_text(paths["claude_md"]) if paths["claude_md"].exists() else None
+    old_record = settle_record(read_record(paths["record"]) or {}, existing, current_md)
     try:
         md_plan = plan_claude_md(current_md, claude_md, old_record.get("claude_md"))
     except ValueError as e:
@@ -713,12 +793,16 @@ def install(home, force=False, progress=None, config_dir=None):
         record["claude_md"] = entry
 
     # The record comes first: it names every change this run makes, so a write that fails
-    # after it still leaves a record the undo works from. A change it names that never landed
-    # is harmless to undo (a key that already holds its old value is skipped, a backup that
-    # equals the file is deleted); a change it does not name would be stranded: a rerun sees
-    # the section or the values already in place and records nothing for them.
-    if hook_changed or md_plan is not None or setting_changes:
-        _write_json(paths["record"], _merge_record(old_record, record))
+    # after it still leaves a record the undo works from; a change it did not name would be
+    # stranded (a rerun sees the section or the values already in place and records nothing
+    # for them). Until the last write is done it also keeps the record it replaces, as
+    # "pending": a change it names that never landed is then undone by the earlier description
+    # (settle_record), or is harmless to undo (a key that still holds its value from before the
+    # first install is skipped, a backup that equals the file is deleted).
+    merged = _merge_record(old_record, record)
+    changing = hook_changed or md_plan is not None or setting_changes
+    if changing:
+        _write_json(paths["record"], dict(merged, pending=old_record) if old_record else merged)
         progress.append("install record written")
 
     if hook_changed:
@@ -743,6 +827,8 @@ def install(home, force=False, progress=None, config_dir=None):
             progress.append(setting_changes[-1])
         _write_json(paths["settings"], existing)
         progress.append("settings.json written")
+    if changing and old_record:
+        _write_json(paths["record"], merged)   # every write landed: nothing is pending
     return setting_changes + changes, notices
 
 
@@ -846,7 +932,7 @@ def verify(home, config_dir=None):
     else:
         text = paths["claude_md"].read_bytes().decode("utf-8", errors="replace")
         try:
-            entry = (read_record(paths["record"]) or {}).get("claude_md")
+            entry = (settle_record(read_record(paths["record"]), None, text) or {}).get("claude_md")
         except ValueError:
             entry = None   # the record is checked by install and uninstall, not here
         recorded = entry.get("sha256") if isinstance(entry, dict) and entry.get("format") == "section" else None
@@ -859,6 +945,8 @@ def verify(home, config_dir=None):
                 issues.append("CLAUDE.md has no Ideal-Umbrella section; run install.py")
             elif section_text(section_body(text, found)) != section_text(_read_text(CLAUDE_MD)):
                 issues.append("the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md")
+            if found is not None and fenced_line(text, found) is not None:
+                warnings.append(fence_advice(fenced_line(text, found)))
 
     if not paths["hook"].exists():
         issues.append(f"Missing: {paths['hook']}")
@@ -892,7 +980,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        # A path that is not UTF-8 (Linux) is printed escaped rather than ending in a traceback.
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     home, config_dir = target(args.home)
 
     if not args.verify_only:

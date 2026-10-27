@@ -131,7 +131,8 @@ def print_report(files, tot, out_chars, turns):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if len(argv) not in (1, 2):
         sys.exit("usage: python -I scripts/usage_breakdown.py <transcript folder> [count]")
     folder = argv[0]

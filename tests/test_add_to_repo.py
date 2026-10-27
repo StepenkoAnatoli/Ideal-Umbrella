@@ -307,6 +307,9 @@ def test_an_object_valued_template_key_merges_key_by_key(add_to_repo):
 @pytest.mark.parametrize("text, message", [
     pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
     pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+    pytest.param('{"\\ud800": 1}', "not valid Unicode", id="surrogate-key"),
+    # Review 3, finding 5: written back as Infinity, which Claude Code cannot read.
+    pytest.param('{"limit": 1e400}', "not a JSON number", id="too-big"),
 ])
 def test_settings_that_cannot_be_written_back_stop_before_any_write(tmp_path, text, message):
     # Review 2, findings 6 and 7: the hook was copied before the settings write failed.
@@ -325,3 +328,11 @@ def test_a_huge_handoff_value_is_a_plain_usage_error(tmp_path):
     result = run_with(repo, "--handoff-at", "9" * 5000)
     assert result.returncode != 0
     assert "--handoff-at" in result.stderr and "Exceeds" not in result.stderr
+
+
+def test_a_handoff_value_padded_with_zeros_is_read_without_the_digit_limit(tmp_path):
+    # Review 3, info 1: leading zeros got past the digit limit to int(), which counts them.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", "0" * 5000 + "120000")
+    assert result.returncode == 0, result.stderr[-300:]
+    assert settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"] == "120000"

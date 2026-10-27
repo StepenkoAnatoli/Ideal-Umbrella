@@ -11,7 +11,10 @@
 3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first. The
    scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
    the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
-   replaced byte becomes) used to end the script with UnicodeEncodeError.
+   replaced byte becomes) used to end the script with UnicodeEncodeError. It also passes
+   `errors="backslashreplace"`: a Linux path that is not UTF-8 holds lone surrogates, which no
+   encoding prints, and `--verify-only` ended in a traceback on one (review 3 of the graphify
+   branch, finding 4).
 4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
    folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
    no transcript at all. The check sees attribute calls (`glob.glob`, `glob.escape`) inside
@@ -121,6 +124,8 @@ def _sets_utf8_stdout(node):
     return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == "reconfigure"
             and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
+                    for k in node.keywords)
+            and any(k.arg == "errors" and isinstance(k.value, ast.Constant) and k.value.value == "backslashreplace"
                     for k in node.keywords))
 
 
@@ -185,7 +190,7 @@ def test_scripts_that_print_set_utf8_stdout():
         prints = [node for node in nodes if _prints_to_stdout(node)]
         if prints and not any(_sets_utf8_stdout(node) for node in nodes):
             bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
-    assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8"):\n' + "\n".join(bad)
+    assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace"):\n' + "\n".join(bad)
 
 
 def _glob_call(node, names):

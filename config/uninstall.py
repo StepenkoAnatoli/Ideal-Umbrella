@@ -206,11 +206,19 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
             # The install recorded its section and made this backup, then stopped before its
             # CLAUDE.md write (or the user took the section out by hand): the file is the backup.
             apply(f"CLAUDE.md backup {safety.name} deleted (CLAUDE.md holds the same bytes)", safety.unlink)
+        elif safety is not None and not (safety.exists() or safety.is_symlink()):
+            # The install recorded its section, then stopped before it made the backup it
+            # named: CLAUDE.md was never touched.
+            pass
         else:
             notices.append("CLAUDE.md has no Ideal-Umbrella section; left as is"
                            + (f" (your file from before the first install is in {legacy})"
                               if legacy_path and legacy_path.exists() else ""))
         return False
+    number = install.fenced_line(current, found)
+    if number is not None:
+        notices.append(f"{install.fence_advice(number)}, and run uninstall again; left as is")
+        return True
     if install.text_hash(install.section_text(install.section_body(current, found))) != entry.get("sha256"):
         notices.append("the Ideal-Umbrella section of CLAUDE.md differs from what was installed; left as is")
         return True
@@ -285,6 +293,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         raise ValueError(f"cannot read {claude_md} ({e.strerror or e})") from e
     current_md = raw_md.decode("utf-8", errors="replace") if raw_md is not None else None
     md_utf8 = raw_md is not None and current_md.encode("utf-8") == raw_md
+    record = install.settle_record(record, settings, current_md)
     try:
         entry = (record or {}).get("claude_md")
         recorded = entry.get("sha256") if isinstance(entry, dict) and entry.get("format") == "section" else None
@@ -429,7 +438,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     # Paths in the output may hold characters outside the Windows ANSI code page.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     home, config_dir = install.target(args.home)
     progress = []

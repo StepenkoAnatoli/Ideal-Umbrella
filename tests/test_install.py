@@ -603,6 +603,12 @@ NOT_WRITABLE = [
     pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
     # Review 2, finding 7: valid JSON holding a lone surrogate, which UTF-8 cannot encode.
     pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+    # Review 3, info 2d: the same in a key.
+    pytest.param('{"\\ud800": 1}', "not valid Unicode", id="surrogate-key"),
+    # Review 3, finding 5: read as inf and written back as Infinity, which is not JSON, so
+    # Claude Code could read none of settings.json.
+    pytest.param('{"myTool": {"limit": 1e400}}', "not a JSON number", id="too-big"),
+    pytest.param('{"limit": NaN}', "not a JSON number", id="nan"),
 ]
 
 
@@ -630,3 +636,21 @@ def test_an_error_after_a_write_does_not_say_nothing_was_written(install_module,
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
     assert "nothing written" not in err and "Done before the error" in err and "hook written" in err
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a path that is not UTF-8 needs a Linux file system")
+def test_a_home_path_that_is_not_utf8_stops_before_any_write_and_verify_has_no_traceback(tmp_path):
+    # Review 3 of the graphify branch, finding 4: the hook command holds the path, and
+    # settings.json is UTF-8, so the install wrote the record, the hook and CLAUDE.md and then
+    # failed on settings.json, on every rerun; --verify-only printed a traceback.
+    home = os.fsencode(tmp_path) + b"/caf\xe9-home"
+    os.makedirs(home + b"/.claude")
+    run = [os.fsencode(sys.executable), b"-I", os.fsencode(INSTALL), b"--home", home]
+    result = subprocess.run(run, cwd=ROOT, capture_output=True)
+    stderr = result.stderr.decode("utf-8", "replace")
+    assert result.returncode != 0
+    assert "UTF-8" in stderr and "Traceback" not in stderr and "nothing written" in stderr, stderr
+    assert os.listdir(home + b"/.claude") == []
+    result = subprocess.run(run + [b"--verify-only"], cwd=ROOT, capture_output=True)
+    assert result.returncode != 0
+    assert b"Traceback" not in result.stderr, result.stderr

@@ -16,6 +16,7 @@ hand-off threshold as env.IDEAL_UMBRELLA_HANDOFF_AT (other env keys stay).
 """
 import errno
 import json
+import math
 import os
 import sys
 
@@ -124,7 +125,8 @@ JSON_DEPTH = 100
 def _check_json(data, path):
     """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
     than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
-    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8).
+    json.loads reads) or holding a lone surrogate (valid JSON, but not encodable as UTF-8) or a number
+    json.dumps would write as Infinity or NaN.
     The same check as config/install.py's (this script runs on its own, without it)."""
     stack = [(data, 1)]
     while stack:
@@ -135,6 +137,11 @@ def _check_json(data, path):
             except UnicodeEncodeError:
                 raise ValueError(f"{path} holds text that is not valid Unicode (a lone surrogate "
                                  "such as \\ud800); fix it first") from None
+        elif isinstance(value, float) and not math.isfinite(value):
+            # json.loads reads 1e400 as inf and NaN as nan; json.dumps would write them back as
+            # Infinity and NaN, which are not JSON, so the next reader fails on the file.
+            raise ValueError(f"{path} holds a number that is not a JSON number ({value!r}, from "
+                             f"1e400, NaN or Infinity); fix it first")
         elif isinstance(value, (dict, list)):
             if depth > JSON_DEPTH:
                 raise ValueError(f"{path} is nested more than {JSON_DEPTH} levels deep; fix it first")
@@ -213,7 +220,7 @@ def _write_bytes(path, data):
 
 
 def _write_json(path, data):
-    _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+    _write_bytes(path, (json.dumps(data, indent=2, allow_nan=False) + "\n").encode("utf-8"))
 
 
 USAGE = "usage: python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo folder>"
@@ -236,18 +243,21 @@ def _take_handoff_at(argv):
     if len(values) > 1:
         raise ValueError("--handoff-at is given more than once")
     value = values[0]
-    if value.isascii() and value.isdigit() and len(value.lstrip("0")) > 15:
-        # int() refuses more than 4300 digits with its own message; no context window is near.
+    # Leading zeros go before int(): it refuses more than 4300 digits, zeros included.
+    digits = value.lstrip("0") if value.isascii() and value.isdigit() else None
+    if digits is not None and len(digits) > 15:
+        # No context window is near 16 digits.
         raise ValueError(f"--handoff-at {value[:20]}... is too large; give a whole number of tokens")
-    if not (value.isascii() and value.isdigit() and int(value) > 0):
-        raise ValueError(f"--handoff-at needs a whole number of tokens above 0, not {value!r}")
-    return int(value), rest
+    if not digits:
+        raise ValueError(f"--handoff-at needs a whole number of tokens above 0, not {value[:40]!r}")
+    return int(digits), rest
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # the repo path may not fit the ANSI code page
+        # the repo path may not fit the ANSI code page
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
     try:
