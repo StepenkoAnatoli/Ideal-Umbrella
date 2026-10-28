@@ -109,6 +109,25 @@ def test_missing_scalar_still_fails_verification(install_module, tmp_path):
     assert any("autoCompactWindow is missing" in issue for issue in issues)
 
 
+@pytest.mark.parametrize("record, ok", [(None, True), ("{not json", False)], ids=["no-record", "corrupt-record"])
+def test_verify_only_does_not_need_a_readable_record(install_module, tmp_path, capsys, record, ok):
+    # Review 32, finding L2: --verify-only does not check the record, so a deleted one still
+    # verifies, and a corrupt one (here with no hooks in settings.json, so verify() binds no
+    # other entry first) gives the verification's own result, not a traceback.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)["record"]
+    if record is None:
+        path.unlink()
+    else:
+        path.write_text(record, encoding="utf-8")
+        settings_file(home).write_text("{}\n", encoding="utf-8")
+    capsys.readouterr()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == (0 if ok else 1)
+    out = capsys.readouterr().out
+    assert ("[OK] Installation verified" if ok else "[FAIL] Verification failed") in out, out
+
+
 def test_verify_only_does_not_create_files(install_module, tmp_path, capsys):
     home = tmp_path / "home"
     assert install_module.main(["--home", str(home), "--verify-only"]) == 1
@@ -242,6 +261,20 @@ def test_relative_home_gives_absolute_hook_path(install_module, tmp_path, monkey
     assert list((tmp_path / "x").iterdir()) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot delete the current folder")
+def test_a_relative_home_from_a_deleted_current_folder_is_a_one_line_error(install_module, tmp_path, monkeypatch,
+                                                                            capsys):
+    # Review 32, finding L2: making the home absolute needs the current folder, and its
+    # FileNotFoundError is reported as the other errors before any write are.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    assert install_module.main(["--home", "relhome"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and err.endswith("; nothing written\n") and "Traceback" not in err, err
+
+
 @pytest.mark.skipif(os.name == "nt", reason="the passwd entry is POSIX")
 def test_an_unset_home_is_taken_from_the_passwd_entry(install_module, tmp_path, monkeypatch):
     # Review 17, K4: cron, env -i and systemd units run with no HOME; Path.home() then reads the
@@ -356,6 +389,25 @@ def test_a_record_written_before_a_failed_settings_write_undoes_cleanly(install_
     assert not any("not the installed value" in n for n in notices), notices
     assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 1}
     assert not paths["hook"].exists()
+
+
+@pytest.mark.parametrize("tool", ["install", "uninstall"])
+def test_a_pending_record_naming_a_key_deleted_since_is_settled(install_module, tmp_path, capsys, tool):
+    # Review 32, finding L2: a record left pending by a failed write, whose earlier install
+    # wrote a key the user has deleted since; settling it must not look the key up.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)["record"]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["pending"] = {k: v for k, v in record.items() if k != "claude_md"}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    _edit_settings(home, lambda s: s.pop("autoCompactWindow"))
+    module = install_module if tool == "install" else load_module("uninstall_module", "config/uninstall.py")
+    capsys.readouterr()
+    assert module.main(["--home", str(home)]) == 0, capsys.readouterr().err
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    # install adds the key again; uninstall leaves it deleted.
+    assert ("autoCompactWindow" in settings) == (tool == "install")
 
 
 def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
@@ -748,6 +800,8 @@ def test_an_error_after_a_write_does_not_say_nothing_was_written(install_module,
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
     assert "nothing written" not in err and "Done before the error" in err and "hook written" in err
+    # Review 32, finding L3: the record is written first, and is named too.
+    assert "  - install record written\n" in err, err
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="a path that is not UTF-8 needs a Linux file system")
@@ -798,7 +852,9 @@ def test_a_private_settings_file_stays_private(install_module, tmp_path):
 BAD_FIELDS = [("added_keys", 5), ("added_keys", None), ("added_keys", [1]), ("replaced", None),
               ("replaced", ["a"]), ("replaced", "ab"), ("installed", ["autoCompactWindow"]),
               ("deny_added", 5), ("deny_added", "Artifact"), ("created", 5), ("claude_md", "x"),
-              ("pending", 5), ("pending", {"added_keys": 5})]
+              ("pending", 5), ("pending", {"added_keys": 5}),
+              # Review 32, finding L6: a list holding something other than a name.
+              ("deny_added", ["Artifact", 5]), ("created", [5])]
 
 
 @pytest.mark.parametrize("field, value", BAD_FIELDS)

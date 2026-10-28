@@ -188,7 +188,10 @@ def _rest_without_section(current, found, entry):
                 break
             cut = cut[:-2] if cut.endswith("\r\n") else cut[:-1]
         else:
-            before = cut
+            # A single break is added only after text that already ends in one (install.py), so
+            # when the text is left without one, the break was the user's: the blank line is gone.
+            if joined.count("\n") > 1 or cut.endswith("\n"):
+                before = cut
     return before + after
 
 

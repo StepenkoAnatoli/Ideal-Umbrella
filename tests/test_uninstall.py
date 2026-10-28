@@ -372,6 +372,29 @@ def test_non_utf8_claude_md_does_not_block_uninstall(install_module, uninstall_m
     assert any("CLAUDE.md" in n for n in notices)
 
 
+def test_a_non_utf8_claude_md_with_the_section_is_undone_once_the_byte_is_fixed(install_module, uninstall_module,
+                                                                                tmp_path):
+    # Review 32, M5 (mutant U306): the test above replaces the whole file, so its section is
+    # gone and the not-UTF-8 branch is never reached. There the file is left, and so must be
+    # its record entry: with the entry dropped, the run after the user fixed the byte said
+    # "Nothing to undo." and the section stayed for good.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="mine\n")
+    md = home / ".claude" / "CLAUDE.md"
+    own = md.read_bytes()   # "mine" and the line break the seed wrote (CRLF on Windows)
+    install_module.install(home)
+    installed = md.read_bytes()
+    md.write_bytes(b"caf\xe9\n" + installed)   # a Latin-1 byte the user typed
+    _, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md is not UTF-8; left as is with its Ideal-Umbrella section" in notices, notices
+    assert md.read_bytes() == b"caf\xe9\n" + installed
+
+    md.write_bytes(b"cafe\n" + installed)      # fixed; the uninstall is run again
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"cafe\n" + own
+
+
 def test_reinstall_updates_a_value_an_earlier_install_wrote(uninstall_module, tmp_path, monkeypatch):
     home = tmp_path / "home"
     seed(home, {"model": "opus"})
@@ -495,6 +518,43 @@ def test_a_key_deleted_by_hand_after_a_forced_install_stays_deleted(install_modu
     assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"mine": 1}
 
 
+def test_a_value_changed_after_a_forced_install_is_named_and_the_settings_backup_too(install_module,
+                                                                                    uninstall_module, tmp_path):
+    # Review 32, L3: a value the install replaced, then changed by the user, is neither the
+    # installed value nor the one from before; it was left with no note (mutant U98, which took
+    # it for a value the install never wrote). Mutant U543 lost the line naming the backup.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 1000})
+    install_module.install(home, force=True)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 2000
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    changes, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow is 2000, not the installed value; left as is" in notices, notices
+    assert read_settings(home)["autoCompactWindow"] == 2000
+    (named,) = [c[len("settings backup: "):] for c in changes if c.startswith("settings backup: ")]
+    assert named.startswith("settings.json.bak-") and (home / ".claude" / named).is_file(), changes
+
+
+def test_a_pending_record_naming_a_key_the_user_deleted_is_no_traceback(install_module, uninstall_module, tmp_path,
+                                                                        capsys):
+    # Review 32, L2 (mutant I609, the uninstall side): a record still holding "pending" (an
+    # install stopped by a failed write) whose earlier "installed" names a key no longer in
+    # settings.json stopped uninstall with a KeyError.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["pending"] = {k: v for k, v in record.items() if k != "claude_md"}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    settings = read_settings(home)
+    del settings["autoCompactWindow"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    assert uninstall_module.main(["--home", str(home)]) == 0, capsys.readouterr().err
+    assert read_settings(home) == {}
+    assert not (home / ".claude" / "ballast" / "context_check.py").exists()
+
+
 @pytest.mark.parametrize("content", ["{broken", "[1]", '{"added_keys": 5}', '{"a": "\\ud800"}',
                                      pytest.param("[" * 100000, id="deep")])
 def test_the_error_for_a_bad_record_does_not_advise_deleting_it(install_module, uninstall_module, tmp_path, capsys,
@@ -538,6 +598,9 @@ def test_os_error_mid_undo_is_reported_not_raised(install_module, uninstall_modu
     err = capsys.readouterr().err
     assert err.startswith("Error:") and "run again" in err
     assert "Traceback" not in err and "nothing written" not in err
+    # Review 32, L3 (mutant U545): what was done before the error includes the settings write.
+    done = err[err.index("Done before the error:"):].splitlines()
+    assert "  - settings.json written" in done and any(d.startswith("  - settings backup: ") for d in done), err
     assert read_settings(home) == {"model": "opus"}
 
     hook.rmdir()
@@ -560,8 +623,32 @@ def test_record_without_claude_md_entry_keeps_the_file_and_says_so(install_modul
 
     changes, notices = uninstall_module.uninstall(home)
     assert not any("CLAUDE.md" in c for c in changes), changes
-    assert any("not written by this install" in n for n in notices), notices
+    # Review 32, L3 (mutant U443): both notes end "not written by this install"; this one says
+    # the rules match.
+    assert "CLAUDE.md's Ideal-Umbrella section matches the template but was not written by this install; " \
+           "left as is" in notices, notices
     assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == by_hand
+
+
+def test_a_section_the_install_did_not_write_whose_rules_differ_is_said_to_differ(install_module, uninstall_module,
+                                                                                  tmp_path):
+    # Review 32, L3 (mutant U443): a record that names no CLAUDE.md change, and a section whose
+    # rules are not config/CLAUDE.md's, got the note that the section matches the template.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="my rules\n")
+    install_module.install(home)
+    md = home / ".claude" / "CLAUDE.md"
+    text = md.read_text(encoding="utf-8").replace("Keep decisions in files", "Keep MY decisions in files")
+    md.write_text(text, encoding="utf-8")
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"] = None
+    path.write_text(json.dumps(record), encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert [n for n in notices if "CLAUDE.md" in n] == [
+        "the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md and was not written by this "
+        "install; left as is"], notices
+    assert md.read_text(encoding="utf-8") == text
 
 
 def test_non_string_backup_name_in_record_does_not_crash(install_module, uninstall_module, tmp_path):
@@ -613,6 +700,62 @@ def test_a_failed_section_removal_never_leaves_a_truncated_claude_md(install_mod
         uninstall_module.uninstall(home)
     assert claude_md.read_text(encoding="utf-8") == installed
     assert list((home / ".claude").glob("CLAUDE.md.bak-*"))
+
+
+@pytest.mark.parametrize("own, kept", [("mine", "mine\n"), ("first\r\nmine", "first\r\nmine\r\n")],
+                         ids=["lf", "crlf"])
+def test_a_deleted_blank_line_above_the_section_costs_none_of_the_users_text(install_module, uninstall_module,
+                                                                             tmp_path, own, kept):
+    # Review 32, M1 (mutant U188): a file with no final line break gets two before the section,
+    # and the record says so. The user deleted the blank line, so one is left: it is taken, and
+    # the cut stops at the user's own text, not one character into it ("min").
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own.encode("utf-8"))
+    install_module.install(home)
+    text = md.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in own else "\n"
+    assert text.startswith(own + newline * 2 + "<!--"), text[:40]
+    md.write_bytes((own + newline + text[len(own + newline * 2):]).encode("utf-8"))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == kept.encode("utf-8")
+
+
+@pytest.mark.parametrize("own", ["mine\n", "first\r\nmine\r\n"], ids=["lf", "crlf"])
+def test_a_deleted_blank_line_above_the_section_keeps_the_users_final_line_break(install_module, uninstall_module,
+                                                                                 tmp_path, own):
+    # Review 32: a file ending in a line break gets one more before the section. With the blank
+    # line deleted, the break left is the user's own, so uninstall keeps it ("mine\n", not "mine").
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own.encode("utf-8"))
+    install_module.install(home)
+    text = md.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in own else "\n"
+    assert text.startswith(own + newline + "<!--"), text[:40]
+    md.write_bytes((own + text[len(own + newline):]).encode("utf-8"))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == own.encode("utf-8")
+
+
+def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module, uninstall_module, tmp_path,
+                                                                 capsys):
+    # Review 32, L2 (mutant U45): a hand-edited "joined": 5 reached joined.strip() and stopped
+    # uninstall with an AttributeError. It is no separator: the section goes, the text above stays.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="my rules\n")
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"]["joined"] = 5
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert uninstall_module.main(["--home", str(home)]) == 0, capsys.readouterr().err
+    text = (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert text.startswith("my rules\n") and "Ideal-Umbrella" not in text, text
 
 
 @pytest.mark.parametrize("name", ["../CLAUDE.md.bak", "sub/CLAUDE.md.bak"])
@@ -1121,6 +1264,23 @@ def test_a_whole_file_record_with_a_backup_on_an_emptied_file_names_the_backup(i
     assert any("differs" in n and backup.name in n for n in notices), notices
 
 
+def test_a_whole_file_record_on_a_changed_file_whose_backup_is_gone_says_so(install_module, uninstall_module,
+                                                                           tmp_path):
+    # Review 32, L3 (mutant U493): the note was the only word; without it the run was silent.
+    home = tmp_path / "home"
+    seed(home, {})
+    name = "CLAUDE.md.bak-20250101-000000"
+    whole_file_install(install_module, home, name)
+    for path in (home / ".claude").glob("CLAUDE.md.bak-*"):
+        path.unlink()
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_text("my rules, put back by hand\n", encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert [n for n in notices if "CLAUDE.md" in n] == [
+        f"CLAUDE.md is not the file the install wrote, and the backup {name} is gone; left as is"], notices
+    assert md.read_text(encoding="utf-8") == "my rules, put back by hand\n"
+
+
 def test_a_folder_named_as_the_safety_backup_is_no_backup_when_the_section_is_removed(
         install_module, uninstall_module, tmp_path):
     # Review 12, mutants m06 and m07: finish() reads the copy from before the section.
@@ -1276,6 +1436,27 @@ def test_a_backup_replaced_by_a_dangling_link_is_not_taken_for_gone(install_modu
     changes, notices = uninstall_module.uninstall(home)
     assert md.read_bytes() == b"mine\n" and backup.is_symlink(), (changes, notices)
     assert "CLAUDE.md has no Ideal-Umbrella section; left as is" in notices, notices
+
+
+def test_a_section_taken_out_by_hand_is_named_when_the_legacy_backup_differs(install_module, uninstall_module,
+                                                                             tmp_path):
+    # Review 32, L3 (mutant U269): a first-install backup that differs from the file is no sign
+    # that an earlier uninstall restored it, so the section was taken out by hand: say so.
+    home = tmp_path / "home"
+    seed(home, {}, claude_md="my rules\n")
+    install_module.install(home)
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_text("my rules, edited\n", encoding="utf-8")
+    legacy = "CLAUDE.md.bak-20250101-000000"
+    (home / ".claude" / legacy).write_text("the whole-file rules\n", encoding="utf-8")
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["claude_md"]["legacy_backup"] = legacy
+    path.write_text(json.dumps(record), encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md has no Ideal-Umbrella section; left as is" in notices, notices
+    assert f"your CLAUDE.md from before the first install is still in {legacy}" in notices, notices
+    assert md.read_text(encoding="utf-8") == "my rules, edited\n"
 
 
 @pytest.mark.parametrize("script", ["install", "uninstall"])
@@ -1788,6 +1969,21 @@ def test_a_home_that_is_a_file_is_not_found(install_module, uninstall_module, tm
         err = capsys.readouterr().err
         assert "cannot find the home folder" in err and "nothing written" in err, err
     assert (tmp_path / "home").read_text(encoding="utf-8") == "not a folder\n"
+
+
+def test_an_os_error_while_finding_the_home_is_a_one_line_error(uninstall_module, tmp_path, capsys, monkeypatch):
+    # Review 32, L2 (mutant U571): a relative --home run from a folder that was deleted makes
+    # os.getcwd() raise FileNotFoundError inside target(); it was a traceback without the
+    # OSError in main's except. target() is made to raise it, as no folder can be deleted under
+    # the current process on Windows.
+    import errno
+
+    def gone(home):
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+    monkeypatch.setattr(uninstall_module.install, "target", gone)
+    assert uninstall_module.main(["--home", "relhome"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ") and "nothing written" in err and len(err.splitlines()) == 1, err
 
 
 def test_an_os_error_at_the_first_write_does_not_say_part_way(install_module, uninstall_module, tmp_path, capsys,

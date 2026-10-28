@@ -92,6 +92,22 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, capsys, mo
         assert f"not UTF-8 (invalid continuation byte at byte {len(bom) + 3})" in capsys.readouterr().err
 
 
+def test_a_missing_file_is_a_warning_and_the_rest_are_counted(tmp_path, capsys, monkeypatch):
+    # Review 32, L3 (mutant V265): no test had a missing file, so its warning could go (the run
+    # went silent) or turn into "Error reading" with the FileNotFoundError branch deleted.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))
+    missing = tmp_path / "missing.txt"
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    assert module.main(["--api-key", "k", "--model", "m", str(missing), str(good)]) == 0
+    out = capsys.readouterr()
+    assert out.err == f"Warning: {missing} not found, skipping\n", out.err
+    assert "good.txt" in out.out and "missing.txt" not in out.out
+
+
 @pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
 def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys, monkeypatch, pathlib_kind):
     # Review 24, F1 other hits: on 3.14 exists() says False for a file in a folder that cannot

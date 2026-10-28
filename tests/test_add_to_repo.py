@@ -362,6 +362,43 @@ def test_a_bad_handoff_value_is_a_usage_error_and_nothing_is_written(tmp_path, f
     assert not (repo / ".claude" / "settings.json").exists()
 
 
+@pytest.mark.parametrize("flags, message", [
+    (["--handoff-at", "1", "--handoff-at", "2"], "--handoff-at is given more than once"),
+    (["--handoff-at", "abc"], "--handoff-at needs a whole number of tokens above 0, not 'abc'"),
+], ids=["twice", "not-a-number"])
+def test_a_bad_handoff_value_says_what_is_wrong_before_the_usage_line(add_to_repo, tmp_path, flags, message):
+    # Review 32, L3 (mutant A90): without the reason only the usage line was printed.
+    repo = repo_with(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([*flags, str(repo)])
+    assert e.value.code == f"{message}\n{add_to_repo.USAGE}"
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("args", [[], ["no-such-repo"]], ids=["no-argument", "missing-repo"])
+def test_no_repo_or_a_missing_one_is_the_usage_line(add_to_repo, tmp_path, args):
+    # Review 32, L2: no argument gave an IndexError (mutant A47), and a repo that is not there an
+    # AttributeError on None (mutant A50), where the usage line is right.
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([str(tmp_path / a) for a in args])
+    assert e.value.code == add_to_repo.USAGE
+    assert not (tmp_path / "no-such-repo").exists()
+
+
+@pytest.mark.parametrize("depth, ok", [(100, True), (101, False)])
+def test_settings_nested_up_to_the_limit_are_read(add_to_repo, depth, ok):
+    # Review 32, L4 (mutant A135): test_install.py has this boundary test, add_to_repo had not.
+    # The outermost list is level 1.
+    value = 1
+    for _ in range(depth):
+        value = [value]
+    if ok:
+        add_to_repo._check_json(value, "settings.json")
+    else:
+        with pytest.raises(ValueError, match="nested"):
+            add_to_repo._check_json(value, "settings.json")
+
+
 def test_env_that_is_not_an_object_stops_before_any_write(tmp_path):
     repo = repo_with(tmp_path, {"env": ["IDEAL_UMBRELLA_HANDOFF_AT=1"]})
     before = (repo / ".claude" / "settings.json").read_bytes()
@@ -404,7 +441,8 @@ def test_a_huge_handoff_value_is_a_plain_usage_error(tmp_path):
     repo = repo_with(tmp_path)
     result = run_with(repo, "--handoff-at", "9" * 5000)
     assert result.returncode != 0
-    assert "--handoff-at" in result.stderr and "Exceeds" not in result.stderr
+    # Review 32, L3 (mutant A90): the usage line names --handoff-at too, so check the reason.
+    assert f"--handoff-at {'9' * 20}... is too large" in result.stderr and "Exceeds" not in result.stderr
 
 
 def test_a_handoff_value_padded_with_zeros_is_read_without_the_digit_limit(tmp_path):

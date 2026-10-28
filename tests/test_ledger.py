@@ -223,6 +223,22 @@ def test_a_count_after_a_zero_is_compared_without_a_percentage(ledger, tmp_path,
     assert "fixed_tokens: 0 -> 5 (+5)" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("earlier, args, shown", [
+    ({"fixed_tokens": "71,396"}, ["--fixed-tokens", "70000"], "fixed_tokens: 71,396 -> 70,000"),
+    ({"cc_version": 2.1}, ["--tools", "40", "--cc-version", "2.2.0"], "cc_version: 2.1 -> 2.2.0"),
+], ids=["count-as-text", "version-as-number"])
+def test_a_hand_edited_line_of_another_type_is_compared_as_text(ledger, tmp_path, capsys, earlier, args, shown):
+    # Review 32, L2 (mutants L141 and L142): a delta is taken only when both values are numbers;
+    # with either check dropped, a count kept as text or a version kept as a number gave a
+    # TypeError after the line was appended.
+    path = tmp_path / "m.jsonl"
+    path.write_text(json.dumps({"date": "2026-10-19", **earlier}) + "\n", encoding="utf-8")
+    assert ledger.main(["--file", str(path), *args, "--date", "2026-10-27"]) == 0
+    out = capsys.readouterr().out
+    assert f"  {shown}" in out.splitlines(), out
+    assert len(lines(path)) == 2
+
+
 def test_a_file_it_cannot_write_is_a_one_line_error_not_a_traceback(tmp_path):
     folder = tmp_path / "m.jsonl"
     folder.mkdir()  # the --file path is a folder: reading and appending both fail

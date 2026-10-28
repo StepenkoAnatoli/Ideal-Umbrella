@@ -396,6 +396,10 @@ FENCED = [
     # Review 2, finding 2b: a ``` fence never closed used to hide the ~~~ fence after it.
     pytest.param("notes\n```\nstray\n\nExample:\n~~~\n" + BEGIN + "\n- example A\n" + END + "\n~~~\n",
                  id="a-fence-never-closed-before-a-fenced-example"),
+    # Review 32, finding M3: a fence line of the other character inside a block neither closes
+    # it nor hides the block's own closer.
+    pytest.param("mine\n\n```\n~~~\n" + BEGIN + "\n- example\n" + END + "\n```\n", id="backticks-holding-a-tilde-line"),
+    pytest.param("mine\n\n~~~\n```\n" + BEGIN + "\n- example\n" + END + "\n~~~\n", id="tildes-holding-a-backtick-line"),
 ]
 
 
@@ -487,6 +491,52 @@ def test_a_hand_copy_after_a_bom_is_wrapped_not_added_again(install_module, unin
     assert backups(home) == []
 
 
+def test_a_hand_copy_in_a_crlf_file_is_wrapped_not_added_again(install_module, uninstall_module, tmp_path):
+    # Review 32, finding L5: the copy looked for is the rules with the file's line ends; with
+    # LF ones it was not found in a CRLF file, and the rules were added a second time.
+    home = tmp_path / "home"
+    before = ("mine\n" + RULES).replace("\n", "\r\n")
+    write_md(home, before)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md rules marked as a section" in changes, changes
+    assert read_md(home) == ("mine\n" + SECTION).replace("\n", "\r\n")
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+    assert backups(home) == []
+
+
+def test_a_copy_of_the_rules_that_does_not_start_a_line_is_not_wrapped(install_module, uninstall_module, tmp_path):
+    # Review 32, finding M4: wrapped, the copy's line would get the begin marker after its own
+    # text, which is no marker line, and the run's own verification would fail after the write.
+    home = tmp_path / "home"
+    before = "mine\nQuoted: " + RULES
+    write_md(home, before)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md section added" in changes, changes
+    assert read_md(home) == before + "\n" + SECTION
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+    assert backups(home) == []
+
+
+def test_a_hand_copy_at_the_end_without_its_final_line_break_is_added_as_a_section(install_module, uninstall_module,
+                                                                                tmp_path):
+    # Review 32, finding L1: the copy looked for ends in a line break, so one at the end of the
+    # file without it is not found and the rules are added once more (README: as for a copy
+    # whose line ends differ). Wrapping it instead would give the copy a line break that
+    # uninstall cannot take away again; added as a section, uninstall gives the file back.
+    home = tmp_path / "home"
+    assert RULES.endswith(".\n")
+    before = "mine\n\n" + RULES[:-1]
+    write_md(home, before)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md section added" in changes, changes
+    assert read_md(home) == before + "\n\n" + SECTION
+    uninstall_module.uninstall(home)
+    assert read_md(home) == before
+    assert backups(home) == []
+
+
 def test_removing_only_the_marker_lines_keeps_the_rules_ours(install_module, uninstall_module, tmp_path):
     # Review 1, finding 6: the rules the install added were wrapped as the user's own on the
     # next run, so uninstall left them, and a second backup was made and never removed.
@@ -562,6 +612,9 @@ def test_an_old_install_saved_with_a_bom_is_migrated_and_undone(install_module, 
 @pytest.mark.parametrize("before", [
     pytest.param("# Mine\n```\n" + RULES + "```\nend\n", id="rules"),
     pytest.param("# Mine\n~~~\n" + BEGIN + "\n" + RULES + END + "\n~~~\nend\n", id="rules-with-markers"),
+    # Review 32, finding M2: a fence below more lines than the rules hold, so the copy's line
+    # number must be counted to see that it is fenced.
+    pytest.param("# Mine\n\n" + "line\n" * 30 + "\nAn example:\n\n```\n" + RULES + "```\n", id="rules-far-below-the-top"),
 ])
 def test_a_fenced_copy_of_the_rules_is_an_example_not_wrapped(install_module, uninstall_module, tmp_path, before):
     # Review 2, finding 1: the wrap path looked for an unmarked copy of the rules with no
@@ -889,12 +942,16 @@ def test_a_section_added_by_hand_stays_the_users_over_later_runs(install_module,
     home = tmp_path / "home"
     before = f"mine\n{BEGIN}\n- older rules\n{END}\n"
     write_md(home, before)
-    install_module.install(home)
+    _, first = install_module.install(home)
     second = RULES + "- a rule added later\n"
     changed_template(install_module, tmp_path, monkeypatch, second)
     monkeypatch.setattr(uninstall_module.install, "CLAUDE_MD", install_module.CLAUDE_MD)
     _, notices = install_module.install(home)
     assert not any("had edits" in n for n in notices), notices
+    # Review 32, finding L3: both runs that change the rules say whose the section is.
+    hand = ("the Ideal-Umbrella section of CLAUDE.md was added by hand, not by the installer; "
+            "it now holds the new rules, and uninstall leaves it in place")
+    assert hand in first and hand in notices, (first, notices)
     assert read_md(home) == f"mine\n{BEGIN}\n{second}{END}\n"
     write_md(home, f"mine\n{second}")   # the marker lines deleted by hand
     install_module.install(home)
