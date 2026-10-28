@@ -753,7 +753,10 @@ def test_a_rules_update_keeps_the_line_ends_of_the_section(install_module, tmp_p
     md.write_bytes(own)
     install_module.install(home)
     newer = tmp_path / "CLAUDE.md"
-    newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
+    # Bytes, not write_text: on Windows the template is checked out with CRLF, and write_text
+    # would make each of its line ends CR CR LF.
+    rules = install_module._lf(install_module._read_text(install_module.CLAUDE_MD))
+    newer.write_bytes((rules + "\n- one more rule\n").encode("utf-8"))
     monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
     changes, _ = install_module.install(home)
     assert "CLAUDE.md section updated" in changes
