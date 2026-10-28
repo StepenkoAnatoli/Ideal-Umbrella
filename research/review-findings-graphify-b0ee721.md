@@ -58,6 +58,9 @@ bare-LF term dropped) and e4 (the guard dropped from the cut) are killed.
 **Other hits:** the count loop is the only place that reads line breaks back; install decides "ends in a
 line break" by `endswith("\n")`, which the fixed rule now matches for files that never had a CRLF.
 
+*Corrected in pass 35 (`-f62ab8d.md` L2):* the recorded-bytes branch also read line breaks back, and it
+could split a CRLF. Pass 35 also replaced the `no bare LF above` rule (`-f62ab8d.md` L1).
+
 ### T1. No test round-tripped an unconverted CRLF file without a final line break
 
 **Finding:** mutant `before[:-len(joined)]` to `before[:-2]` survived the full suite.

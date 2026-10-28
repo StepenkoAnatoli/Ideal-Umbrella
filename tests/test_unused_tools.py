@@ -29,6 +29,15 @@ def test_denied_tool_that_was_called_is_flagged(unused_tools, tmp_path, capsys):
     assert "Artifact: called 1 time(s)  <- review" in capsys.readouterr().out
 
 
+def test_a_line_cut_off_mid_write_is_skipped_and_not_counted_twice(unused_tools, tmp_path, capsys):
+    # Review 35 (mutant t6): a live transcript can end in half a line, here also the first line.
+    good = '{"message": {"content": [{"type": "tool_use", "name": "Artifact"}]}}\n'
+    cut = '{"message": {"cont\n'
+    (tmp_path / "s.jsonl").write_text(cut + good + cut, encoding="utf-8")
+    assert unused_tools.main([str(tmp_path)]) == 0
+    assert "Artifact: called 1 time(s)  <- review" in capsys.readouterr().out
+
+
 def test_tool_use_without_a_name_is_not_counted(unused_tools, tmp_path, capsys):
     # A block with no "name" used to be counted as a tool called None.
     write_jsonl(tmp_path / "s.jsonl", [

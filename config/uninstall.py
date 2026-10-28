@@ -182,25 +182,22 @@ def _rest_without_section(current, found, entry):
     if not after and isinstance(joined, str) and joined and not joined.strip("\r\n"):
         # The separator is a number of line breaks, not the bytes recorded: an editor or git
         # may have changed the file's line endings since the install.
-        if joined.count("\n") > 1 and before.endswith(joined):
-            # Written by install after text with no final break: the bytes as recorded go, so a
-            # bare CR ending that text is not read as half of a CRLF.
-            before = before[:-len(joined)]
+        cut = before
+        # A CR before an LF is half of a CRLF only when install wrote CRLF (a CR in joined) or
+        # the file was turned to CRLF since: a CRLF other than the last two characters, which
+        # can be a text's own bare CR and the installer's LF (a line added with LF after that
+        # conversion leaves the rest CRLF).
+        crlf = "\r" in joined or "\r\n" in before[:-2]
+        for _ in range(joined.count("\n")):
+            if not cut.endswith("\n"):
+                break
+            cut = cut[:-2] if crlf and cut.endswith("\r\n") else cut[:-1]
         else:
-            cut = before
-            # A CR before an LF is half of a CRLF only when the file can have been turned to
-            # CRLF since: install wrote CRLF (a CR in joined), or no bare LF is left above.
-            crlf = "\r" in joined or "\n" not in before.replace("\r\n", "")
-            for _ in range(joined.count("\n")):
-                if not cut.endswith("\n"):
-                    break
-                cut = cut[:-2] if crlf and cut.endswith("\r\n") else cut[:-1]
-            else:
-                # A single break is added only after text that already ends in one (install.py),
-                # so when the text is left without one, the break was the user's: the blank line
-                # is gone.
-                if joined.count("\n") > 1 or cut.endswith("\n"):
-                    before = cut
+            # A single break is added only after text that already ends in one (install.py),
+            # so when the text is left without one, the break was the user's: the blank line
+            # is gone.
+            if joined.count("\n") > 1 or cut.endswith("\n"):
+                before = cut
     return before + after
 
 

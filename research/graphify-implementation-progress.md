@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-28, review pass 35 next)
+# Graphify-derived improvements: resume point (2026-10-28, review pass 36 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -50,7 +50,9 @@
 - b0ee721 (pass-33 fixes): CI green on all five jobs.
 - Review pass 34 (fresh agent, default model after the Fable limit; head b0ee721): 2 low (L1 code, T1 test gap), 2 info (I1 fixed, I2 record); fixed in the commit after b0ee721; record `research/review-findings-graphify-b0ee721.md`. Main changes: `_rest_without_section` reads CR+LF as one break only when `joined` holds a CR or no bare LF is left above the section (a text ending in `\n\r` lost two bytes with the blank line deleted); `plan_claude_md` updates a section with the section's own line ends; the bare-CR test also round-trips `mine`, `first\r\nmine`, `a\r\nb\r`, `a\nb\r\n`. Mutants (scratchpad `fix34/mut.py`) e1-e8 killed; reviewer's r1b/r2/r3/r4 match its prototype.
 - f62ab8d: Windows CI red in the new I1 test only (its newer template went through `write_text`, which on Windows makes the CRLF checkout's line ends CR CR LF); the test writes LF bytes now. Reproduced with the CRLF copy plus `crlf_conftest.py`, now in the pre-push list.
-- Next: review pass 35 (fresh agent; brief as scratchpad `brief35.txt` / `brief35b.txt`, built from `brief34.tmpl`; ask it to print every round-trip row its classifier does not accept, and to rerun `review34b/repro/r1b_reclass.py` and `r2_extended.py`).
+- 502c37a (f62ab8d's Windows fix): CI green on all five jobs.
+- Review pass 35 (fresh agent, default model after the Fable limit; head f62ab8d, 502c37a checked): 3 low (L1 a pass-34 regression, L2 code, T1 test gap), 2 info, and 1 test gap found while fixing; fixed in the commit after 502c37a; record `research/review-findings-graphify-f62ab8d.md`. Main change: `_rest_without_section` has one rule. The separator is always a number of line breaks, and CR+LF is one break when `joined` holds a CR or a CRLF sits above the last two characters. The recorded-bytes branch is removed: a brute-force comparison over 354,292 cases (scratchpad `fix35/equiv.py`) shows the same results where it was right. The cut-off-line tests cover all five transcript readers. Mutants (scratchpad `fix35/mut.py`) g1-g6, f10, f11 and t1-t10 are killed, and the reviewer's harnesses match its prototype.
+- Next: review pass 36. Fresh agent; the brief is scratchpad `brief36.txt` / `brief36b.txt`, built from `brief35.tmpl` with the new head. Ask it to rerun `review35b/repro` r3, r4, r4b and r5 beside the earlier round-trip harnesses.
 
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
@@ -70,8 +72,8 @@
 - Review loop: findings in `research/review-findings-graphify-<sha>.md` (Finding / Fixed / Other hits / Prevention), fixes failing-first and class-wide; repeat with a new agent until a pass finds nothing; then merge with a merge commit on green CI, update this file, one-line reply with the PR link.
 - Other hit noted for item 7's class: `config/install.py merge_settings` merges its only object key (`permissions`) by hand; a future object key in `config/user-settings.json` would need the same.
 
-Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, named after the pass, next `crlf-p36`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`), once in the tree and once in a CRLF copy (both together are what Windows CI does: f62ab8d was red there only).
+Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, named after the pass, next `crlf-p37`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`), once in the tree and once in a CRLF copy (both together are what Windows CI does: f62ab8d was red there only).
 
 ## Open items
-- Review pass 35 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
+- Review pass 36 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).

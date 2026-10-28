@@ -105,12 +105,14 @@ def test_report_names_both_write_ttls(usage_breakdown, tmp_path, capsys):
 
 
 def test_non_object_lines_are_skipped(usage_breakdown, tmp_path):
-    # A transcript line holding a JSON list or string used to raise AttributeError.
+    # A transcript line holding a JSON list or string used to raise AttributeError. Review 35
+    # (mutant t8): a line cut off mid-write, as the first line and after a good one, is skipped.
     path = tmp_path / "transcript.jsonl"
-    path.write_text('[1, 2]\n"text"\nnull\n' + json.dumps({
+    cut = '{"type": "assist\n'
+    path.write_text(cut + '[1, 2]\n"text"\nnull\n' + json.dumps({
         "type": "assistant",
         "message": {"id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5}, "content": []},
-    }) + "\n" + json.dumps({"type": "assistant", "message": "not an object"}) + "\n", encoding="utf-8")
+    }) + "\n" + cut + json.dumps({"type": "assistant", "message": "not an object"}) + "\n", encoding="utf-8")
     totals, _, turns = usage_breakdown.summarize([path])
     assert turns == 1
     assert totals["input_tokens"] == 10

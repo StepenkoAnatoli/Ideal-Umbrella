@@ -780,6 +780,64 @@ def test_a_deleted_blank_line_after_a_bare_cr_costs_none_of_the_users_text(insta
     assert md.read_bytes() == own + b"\n"
 
 
+def _to_crlf(data):
+    return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+
+
+@pytest.mark.parametrize("own, kept", [(b"mine", b"note\nmine"), (b"a\nb\n", b"note\na\r\nb\r\n")],
+                         ids=["no-final-break", "final-break"])
+def test_a_line_added_with_lf_above_a_file_turned_to_crlf_leaves_no_separator(install_module, uninstall_module,
+                                                                               tmp_path, own, kept):
+    # Review 35, L1: the file was turned to CRLF after the install, then a line was added at the
+    # top with an LF tool. That one bare LF made each CRLF of the separator read as two breaks,
+    # and the installer's blank line stayed. Any other CRLF above means the file was converted.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    md.write_bytes(b"note\n" + _to_crlf(md.read_bytes()))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == kept
+
+
+@pytest.mark.parametrize("own, kept", [(b"a", b"a\r\n"), (b"x\ny", b"x\r\ny\r\n")], ids=["one-line", "two-lines"])
+def test_a_blank_lf_line_above_the_section_of_a_crlf_file_splits_no_crlf(install_module, uninstall_module,
+                                                                         tmp_path, own, kept):
+    # Review 35, L2: after a CRLF conversion, a blank line added with an LF tool just above the
+    # section leaves "\r\n\r\n\n". Its tail is the recorded "\n\n", and cutting those bytes split
+    # a CRLF and left a bare CR. The breaks are counted instead, so no bare CR is written.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    data = _to_crlf(md.read_bytes())
+    at = data.index(b"<!--")
+    md.write_bytes(data[:at] + b"\n" + data[at:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == kept
+
+
+def test_a_crlf_separator_goes_when_the_lines_above_it_were_rewritten_with_lf(install_module, uninstall_module,
+                                                                             tmp_path):
+    # Review 35 (mutant f8): install wrote its blank line as CRLF, the file's line end. The user's
+    # line above was then rewritten with an LF tool: the CRLF is still one break, not two.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\r\n")
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(b"a\r\n\r\n<!--"), data[:40]
+    md.write_bytes(b"note\n" + data[len(b"a\r\n"):])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"note\n"
+
+
 def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module, uninstall_module, tmp_path,
                                                                  capsys):
     # Review 32, L2 (mutant U45): a hand-edited "joined": 5 reached joined.strip() and stopped
