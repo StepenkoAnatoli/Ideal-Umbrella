@@ -742,6 +742,26 @@ def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
 
 
+@pytest.mark.parametrize("own", [b"mine\rmore\r", b"rules\nmine\r"], ids=["cr", "lf-then-cr"])
+def test_a_rules_update_keeps_the_line_ends_of_the_section(install_module, tmp_path, monkeypatch, own):
+    # Review 34, I1: a text ending in a bare CR is followed by the installer's LF, which makes a
+    # CRLF at the join; an update took that for a CRLF file and wrote the new rules with CRLF.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    md = claude / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    newer = tmp_path / "CLAUDE.md"
+    newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
+    monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md section updated" in changes
+    data = md.read_bytes()
+    assert data.startswith(own + b"\n\n<!--"), data[:40]
+    assert b"one more rule" in data and data.count(b"\r\n") == 1, data.count(b"\r\n")
+
+
 def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_file(install_module, tmp_path, monkeypatch):
     # A CLAUDE.md still holding what the last install wrote was backed up again when the
     # template changed, leaving a *.bak-* of the installer's own text that nothing restores.

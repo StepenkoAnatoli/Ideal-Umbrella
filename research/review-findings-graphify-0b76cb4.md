@@ -50,7 +50,7 @@ recorded bytes, so it falls through to the count as before.
 backup left). Mutants d1 (branch dropped), d2 (count term dropped), d3 (`endswith` term dropped) and d4
 (one byte too many) are killed.
 
-**Other hits:** `joined` is written only by `install.py` (lines 795 to 804) and read only here.
+**Other hits:** `joined` is set only by `install.py` (empty at line 721, kept from the record at lines 754 and 795, written at 803) and read only here. (Corrected in pass 34: this said lines 795 to 804.)
 
 ## Info (no action)
 

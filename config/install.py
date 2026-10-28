@@ -738,6 +738,9 @@ def plan_claude_md(current, rules, old):
     found = find_section(current, None if old is None or old_format else old.get("sha256"))
     if found:
         start, _, _, end = found
+        # The new rules take the line ends of the section they replace, not of the whole file:
+        # a text ending in a bare CR makes a CRLF with the LF install put after it.
+        ours = section.replace("\n", "\r\n" if "\r\n" in current[start:end] else "\n")
         present = section_text(section_body(current, found))
         number = fenced_line(current, found)
         if number is not None and present != section:

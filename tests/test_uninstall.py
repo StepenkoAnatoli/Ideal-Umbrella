@@ -742,19 +742,42 @@ def test_a_deleted_blank_line_above_the_section_keeps_the_users_final_line_break
     assert md.read_bytes() == own.encode("utf-8")
 
 
-def test_a_file_ending_in_a_bare_cr_is_given_back_byte_for_byte(install_module, uninstall_module, tmp_path):
+@pytest.mark.parametrize("own", [b"mine\rmore\r", b"mine", b"first\r\nmine", b"a\r\nb\r", b"a\nb\r\n"],
+                         ids=["cr", "lf", "crlf", "crlf-then-cr", "lf-then-crlf"])
+def test_a_file_ending_in_a_bare_cr_is_given_back_byte_for_byte(install_module, uninstall_module, tmp_path, own):
     # Review 33: classic Mac line ends. The text has no final LF, so install puts two LF before
     # the section; counting them back as line breaks read the user's last CR and the first LF
-    # as one CRLF and took the CR too.
+    # as one CRLF and took the CR too. Review 34 (T1): the separator as recorded is taken whole,
+    # also when it is two CRLF, and a CRLF one is a CRLF in a file that also has a bare LF.
     home = tmp_path / "home"
     seed(home, {})
     md = home / ".claude" / "CLAUDE.md"
-    md.write_bytes(b"mine\rmore\r")
+    md.write_bytes(own)
     install_module.install(home)
     changes, notices = uninstall_module.uninstall(home)
     assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
-    assert md.read_bytes() == b"mine\rmore\r"
+    assert md.read_bytes() == own
     assert not list((home / ".claude").glob("CLAUDE.md.bak-*")), notices
+
+
+@pytest.mark.parametrize("own", [b"rules\nmine\n\r", b"mine\n\n\r"], ids=["lf-cr", "blank-cr"])
+def test_a_deleted_blank_line_after_a_bare_cr_costs_none_of_the_users_text(install_module, uninstall_module,
+                                                                           tmp_path, own):
+    # Review 34, L1: a text with LF line ends that ends in a bare CR gets two LF before the
+    # section. With the blank line deleted, the user's CR and the LF left read as one CRLF, so
+    # the count took them and then the user's own LF. The file never had a CRLF, so a CR before
+    # an LF is the user's: one LF of the installer's stays, as for "mine" above.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(own + b"\n\n<!--"), data[:40]
+    md.write_bytes(own + b"\n" + data[len(own) + 2:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == own + b"\n"
 
 
 def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module, uninstall_module, tmp_path,

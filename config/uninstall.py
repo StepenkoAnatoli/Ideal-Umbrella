@@ -188,10 +188,13 @@ def _rest_without_section(current, found, entry):
             before = before[:-len(joined)]
         else:
             cut = before
+            # A CR before an LF is half of a CRLF only when the file can have been turned to
+            # CRLF since: install wrote CRLF (a CR in joined), or no bare LF is left above.
+            crlf = "\r" in joined or "\n" not in before.replace("\r\n", "")
             for _ in range(joined.count("\n")):
                 if not cut.endswith("\n"):
                     break
-                cut = cut[:-2] if cut.endswith("\r\n") else cut[:-1]
+                cut = cut[:-2] if crlf and cut.endswith("\r\n") else cut[:-1]
             else:
                 # A single break is added only after text that already ends in one (install.py),
                 # so when the text is left without one, the break was the user's: the blank line
