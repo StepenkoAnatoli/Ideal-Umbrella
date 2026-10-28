@@ -742,6 +742,21 @@ def test_a_deleted_blank_line_above_the_section_keeps_the_users_final_line_break
     assert md.read_bytes() == own.encode("utf-8")
 
 
+def test_a_file_ending_in_a_bare_cr_is_given_back_byte_for_byte(install_module, uninstall_module, tmp_path):
+    # Review 33: classic Mac line ends. The text has no final LF, so install puts two LF before
+    # the section; counting them back as line breaks read the user's last CR and the first LF
+    # as one CRLF and took the CR too.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"mine\rmore\r")
+    install_module.install(home)
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"mine\rmore\r"
+    assert not list((home / ".claude").glob("CLAUDE.md.bak-*")), notices
+
+
 def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module, uninstall_module, tmp_path,
                                                                  capsys):
     # Review 32, L2 (mutant U45): a hand-edited "joined": 5 reached joined.strip() and stopped

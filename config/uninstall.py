@@ -182,16 +182,22 @@ def _rest_without_section(current, found, entry):
     if not after and isinstance(joined, str) and joined and not joined.strip("\r\n"):
         # The separator is a number of line breaks, not the bytes recorded: an editor or git
         # may have changed the file's line endings since the install.
-        cut = before
-        for _ in range(joined.count("\n")):
-            if not cut.endswith("\n"):
-                break
-            cut = cut[:-2] if cut.endswith("\r\n") else cut[:-1]
+        if joined.count("\n") > 1 and before.endswith(joined):
+            # Written by install after text with no final break: the bytes as recorded go, so a
+            # bare CR ending that text is not read as half of a CRLF.
+            before = before[:-len(joined)]
         else:
-            # A single break is added only after text that already ends in one (install.py), so
-            # when the text is left without one, the break was the user's: the blank line is gone.
-            if joined.count("\n") > 1 or cut.endswith("\n"):
-                before = cut
+            cut = before
+            for _ in range(joined.count("\n")):
+                if not cut.endswith("\n"):
+                    break
+                cut = cut[:-2] if cut.endswith("\r\n") else cut[:-1]
+            else:
+                # A single break is added only after text that already ends in one (install.py),
+                # so when the text is left without one, the break was the user's: the blank line
+                # is gone.
+                if joined.count("\n") > 1 or cut.endswith("\n"):
+                    before = cut
     return before + after
 
 
