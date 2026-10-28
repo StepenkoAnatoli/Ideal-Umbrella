@@ -64,6 +64,12 @@ writes: 354,292 cases) shows the count, with L1's rule, gives the same result as
 the branch was right. The separator is now always a number of line breaks, as its comment says. Result:
 `a\r\n` and `x\r\ny\r\n`.
 
+*Corrected in pass 36 (`-e5a61a7.md` L1):* that comparison was wrong. `fix35/equiv.py` compared the
+new code with the reviewer's guarded prototype, not with f62ab8d's branch. Against f62ab8d, over
+262,215 edit histories, e5a61a7 was right in 376 cases where f62ab8d was wrong, but wrong in 1,392
+where f62ab8d was right: a text ending in a bare CR, with a line added at the top with CRLF, lost
+its CR. Pass 36 fixed all but 10 of them (one ambiguous file shape).
+
 **Test (failing first):** `test_a_blank_lf_line_above_the_section_of_a_crlf_file_splits_no_crlf`
 (`a` and `x\ny`).
 
@@ -108,6 +114,6 @@ survived. Take `a\r\n`, install (`joined` is `\r\n`), then rewrite the user's li
 ## Prevention
 
 Two rules for reading line breaks back had grown up side by side: the recorded bytes, and the count. Each
-fixed one case and broke another. There is now one rule, and a brute-force comparison over every short
-text shows it matches the old rule wherever that one was right. The next pass's brief asks the reviewer
+fixed one case and broke another. There is now one rule. (The brute-force comparison said to show it
+matched the old rule wherever that one was right compared against the wrong code; see L2's correction.) The next pass's brief asks the reviewer
 to rerun r3, r4, r4b and r5 next to the earlier round-trip harnesses.

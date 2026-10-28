@@ -838,6 +838,61 @@ def test_a_crlf_separator_goes_when_the_lines_above_it_were_rewritten_with_lf(in
     assert md.read_bytes() == b"note\n"
 
 
+@pytest.mark.parametrize("own", [b"mine\rmore\r", b"a\nb\r"], ids=["cr-only", "lf-cr"])
+def test_a_crlf_line_added_above_a_text_ending_in_a_bare_cr_keeps_that_cr(install_module, uninstall_module,
+                                                                          tmp_path, own):
+    # Review 36, L1: a text ending in a bare CR gets two LF before the section. A line added at
+    # the top with CRLF put a CRLF above, which read as a CRLF conversion: the user's CR and the
+    # first LF were cut as one CRLF. The file was not converted, so both LF go and the CR stays.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    assert md.read_bytes().startswith(own + b"\n\n<!--")
+    md.write_bytes(b"note\r\n" + md.read_bytes())
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"note\r\n" + own
+
+
+def test_a_crlf_blank_line_added_after_a_bare_cr_is_not_split(install_module, uninstall_module, tmp_path):
+    # Review 36 (mutant j5): a blank line with CRLF, then one with LF, added above the section
+    # of a text ending in a bare CR. The text's CR is followed by two LF as above, but the CRLF
+    # just before them is the user's blank line: reading its CR as a text's own CR would cut
+    # its LF and leave half a CRLF.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\r")
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(b"a\r\n\n<!--"), data[:40]
+    md.write_bytes(b"a\r\n\n\r\n\n" + data[len(b"a\r\n\n"):])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    result = md.read_bytes()
+    assert result.startswith(b"a\r") and b"<!--" not in result and not result.endswith(b"\r"), result
+
+
+@pytest.mark.parametrize("own, kept", [(b"a\n", b"a\r\n"), (b"x\ny\n", b"x\r\ny\r\n")], ids=["one-line", "two-lines"])
+def test_a_deleted_blank_line_then_a_crlf_conversion_keeps_the_users_line_break(install_module, uninstall_module,
+                                                                                tmp_path, own, kept):
+    # Review 36 (mutant h4): install adds one break after a text ending in one. With it deleted
+    # and the file turned to CRLF, the user's own break is the only one left above the section.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(own + b"\n<!--"), data[:40]
+    md.write_bytes(_to_crlf(own + data[len(own) + 1:]))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == kept
+
+
 def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module, uninstall_module, tmp_path,
                                                                  capsys):
     # Review 32, L2 (mutant U45): a hand-edited "joined": 5 reached joined.strip() and stopped
