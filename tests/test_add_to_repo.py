@@ -9,12 +9,14 @@ from conftest import ROOT
 
 ADD = ROOT / "config" / "add_to_repo.py"
 TEMPLATE = json.loads((ROOT / "config" / "repo-settings.json").read_text(encoding="utf-8"))
+LEARNINGS = (ROOT / "config" / "learnings.md").read_bytes()
 
 
-def run(repo):
+def run(repo, env=None):
     return subprocess.run(
         [sys.executable, "-I", str(ADD), str(repo)],
         cwd=ROOT,
+        env=env,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -137,12 +139,12 @@ def test_non_utf8_settings_say_so(tmp_path):
     assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
 
 
-@pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
+@pytest.mark.parametrize("relative", [".claude/settings.json", ".claude/hooks/context_check.py"])
 def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
     # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two
     # kinds of file, did not: the error named a temp file in the missing target folder.
     repo = tmp_path / "repo"
-    link = repo / ".claude" / relative
+    link = repo / relative
     link.parent.mkdir(parents=True)
     try:
         link.symlink_to(tmp_path / "gone" / link.name)
@@ -153,6 +155,8 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
     assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
+    assert not (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert not (repo / "notes" / "learnings.md").is_file()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
@@ -165,6 +169,7 @@ def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_pa
     for name in ("settings.json", os.path.join("hooks", "context_check.py")):
         path = repo / ".claude" / name
         assert path.stat().st_mode & 0o777 == 0o644, name
+    assert (repo / "notes" / "learnings.md").stat().st_mode & 0o777 == 0o644
 
 
 def test_writing_a_new_file_never_touches_the_process_umask(add_to_repo, tmp_path, monkeypatch):
@@ -200,3 +205,174 @@ def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monke
     err = capsys.readouterr().err
     assert "Done before the error" in err and "context_check.py written" in err, err
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+
+
+# --- the learnings template -------------------------------------------------------------
+
+def test_learnings_template_is_copied_once_and_then_left_alone(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    first = run(repo)
+    assert first.returncode == 0, first.stderr
+    learnings = repo / "notes" / "learnings.md"
+    assert learnings.read_bytes() == LEARNINGS
+    assert "notes/learnings.md written" in first.stdout
+    assert ("Commit .claude/hooks/context_check.py, .claude/settings.json and notes/learnings.md "
+            "in that repository.") in first.stdout
+
+    # The file is the repository's data from now on: a second run, forced or not, leaves it.
+    mine = "decided: keep the old parser; the new one drops trailing commas\n"
+    learnings.write_text(mine, encoding="utf-8")
+    second = run(repo)
+    assert second.returncode == 0, second.stderr
+    assert "already up to date" in second.stdout
+    assert "notes/learnings.md" not in second.stdout
+    forced = subprocess.run([sys.executable, "-I", str(ADD), "--force", str(repo)], cwd=ROOT,
+                            capture_output=True, text=True, encoding="utf-8")
+    assert forced.returncode == 0, forced.stderr
+    assert learnings.read_text(encoding="utf-8") == mine
+
+
+def test_existing_learnings_file_is_not_replaced_and_not_named(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "notes").mkdir(parents=True)
+    (repo / "notes" / "learnings.md").write_bytes(b"")   # even an empty one is the user's
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert (repo / "notes" / "learnings.md").read_bytes() == b""
+    assert "notes/learnings.md" not in result.stdout
+    assert "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository." in result.stdout
+
+
+def test_commit_hint_names_only_the_files_written_this_run(tmp_path):
+    # A repository that already had the hook and settings and now gets only the learnings file
+    # was told to commit all three.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert run(repo).returncode == 0
+    (repo / "notes" / "learnings.md").unlink()
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "Commit notes/learnings.md in that repository." in result.stdout
+
+
+@pytest.mark.parametrize("folder", [".claude", ".claude/hooks"])
+def test_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, folder):
+    # A dangling `notes -> /mnt/sync/notes` was written through: the missing folder was
+    # created where the link points and the template written outside the repository.
+    repo = tmp_path / "repo"
+    link = repo / folder
+    link.parent.mkdir(parents=True, exist_ok=True)
+    gone = tmp_path / "gone" / "target"
+    try:
+        link.symlink_to(gone, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert not (tmp_path / "gone").exists()
+
+
+@pytest.mark.parametrize("relative,is_dir", [("notes", True), ("notes/learnings.md", False)])
+def test_dangling_learnings_link_is_a_notice_not_an_error(tmp_path, relative, is_dir):
+    # The learnings file is a courtesy: a dangling link on it or on `notes` used to fail the
+    # whole run (exit 1, nothing written). Now it gets no copy and a note.
+    repo = tmp_path / "repo"
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    gone = tmp_path / "gone" / "target"
+    try:
+        link.symlink_to(gone, target_is_directory=is_dir)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "note: notes/learnings.md not copied:" in result.stdout
+    assert "is a symlink to a missing target" in result.stdout
+    assert (repo / ".claude" / "settings.json").is_file()
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository." in result.stdout
+    assert not (tmp_path / "gone").exists()
+
+
+def test_notes_as_a_file_in_the_way_is_a_notice_not_an_error(tmp_path):
+    # The learnings file is a courtesy and is written last: a `notes` that is a file used to
+    # make every run exit 1 with no commit hint, the core install whole all along.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "notes").write_text("in the way", encoding="utf-8")
+    first_hint = "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository."
+    for attempt in range(2):
+        result = run(repo)
+        assert result.returncode == 0, result.stderr
+        assert "note: notes/learnings.md not written" in result.stdout
+        if attempt == 0:
+            assert first_hint in result.stdout
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert (repo / ".claude" / "settings.json").is_file()
+    assert (repo / "notes").read_text(encoding="utf-8") == "in the way"
+    assert first_hint not in result.stdout   # the second run wrote nothing
+
+
+def test_notes_ignored_by_git_gets_no_copy(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git is not available")
+    (repo / ".gitignore").write_text("notes/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert not (repo / "notes" / "learnings.md").exists()
+    assert "note: notes/learnings.md not copied: git ignores it" in result.stdout
+    assert "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository." in result.stdout
+
+
+def _git_init(repo):
+    repo.mkdir()
+    try:
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git is not available")
+
+
+def test_ignored_claude_folder_is_written_with_a_note(tmp_path):
+    # A gitignored .claude/ got the hook and settings and the hint told the user to commit them.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".gitignore").write_text(".claude/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert (repo / ".claude" / "settings.json").is_file()
+    assert "note: .claude/settings.json written, but git ignores it" in result.stdout
+    assert "note: .claude/hooks/context_check.py written, but git ignores it" in result.stdout
+    assert "Commit notes/learnings.md in that repository." in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a fake git on PATH is a POSIX script")
+def test_git_that_cannot_answer_is_a_note_not_not_ignored(tmp_path):
+    # Exit 128 (dubious ownership, a GIT_DIR elsewhere) was read as "not ignored", silently.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text("#!/bin/sh\nexit 128\n", encoding="utf-8")
+    fake.chmod(0o755)
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    result = run(repo, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "note: git could not say whether notes/learnings.md is ignored" in result.stdout
+    assert "note: git could not say whether .claude/settings.json is ignored" in result.stdout
+    assert (repo / "notes" / "learnings.md").is_file()
+
+
+def test_folder_outside_any_repository_gets_no_git_note(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "git could not say" not in result.stdout
