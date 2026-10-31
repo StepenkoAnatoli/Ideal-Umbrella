@@ -881,6 +881,67 @@ def test_a_crlf_line_added_above_and_the_blank_line_deleted_reads_the_crlf_end_a
     assert md.read_bytes() == b"note\r\na"
 
 
+def test_a_crlf_text_with_a_crlf_line_added_above_and_the_blank_line_deleted_keeps_its_end(
+        install_module, uninstall_module, tmp_path):
+    # Review 41, L1: the Review 40 reading is for a text with LF line ends. "a\r\n\r" is written
+    # with CRLF (two CRLF recorded), so its last line break and CR are the user's in every reading:
+    # with a CRLF line added on top and the blank line deleted, they stay, with one installer CRLF.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\r\n\r")
+    install_module.install(home)
+    data = md.read_bytes()
+    at = data.index(b"<!--")
+    assert data[:at] == b"a\r\n\r\r\n\r\n"
+    md.write_bytes(b"note\r\n" + data[:at - 2] + data[at:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"note\r\na\r\n\r\r\n"
+
+
+@pytest.mark.parametrize("text, expected", [(b"\r", b"note\r\n"), (b"\n\r", b"note\r\n\n")])
+def test_a_text_that_is_only_a_bare_cr_reads_as_blank_lines_under_a_crlf_line_added_above(
+        install_module, uninstall_module, tmp_path, text, expected):
+    # Review 41, I2: the README's exception to "a line added with CRLF above keeps that CR". With
+    # nothing before the CR but line breaks, "note\r\n" + the text + the installer's LF is also
+    # "note" followed by CRLF blank lines typed above the section, and is read that way.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(text)
+    install_module.install(home)
+    md.write_bytes(b"note\r\n" + md.read_bytes())
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    (b"a\r\r\nb\r", b"a\r\nb\r\n"),         # no line break before the last CR: the CR stays
+    (b"a\r\r\n\r\r", b"a\r\n\r\r\n"),
+    (b"a\r\n\r\r\n\r", b"a\n"),             # a line break and the CR: both go
+    (b"a\r\r\n\r\n\r", b"a\r\n"),
+])
+def test_a_cr_cr_lf_text_converted_to_lf_with_the_blank_line_deleted(
+        install_module, uninstall_module, tmp_path, text, expected):
+    # Review 41, L2: what the README says such a text keeps and loses. The conversion leaves a
+    # CRLF where the text had CR CR LF; then the line break before the last CR goes only when
+    # there is one, and with none the CR stays, with one of the installer's LF.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(text)
+    install_module.install(home)
+    data = md.read_bytes().replace(b"\r\n", b"\n")
+    at = data.index(b"<!--")
+    assert data[at - 1:at] == b"\n"
+    md.write_bytes(data[:at - 1] + data[at:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == expected
+
+
 def test_a_crlf_conversion_then_a_deleted_and_an_lf_blank_line_is_read_as_a_bare_cr_text(
         install_module, uninstall_module, tmp_path):
     # Review 37, L1: these bytes have two readings, and no rule gets both right. "x\ny" installed
