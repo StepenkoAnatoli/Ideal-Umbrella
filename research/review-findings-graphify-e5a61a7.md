@@ -22,7 +22,8 @@ the next commit on PR #27; the pass-35 records corrected.
 What the reviewer confirmed:
 - CI at e5a61a7 is green on all five jobs, and none of the new tests is skipped on Windows.
 - Every earlier harness gives the same rows on e5a61a7 as on the pass-35 prototype; the strict
-  classifier accepts all 401 r1c rows.
+  classifier accepts all 401 r1c rows. (Review 38: 79 of its 175 "lf mergedCR" rows were not merged;
+  the lone CR survived the conversion and uninstall took it. Fixed in pass 38; see `-0bf80b9.md`.)
 - `fix35/mut.py` g1-g6, f10, f11 and t1-t10 are killed, also in the CRLF `write_text` copy.
 
 Checks run on the fixed tree, all passing:

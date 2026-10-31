@@ -187,10 +187,13 @@ def _rest_without_section(current, found, entry):
         # the file was turned to CRLF since: a CRLF other than the last two characters, which
         # can be a text's own bare CR and the installer's LF (a line added with LF after that
         # conversion leaves the rest CRLF). A bare CR followed by two LF, with no CRLF just before
-        # it, is the text's own: a line added above with CRLF keeps it. (With one break recorded
-        # the first cut is an LF either way.)
+        # it, is the text's own: a line added above with CRLF keeps it, and so does a conversion
+        # to LF of a CRLF install (no CRLF left above), which keeps a lone CR. Only when the file
+        # still holds a CRLF is that CR read as the installer's, with the blank line typed again
+        # with LF. (With one break recorded the first cut is an LF either way.)
         own_cr = before.endswith("\r\n\n") and not before[:-3].endswith(("\r\n", "\r\n\n"))
-        crlf = "\r" in joined or ("\r\n" in before[:-2] and not own_cr)
+        recorded, now = "\r" in joined, "\r\n" in before[:-2]
+        crlf = (recorded and now) if own_cr else (recorded or now)
         for _ in range(joined.count("\n")):
             if not cut.endswith("\n"):
                 break

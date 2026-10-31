@@ -881,6 +881,43 @@ def test_a_crlf_conversion_then_a_deleted_and_an_lf_blank_line_is_read_as_a_bare
     assert md.read_bytes() == b"x\r\ny\r"
 
 
+@pytest.mark.parametrize("own, top", [(b"a\r\nb\r", b""), (b"one\r\ntwo\r\nthree\r", b""),
+                                       (b"a\r\nb\r", b"note\n")], ids=["two-lines", "three-lines", "line-on-top"])
+def test_a_crlf_text_ending_in_a_bare_cr_converted_to_lf_keeps_that_cr(install_module, uninstall_module,
+                                                                       tmp_path, own, top):
+    # Review 38, L1: install writes the separator with CRLF for a text holding a CRLF. A conversion
+    # to LF afterwards (dos2unix, git eol=lf) keeps a lone CR, so the text's own final CR is then
+    # followed by the installer's two LF. It was cut with them as a CRLF.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    assert md.read_bytes().startswith(own + b"\r\n\r\n<!--")
+    md.write_bytes(top + md.read_bytes().replace(b"\r\n", b"\n"))
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == top + own.replace(b"\r\n", b"\n")
+
+
+def test_a_crlf_file_with_its_blank_line_replaced_by_an_lf_one_keeps_no_installer_cr(
+        install_module, uninstall_module, tmp_path):
+    # Review 38, T1: the other reading of a CR before two LF with a CRLF separator recorded. The
+    # file still holds a CRLF, so it was not converted: the user deleted the installer's blank line
+    # and typed one with LF, and the CR is the installer's.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\r\nb")
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(b"a\r\nb\r\n\r\n<!--"), data[:40]
+    md.write_bytes(b"a\r\nb\r\n\n" + data[len(b"a\r\nb\r\n\r\n"):])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"a\r\nb"
+
+
 def test_a_crlf_blank_line_added_after_a_bare_cr_is_not_split(install_module, uninstall_module, tmp_path):
     # Review 36 (mutant j5): a blank line with CRLF, then one with LF, added above the section
     # of a text ending in a bare CR. The text's CR is followed by two LF as above, but the CRLF
