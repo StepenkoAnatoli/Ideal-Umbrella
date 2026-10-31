@@ -64,3 +64,22 @@ Checks at that head: pytest 274 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 2 fixes
 Tests added: bad usage in the newest record, floor scan bound at 4 * limit (near and far), baseline under 1000, notes file in the way (exit 0 twice), gitignored notes; the failing-hand-off test also checks stderr; the oversize test's record is 10 KB (inside the new bound). Checks: pytest 278 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc` on the host), keyline 35/35, the three JSON files parse.
+
+## Round 3 — head 8ce006d
+
+Checks at that head: pytest 278 passed 4 skipped, keyline 35/35, the three JSON files parse. CI: Ubuntu and Windows green.
+
+### code-review skill, high (10 findings, none repeating rounds 1-2; details at scratchpad `review-round3-findings.json`, outside the repo); all accepted, planned fixes:
+- R1 MEDIUM, CONFIRMED: usage `1e400`/`Infinity` -> `int(inf)` raises OverflowError, not caught by `last_measure()`'s handler: the note is lost. Fix: add OverflowError to both handler tuples (`last_measure`, `floor_tokens`).
+- R2 MEDIUM, CONFIRMED: a compact boundary whose `postTokens` is not a number is skipped and the scan reads pre-compaction usage (`now 200k`, a false hand-off note). Fix: a boundary always ends the scan; unparsable `postTokens` -> `(0, True)`. The round-2 test that ends in a bad boundary is split: bad usage last (falls back), bad boundary last (0, no line).
+- R3 LOW, CONFIRMED: negative usage -> `floor -5k`. Fix: `max(0, ...)` on each term in `_prompt_tokens`.
+- R4 LOW, docs: README (lines 120, 132) and the hook docstring say the floor is looked for within `IDEAL_UMBRELLA_TAIL_BYTES`; the code reads up to 4 * limit. Fix together with R8: one bound, `f.tell() < 4 * limit`, and the docs say "within 4 times IDEAL_UMBRELLA_TAIL_BYTES of the start"; `test_floor_search_is_bounded_by_tail_bytes` uses a limit of 1000.
+- R5 LOW: a gitignored `.claude/` still gets the hook and settings and the hint names them. Fix: `_git_ignores` checked for every path written; an ignored core path gets a `note:` (written all the same: the local session still uses it).
+- R6 LOW: `_git_ignores` reads git exit 128 (dubious ownership, GIT_DIR set) as "not ignored". Fix: returns True (0) / False (1) / None (other, git missing); None -> a note that git could not say, the file is copied.
+- R7 LOW, simplification: `learnings_missing` reused as a "written" flag; `files = progress` alias. Fix: append the change line next to `progress.append` inside the try; use `progress` directly.
+- R8 LOW, simplification: two overlapping bounds in `floor_tokens` (`seen` and `f.tell()`). Fix: one position bound (with R4).
+- R9 LOW, test: the notes-in-the-way test never asserts the first run's commit hint. Fix: assert it on run 1.
+- R10 LOW, resume point counts: round 2 had 3 overlaps (B1=CR2, B2=CR1, B3=CR4), 13 unique items: 10 fixed, 2 rejected, 1 docs only. Fix: corrected in the resume point.
+
+### breaker agent
+Running at the time of this log (fresh-context general-purpose agent, breaker brief, head 8ce006d). Its findings are to be added here; if this session ended first, rerun it on the current head.
