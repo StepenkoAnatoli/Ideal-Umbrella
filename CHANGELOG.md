@@ -4,6 +4,8 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 
 ## [Unreleased]
 ### Added
+- `hooks/context_check.py` shows a savings line on every prompt (`Ideal-Umbrella: floor 40k, now 42k`; with `IDEAL_UMBRELLA_BASELINE` set, `, saved 31k vs baseline` or `, 2k over baseline`) as a `systemMessage` only, so it costs the model nothing; past the threshold the same line carries the hand-off notice, and the note sent to the model is unchanged.
+- `config/learnings.md`, a Keyline learnings template (`decided`, `tried and ruled out`, `watch out`); `config/add_to_repo.py` copies it to `notes/learnings.md` when the repository has none and never touches it afterwards; `config/CLAUDE.md`, `config/cloud-setup.sh` and `keyline/CLAUDE-snippet.md` say when to save a learning and under which heading; `notes/learnings.md` holds this repo's own.
 - `config/uninstall.py` (with `--dry-run`): undoes `config/install.py` from the install record, restoring earlier values and the CLAUDE.md backup.
 - `config/install.py` writes `~/.claude/ballast/install-record.json` with what it added or replaced.
 - `IDEAL_UMBRELLA_TAIL_BYTES` for how much of the transcript end `hooks/context_check.py` reads.
