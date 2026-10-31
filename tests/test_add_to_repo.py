@@ -730,6 +730,7 @@ def test_an_ignored_link_is_force_added_by_its_own_path(tmp_path):
             "commit it with git add -f .claude") in result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows folds .. in a link target as text")
 def test_a_target_that_climbs_out_and_back_by_name_is_noted(tmp_path):
     # notes -> a/b/lnk/../r3/docs with lnk -> ../..: the text stays inside, the walk leaves
     # the repository and comes back by its folder name, which a clone elsewhere lacks.
@@ -746,6 +747,7 @@ def test_a_target_that_climbs_out_and_back_by_name_is_noted(tmp_path):
     assert not (repo / "docs" / "learnings.md").exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows folds .. in a link target as text")
 def test_a_target_that_only_looks_outside_is_followed(tmp_path):
     # notes -> lnk/../../docs with lnk -> a/b/c lands in a/docs: inside, so it is copied.
     repo = tmp_path / "repo"

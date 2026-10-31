@@ -232,14 +232,17 @@ def _relative(real_repo, full):
 
 def _ls_files(repo, paths):
     """[(mode, path)] git records at or under `paths` (one `git ls-files -s -z` limited to
-    them, literal pathspecs), or None when git cannot say. Output goes to a file, as in
+    them, literal pathspecs, case-insensitive where FOLDS), or None when git cannot say. Output goes to a file, as in
     _git_ignored."""
     if not paths:
         return []
     try:
         with tempfile.TemporaryFile() as out:
-            result = subprocess.run(["git", "--literal-pathspecs", "-C", repo, "ls-files", "-s",
-                                     "-z", "--", *sorted(paths)],
+            # git matches pathspecs case-sensitively whatever core.ignorecase says: on a
+            # case-insensitive file system "notes" must find a submodule recorded as "Notes".
+            magic = ":(literal,icase)" if FOLDS else ":(literal)"
+            result = subprocess.run(["git", "-C", repo, "ls-files", "-s", "-z", "--",
+                                     *(magic + p for p in sorted(paths))],
                                     stdin=subprocess.DEVNULL, stdout=out,
                                     stderr=subprocess.DEVNULL, timeout=10)
             out.seek(0)
@@ -258,7 +261,8 @@ def _ls_files(repo, paths):
 
 # A case-insensitive file system (Windows, macOS by default) takes a submodule recorded as
 # "Notes" at "notes".
-FOLD = str.lower if os.name == "nt" or sys.platform == "darwin" else (lambda text: text)
+FOLDS = os.name == "nt" or sys.platform == "darwin"
+FOLD = str.lower if FOLDS else (lambda text: text)
 
 
 def _ancestors(relative):
@@ -348,6 +352,9 @@ def _links(real_repo, name, gitlinks=frozenset()):
         elif to.startswith("\\\\?\\"):
             to = to[4:]
         drive, rest = os.path.splitdrive(to)
+        if os.name == "nt" and rest:
+            # Windows folds ".." in a link target as text before following any link in it.
+            rest = os.path.normpath(rest)
         # Rooted ("\\Users\\u" on Windows, which 3.13's isabs no longer calls absolute) or with a
         # drive: either way it names a place outside any clone.
         absolute = os.path.isabs(to) or bool(drive) or bool(SEPARATORS.match(to))
