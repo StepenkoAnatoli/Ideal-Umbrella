@@ -56,7 +56,8 @@ block, where the outer `except RecursionError` does not reach, would pass rule 6
 **Fixed:**
 - A fourth shape `_INNER_TRY_IN_ELSE` in `test_walk_keeps_the_handled_set_in_nested_trys` (id `else`), now
   12 rows. With the outer `RecursionError` and the inner `ValueError` it expects unguarded.
-- Mutant B1 fails the new `else` row and is killed. E09b and W1 now fail one more row each.
+- Mutant B1 fails the new `else` row and is killed. W1 now fails one more row (2 to 3), E09b three more
+  (6 to 9: every `else` row; corrected in pass 47, I3).
 
 **Other hits:** all four regions of a `try` (body, handlers, `else`, `finally`) are now covered. No script at
 head reads JSON in an `else:` block.
@@ -71,8 +72,8 @@ head reads JSON in an `else:` block.
   those rules fail only when a script breaks them. Not changed.
 - **I6.** The cf4c503 record said "with the old check, 6 rows failed". That was right when it was written; the
   `proc.stdout` row added afterwards also fails, so 7. Corrected there.
-- **I7, I8.** README, CHANGELOG and docstring claims match the code; every script reconfigures stdout (14
-  direct calls, 3 loops with the call in the body).
+- **I7, I8.** README, CHANGELOG and docstring claims match the code; every script reconfigures stdout (18
+  printing scripts: 15 direct calls, 3 loops with the call in the body; corrected in pass 47, I3).
 
 ## Prevention
 

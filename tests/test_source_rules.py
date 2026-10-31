@@ -234,11 +234,17 @@ _UTF8 = 'encoding="utf-8", errors="backslashreplace"'
     (f"for stream in (sys.stdout, sys.stderr):\n    other.reconfigure({_UTF8})", False),
     (f"for stream in (sys.stdout, sys.stderr):\n    pass\nstream.reconfigure({_UTF8})", False),   # after the loop
     (f"for stream in (sys.stdout, sys.stderr):\n    pass\nelse:\n    stream.reconfigure({_UTF8})", False),   # in for/else
+    (f"STREAMS = (sys.stdout, sys.stderr)\nfor s in STREAMS:\n    s.reconfigure({_UTF8})", False),   # not a literal
+    (f"for s in streams():\n    s.reconfigure({_UTF8})", False),   # a call: not looked into
+    (f"for stream in (sys.stdout, sys.stderr):\n    proc.stream.reconfigure({_UTF8})", False),   # not the bare name
+    (f"for s, t in (sys.stdout, sys.stderr):\n    s.reconfigure({_UTF8})", False),   # target not a name
 ])
 def test_the_utf8_stdout_rule_looks_at_the_stream(source, accepted):
     # Review 45, L2: the rule took `.reconfigure` on any object, so a script that set up only
     # sys.stderr passed while its prints to stdout could still fail on Windows. Review 46, L1:
-    # the loop's name counts only inside the loop's body, not after it or in its `else:`.
+    # the loop's name counts only inside the loop's body, not after it or in its `else:`. Review 47,
+    # L1: the iterable must be a literal the rule can see (a name may hold only sys.stderr), and the
+    # receiver the loop's bare name.
     assert _reconfigures_stdout(ast.parse(source)) is accepted
 
 
