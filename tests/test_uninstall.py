@@ -900,6 +900,49 @@ def test_a_crlf_text_ending_in_a_bare_cr_converted_to_lf_keeps_that_cr(install_m
     assert md.read_bytes() == top + own.replace(b"\r\n", b"\n")
 
 
+@pytest.mark.parametrize("own, top", [(b"a\r\n\r", b""), (b"a\r\nb\r\n\r", b""),
+                                       (b"one\r\ntwo\r\nthree\r\n\r", b"note\n")],
+                         ids=["one-line", "two-lines", "line-on-top"])
+def test_a_crlf_text_ending_in_a_break_and_a_bare_cr_converted_to_lf_keeps_them_without_the_blank_line(
+        install_module, uninstall_module, tmp_path, own, top):
+    # Review 39, L1: as above, but the blank line above the section was then deleted. The text's
+    # line break and CR were cut with the installer's one LF left. Only a CRLF install of a text
+    # without a final line break can end in a CR, so the last CRLF is read as that CR and the
+    # installer's LF; the installer's other LF may stay, but none of the text goes.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    assert md.read_bytes().startswith(own + b"\r\n\r\n<!--")
+    data = md.read_bytes().replace(b"\r\n", b"\n")
+    lf = own.replace(b"\r\n", b"\n")
+    assert data.startswith(lf + b"\n\n<!--"), data[:40]
+    md.write_bytes(top + lf + data[len(lf) + 1:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == top + lf + b"\n"
+
+
+def test_a_crlf_blank_line_typed_after_a_conversion_to_lf_keeps_every_line_break(
+        install_module, uninstall_module, tmp_path):
+    # Review 39, the cost of the rule above: a CRLF blank line typed above the section of a CRLF
+    # install converted to LF has the same last bytes as a text's CR and the installer's LF, so
+    # nothing above the section is cut. The installer's two LF stay with the user's blank line;
+    # no byte of the text is lost.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\r\nb")
+    install_module.install(home)
+    data = md.read_bytes().replace(b"\r\n", b"\n")
+    assert data.startswith(b"a\nb\n\n<!--"), data[:40]
+    md.write_bytes(b"a\nb\n\n\r\n" + data[len(b"a\nb\n\n"):])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"a\nb\n\n\r\n"
+
+
 def test_a_crlf_file_with_its_blank_line_replaced_by_an_lf_one_keeps_no_installer_cr(
         install_module, uninstall_module, tmp_path):
     # Review 38, T1: the other reading of a CR before two LF with a CRLF separator recorded. The

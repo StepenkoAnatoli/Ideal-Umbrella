@@ -193,7 +193,12 @@ def _rest_without_section(current, found, entry):
         # with LF. (With one break recorded the first cut is an LF either way.)
         own_cr = before.endswith("\r\n\n") and not before[:-3].endswith(("\r\n", "\r\n\n"))
         recorded, now = "\r" in joined, "\r\n" in before[:-2]
-        crlf = (recorded and now) if own_cr else (recorded or now)
+        # The same holds when that blank line was then deleted: with two CRLF breaks recorded (a
+        # text with no final line break, the only kind that can end in a CR), one CRLF at the end
+        # is the text's CR and the installer's LF when no other CRLF is left (`now` is false). Any
+        # other ending is cut the same either way, so the record alone decides.
+        one_cr = joined == "\r\n\r\n"
+        crlf = (recorded and now) if own_cr or one_cr else (recorded or now)
         for _ in range(joined.count("\n")):
             if not cut.endswith("\n"):
                 break
