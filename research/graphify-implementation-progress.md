@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-31, review pass 49 next)
+# Graphify-derived improvements: resume point (2026-10-31, review loop done: pass 49 clean; merge PR #27 on green CI)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -66,7 +66,8 @@
 - Review pass 46 (fresh agent, Fable; head 7f8ff92): no code defect; 2 low test gaps: L1 the stdout rule's loop form not pinned to the loop body (rows for the loop name after the loop and in `for/else`), L2 the nested-try self-test had no `else:` shape (now 4 shapes, 12 rows); record `research/review-findings-graphify-7f8ff92.md`; reviewer's mutants A1, A2, B1 (scratchpad `review46b/repro/m1_rule_mutants.py`, run in `fix46/run1`) killed, `fix45/mut.py` still all killed.
 - Review pass 47 (fresh agent, Fable; head 9029b94): no code defect; 1 low test gap: the stdout rule's iterable, receiver and target clauses in the loop form unpinned (rows: a loop over a name, over a call, `proc.stream.reconfigure` in the loop, a tuple target); record `research/review-findings-graphify-9029b94.md`; reviewer's mutants D1-D12 (scratchpad `review47/repro/c3_more_mutants.py`, run in `fix47/c3`) all killed; `fix45/mut.py` and pass 46's `m1_rule_mutants.py` still killed except the triaged A5, A6, B6. 7f8ff92 record counts corrected.
 - Review pass 48 (fresh agent, Fable; head e83f8d5): no code defect; 1 low (docs: the Review 47 CHANGELOG line named `.reconfigure` on an attribute of the loop's name, which no row held); rows `stream.buffer.reconfigure` and `proc.stdout.reconfigure` in the loop added, line reworded; record `research/review-findings-graphify-e83f8d5.md`; reviewer's T1-T12 (scratchpad `review48/repro/t1_row_mutants.py`, run in `fix48/t1b`) killed except T5 (tightening) and T2, T7, T12 (equivalent).
-- Next: review pass 49. Fresh agent; the brief is scratchpad `brief49.txt` / `brief49b.txt`, built from `brief49.tmpl` (from `brief48.tmpl`) with the new head (substitute NEWSHA and the review33 output paths). Next CRLF copy: `crlf-p51`.
+- Review pass 49 (fresh agent, Fable; head 416b1a8): clean, no finding (info only); record `research/review-findings-graphify-416b1a8.md`. Its I7 wording for the Review 47 CHANGELOG line taken as given. `_prints_to_stdout` and rule 3's wiring unpinned by design (I6, as A6).
+- Next: merge PR #27 with a merge commit once CI is green on the head that carries this record. Nothing else open in scope.
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
 - Out: item 6, any graphify-as-dependency experiment.
@@ -88,5 +89,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, named after the pass, next `crlf-p51`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`), once in the tree and once in a CRLF copy (both together are what Windows CI does: f62ab8d was red there only).
 
 ## Open items
-- Review pass 49 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
+- Merge PR #27 on green CI with a merge commit (the review loop ended with pass 49 clean).
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
