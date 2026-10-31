@@ -230,34 +230,55 @@ def _relative(real_repo, full):
     return rel.replace(os.sep, "/")
 
 
-def _gitlinks(repo):
-    """The paths git records as submodules (mode 160000), checked out or not: a submodule
-    that was never initialised has no .git on disk. Empty when git cannot say. Output goes to
-    a file, as in _git_ignored."""
+def _ls_files(repo, paths):
+    """[(mode, path)] git records at or under `paths` (one `git ls-files -s -z` limited to
+    them, literal pathspecs), or None when git cannot say. Output goes to a file, as in
+    _git_ignored."""
+    if not paths:
+        return []
     try:
         with tempfile.TemporaryFile() as out:
-            result = subprocess.run(["git", "-C", repo, "ls-files", "-s", "-z"],
+            result = subprocess.run(["git", "--literal-pathspecs", "-C", repo, "ls-files", "-s",
+                                     "-z", "--", *sorted(paths)],
                                     stdin=subprocess.DEVNULL, stdout=out,
                                     stderr=subprocess.DEVNULL, timeout=10)
             out.seek(0)
             listing = out.read()
     except (OSError, ValueError, subprocess.SubprocessError):
-        return frozenset()
+        return None
     if result.returncode != 0:
-        return frozenset()
-    return frozenset(os.fsdecode(entry.split(b"\t", 1)[1]) for entry in listing.split(b"\0")
-                     if entry.startswith(b"160000 ") and b"\t" in entry)
+        return None
+    entries = []
+    for entry in listing.split(b"\0"):
+        if b"\t" in entry:
+            meta, path = entry.split(b"\t", 1)
+            entries.append((meta.split(b" ", 1)[0].decode("ascii", "replace"), os.fsdecode(path)))
+    return entries
+
+
+# A case-insensitive file system (Windows, macOS by default) takes a submodule recorded as
+# "Notes" at "notes".
+FOLD = str.lower if os.name == "nt" or sys.platform == "darwin" else (lambda text: text)
+
+
+def _ancestors(relative):
+    """`relative` and every folder above it, as "/" paths."""
+    found = []
+    while relative and relative != ".":
+        found.append(relative)
+        relative = posixpath.dirname(relative)
+    return found
 
 
 def _nested(real_repo, relative, gitlinks=frozenset()):
-    """True when git add refuses `relative` and a clone lacks it: a folder on the way is
-    git's own .git folder, has its own .git (a nested repository or checked-out submodule) or
-    is a submodule git records (`gitlinks`)."""
+    """True when git add refuses `relative` and a clone lacks it: it or a folder on the way is
+    git's own .git folder or a submodule git records (`gitlinks`, folded with FOLD), or a
+    folder on the way has its own .git (a nested repository or checked-out submodule)."""
     folder = posixpath.dirname(relative)
-    if any(part.lower() == ".git" for part in relative.split("/")):
+    if any(part.lower() == ".git" for part in relative.split("/")) or FOLD(relative) in gitlinks:
         return True
     while folder:
-        if folder in gitlinks or os.path.lexists(
+        if FOLD(folder) in gitlinks or os.path.lexists(
                 os.path.join(real_repo, *folder.split("/"), ".git")):
             return True
         folder = posixpath.dirname(folder)
@@ -280,10 +301,12 @@ def _links(real_repo, name, gitlinks=frozenset()):
     file system does. {the link's own path in the repository: "ok", "absolute" (its target is
     absolute, or walking it climbs above the repository, so it points nowhere in a clone
     elsewhere) or "nested" (the link is in a submodule, a nested repository or .git, so a clone
-    lacks it)}, in the order followed. Links outside the repository are left out."""
+    lacks it)}, in the order followed, and the folders in the repository the walk enters and
+    leaves again with ".." (a clone must have them too). Links outside the repository are
+    left out."""
     # Each part carries the link whose target it came from: a ".." that takes the walk out
     # of the repository is that link's doing, judged where the walk really is, not by text.
-    links, current, hops = {}, real_repo, 0
+    links, passed, current, hops = {}, [], real_repo, 0
     parts = [(piece, None) for piece in name.split("/")]
 
     def state_of(rel, absolute):
@@ -296,7 +319,10 @@ def _links(real_repo, name, gitlinks=frozenset()):
         if piece in ("", "."):
             continue
         if piece == "..":
-            inside = _relative(real_repo, current) is not None
+            left = _relative(real_repo, current)
+            inside = left is not None
+            if inside and left != "." and left not in passed:
+                passed.append(left)
             current = os.path.dirname(current)
             if inside and owner is not None and _relative(real_repo, current) is None \
                     and links.get(owner) == "ok":
@@ -330,7 +356,18 @@ def _links(real_repo, name, gitlinks=frozenset()):
         if absolute:
             current = (drive or os.path.splitdrive(current)[0]) + os.sep
         parts = [(p, rel) for p in SEPARATORS.split(rest) if p] + parts
-    return links
+    return links, passed
+
+
+def _arg(path):
+    """`path` as one argument to paste into a shell (cmd or PowerShell on Windows)."""
+    if path.startswith("-"):
+        path = "./" + path
+    if re.fullmatch(r"[\w@%+=:,./-]+", path):
+        return path
+    if os.name == "nt":
+        return '"' + path + '"'
+    return "'" + path.replace("'", "'\\''") + "'"
 
 
 def _unsure(relative):
@@ -431,14 +468,33 @@ def _add(repo, force, progress=None, commit=None):
     real_repo = os.path.realpath(repo)
     resolved = {name: os.path.realpath(full) for name, full in core.items()}
     resolved["notes/learnings.md"] = os.path.realpath(learnings)
-    gitlinks = _gitlinks(repo)
-    real = {name: _repo_path(real_repo, full, gitlinks) for name, full in resolved.items()}
-    if not copy_learnings:
-        real["notes/learnings.md"] = None
-    # A symlink on the way is what a clone goes through: it is committed, and checked, too.
-    links = {name: _links(real_repo, name, gitlinks) for name in real if real[name] is not None}
+    def walk(gitlinks):
+        real = {name: _repo_path(real_repo, full, gitlinks) for name, full in resolved.items()}
+        if not copy_learnings:
+            real["notes/learnings.md"] = None
+        # A symlink on the way is what a clone goes through: it is committed, and checked, too.
+        walked = {name: _links(real_repo, name, gitlinks) for name in real if real[name] is not None}
+        return real, {n: w[0] for n, w in walked.items()}, {n: w[1] for n, w in walked.items()}
+
+    real, links, passed = walk(frozenset())
+    # What git records at the folders on the way (not the whole index): submodules that are
+    # not checked out have no .git to find, and a folder passed with ".." must be tracked.
+    on_way = set()
+    for name, full in resolved.items():
+        rel = _relative(real_repo, full)
+        if rel is not None:
+            on_way.update(_ancestors(posixpath.dirname(rel)))
+    for name in links:
+        for p in (*links[name], *passed[name]):
+            on_way.update(_ancestors(p))
+    recorded = _ls_files(repo, on_way)
+    gitlinks = frozenset(FOLD(p) for mode, p in recorded or () if mode == "160000")
+    if gitlinks:
+        real, links, passed = walk(gitlinks)
     asked = {r for r in real.values() if r is not None}
     asked.update(k for found in links.values() for k, state in found.items() if state != "nested")
+    asked.update(f for found in passed.values() for f in found
+                 if not _nested(real_repo, f + "/", gitlinks))
     ignored = _git_ignored(repo, sorted(asked))
     unsure = set()
 
@@ -450,7 +506,10 @@ def _add(repo, force, progress=None, commit=None):
         tail = f", so cloud sessions {see} not see it"
 
         def unignore(what, path):
-            return (f"; unignore {what} or commit it with git add -f {path}" if written
+            if what == "it":
+                path = _arg(path)
+            them = "them" if what == "them" else "it"
+            return (f"; unignore {what} or commit {them} with git add -f {path}" if written
                     else f"; unignore {what} and run this again")
 
         if real[name] is None:
@@ -458,8 +517,6 @@ def _add(repo, force, progress=None, commit=None):
             if rel is None:
                 return f"it lands outside the repository ({resolved[name]})" + tail
             return f"it lands in a submodule, a nested repository or .git ({rel})" + tail
-        if ignored[real[name]]:
-            return "git ignores it" + tail + unignore("it", real[name])
         for link, state in links[name].items():
             through = f"it is reached through the symlink {link}, "
             if state == "nested":
@@ -467,8 +524,29 @@ def _add(repo, force, progress=None, commit=None):
             if state == "absolute":
                 return (through + "whose target is an absolute path or lies outside the "
                         "repository" + tail)
-            if ignored[link]:
-                return through + "which git ignores" + tail + unignore(link, link)
+        for folder in passed[name]:
+            through = f"a symlink on its way passes through the folder {folder}, which "
+            if _nested(real_repo, folder + "/", gitlinks):
+                return through + "lies in a submodule, a nested repository or .git" + tail
+            if ignored.get(folder):
+                return through + "git ignores" + tail
+            if recorded is not None and not any(
+                    p == folder or p.startswith(folder + "/") for p in
+                    [p for _, p in recorded] + [r for r in real.values() if r is not None]):
+                return through + "git does not track (a clone lacks it)" + tail
+        blocked = [link for link in links[name] if ignored[link]]
+        if ignored[real[name]]:
+            if not blocked:
+                return "git ignores it" + tail + unignore("it", real[name])
+            what = "it and the symlink" + ("s " if len(blocked) > 1 else " ") + ", ".join(blocked)
+            return ("git ignores " + what + tail
+                    + unignore("them", " ".join(_arg(p) for p in (real[name], *blocked))))
+        if len(blocked) == 1:
+            return (f"it is reached through the symlink {blocked[0]}, which git ignores" + tail
+                    + unignore(blocked[0], _arg(blocked[0])))
+        if blocked:
+            return (f"it is reached through the symlinks {', '.join(blocked)}, which git ignores"
+                    + tail + unignore("them", " ".join(_arg(p) for p in blocked)))
         return None
 
     def check(name, take):

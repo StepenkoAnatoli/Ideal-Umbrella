@@ -738,7 +738,7 @@ def test_a_target_that_climbs_out_and_back_by_name_is_noted(tmp_path):
     (repo / "docs").mkdir()
     (repo / "a" / "b").mkdir(parents=True)
     _symlink_or_skip(repo / "a" / "b" / "lnk", os.path.join("..", ".."))
-    _symlink_or_skip(repo / "notes", "/".join(["a", "b", "lnk", "..", "r3", "docs"]))
+    _symlink_or_skip(repo / "notes", os.path.join("a", "b", "lnk", "..", "r3", "docs"))
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
@@ -751,9 +751,11 @@ def test_a_target_that_only_looks_outside_is_followed(tmp_path):
     repo = tmp_path / "repo"
     _git_init(repo)
     (repo / "a" / "b" / "c").mkdir(parents=True)
+    (repo / "a" / "b" / "c" / "keep").write_text("", encoding="utf-8")
+    _git(repo, "add", "a")
     (repo / "a" / "docs").mkdir()
-    _symlink_or_skip(repo / "lnk", "/".join(["a", "b", "c"]))
-    _symlink_or_skip(repo / "notes", "/".join(["lnk", "..", "..", "docs"]))
+    _symlink_or_skip(repo / "lnk", os.path.join("a", "b", "c"))
+    _symlink_or_skip(repo / "notes", os.path.join("lnk", "..", "..", "docs"))
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "not copied" not in result.stdout
@@ -765,7 +767,7 @@ def test_a_link_into_the_git_folder_is_noted(tmp_path):
     # notes -> .git/info: git add stages nothing there, yet the hint named it.
     repo = tmp_path / "repo"
     _git_init(repo)
-    _symlink_or_skip(repo / "notes", "/".join([".git", "info"]))
+    _symlink_or_skip(repo / "notes", os.path.join(".git", "info"))
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert ("notes/learnings.md not copied: it lands in a submodule, a nested repository or .git "
@@ -780,7 +782,7 @@ def test_a_submodule_that_is_not_checked_out_is_noted(tmp_path):
     subprocess.run(["git", "-C", str(repo), "update-index", "--add", "--cacheinfo",
                     "160000," + "1" * 40 + ",sub"], check=True, capture_output=True, env=git_env())
     (repo / "sub" / "notes").mkdir(parents=True)
-    _symlink_or_skip(repo / "notes", "/".join(["sub", "notes"]))
+    _symlink_or_skip(repo / "notes", os.path.join("sub", "notes"))
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "could not say" not in result.stdout
@@ -798,8 +800,95 @@ def test_a_link_past_the_hop_limit_is_judged_by_where_it_lands(add_to_repo, tmp_
     for i in range(39, 0, -1):
         _symlink_or_skip(repo / f"l{i}", f"l{i + 1}")
     _symlink_or_skip(repo / "notes", "l1")
-    found = add_to_repo._links(os.path.realpath(repo), "notes/learnings.md")
+    found, _ = add_to_repo._links(os.path.realpath(repo), "notes/learnings.md")
     assert found["l40"] == "absolute"
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=git_env())
+
+
+def test_both_an_ignored_file_and_an_ignored_link_are_named(tmp_path):
+    # .claude -> cfg with cfg and .claude ignored: "git add -f cfg/settings.json" alone left
+    # the .claude link out of the clone.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "cfg").mkdir()
+    _symlink_or_skip(repo / ".claude", "cfg")
+    (repo / ".gitignore").write_text("/cfg/\n/.claude\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("note: .claude/settings.json is installed, but git ignores it and the symlink "
+            ".claude, so cloud sessions will not see it; unignore them or commit them with git "
+            "add -f cfg/settings.json .claude") in result.stdout
+
+
+def test_the_force_add_path_is_quoted(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "my cfg").mkdir()
+    _symlink_or_skip(repo / ".claude", "my cfg")
+    (repo / ".gitignore").write_text("/my cfg/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    quoted = '"my cfg/settings.json"' if os.name == "nt" else "'my cfg/settings.json'"
+    assert "commit it with git add -f " + quoted in result.stdout
+
+
+@pytest.mark.parametrize("layout", ["ignored", "untracked", "nested"])
+def test_a_folder_a_link_passes_through_must_reach_a_clone(tmp_path, layout):
+    # notes -> build/../docs: a clone without build has a notes link to nothing.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    if layout == "nested":
+        _git_init(repo / "build")
+    else:
+        (repo / "build").mkdir()
+        (repo / "build" / "keep").write_text("", encoding="utf-8")
+    if layout == "ignored":
+        (repo / ".gitignore").write_text("/build/\n", encoding="utf-8")
+    _symlink_or_skip(repo / "notes", os.path.join("build", "..", "docs"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "could not say" not in result.stdout
+    assert ("notes/learnings.md not copied: a symlink on its way passes through the folder "
+            "build, which") in result.stdout
+    assert not (repo / "docs" / "learnings.md").exists()
+    if layout == "untracked":
+        _git(repo, "add", "build")
+        result = run(repo)
+        assert "not copied" not in result.stdout
+        assert (repo / "docs" / "learnings.md").exists()
+
+
+def test_a_link_at_a_submodule_path_is_noted(tmp_path):
+    # notes recorded as a submodule, a notes -> docs link on disk: git add notes would
+    # replace the submodule with the link.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",notes")
+    (repo / "docs").mkdir()
+    _symlink_or_skip(repo / "notes", "docs")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink notes, which lies "
+            "in a submodule, a nested repository or .git") in result.stdout
+
+
+def test_a_link_inside_a_submodule_that_is_not_checked_out_is_noted(tmp_path):
+    # sub recorded as a submodule with no .git on disk, sub/x -> ../docs, notes -> sub/x.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",sub")
+    (repo / "docs").mkdir()
+    (repo / "sub").mkdir()
+    _symlink_or_skip(repo / "sub" / "x", os.path.join("..", "docs"))
+    _symlink_or_skip(repo / "notes", os.path.join("sub", "x"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink sub/x, which lies "
+            "in a submodule, a nested repository or .git") in result.stdout
 
 
 def test_a_stderr_without_reconfigure_does_not_stop_the_run(add_to_repo, tmp_path, monkeypatch):
@@ -815,3 +904,15 @@ def test_a_stderr_without_reconfigure_does_not_stop_the_run(add_to_repo, tmp_pat
     with pytest.raises(SystemExit) as stopped:
         add_to_repo.main([str(tmp_path / "missing")])
     assert "usage:" in str(stopped.value)
+
+
+@pytest.mark.skipif(os.name != "nt" and sys.platform != "darwin",
+                    reason="needs a case-insensitive file system")
+def test_a_submodule_recorded_in_other_case_is_noted(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",Notes")
+    (repo / "notes").mkdir()
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "notes/learnings.md not copied: it lands in a submodule" in result.stdout

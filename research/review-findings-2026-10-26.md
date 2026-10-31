@@ -212,4 +212,28 @@ Checks at that head: pytest 307 passed 4 skipped, keyline 35/35, the three JSON 
 - J2 LOW = K2.
 
 ### Round 8 fixes
-K1: `missing()` builds the whole clause; an ignored core file's fix names the path to force-add (the real path, or the link), the learnings file's fix is "unignore it and run this again". K2/J2: each queued part carries the link whose target it came from; a `..` that takes the walk above the repository on disk marks that link "absolute" (the text check is gone). K3/J1: `_nested()` also refuses any `.git` component and any folder git records as a gitlink (`_gitlinks()`, one `git ls-files -s -z`, output to a temp file); wording "a submodule, a nested repository or .git". K4: the fallback marks the link "absolute" when realpath lands outside. K5: each stream checked for `reconfigure`. K7: done with K1. K8: assertion restored. K9: docstring updated. K10: watch-out line added. K6 rejected: with K2 fixed both resolvers walk the disk and agree; merging them is a refactor with no failing case. Tests for each (11 new; all fail on fbac227). Checks below in the commit.
+K1: `missing()` builds the whole clause; an ignored core file's fix names the path to force-add (the real path, or the link), the learnings file's fix is "unignore it and run this again". K2/J2: each queued part carries the link whose target it came from; a `..` that takes the walk above the repository on disk marks that link "absolute" (the text check is gone). K3/J1: `_nested()` also refuses any `.git` component and any folder git records as a gitlink (`_gitlinks()`, one `git ls-files -s -z`, output to a temp file); wording "a submodule, a nested repository or .git". K4: the fallback marks the link "absolute" when realpath lands outside. K5: each stream checked for `reconfigure`. K7: done with K1. K8: assertion restored. K9: docstring updated. K10: watch-out line added. K6 rejected: with K2 fixed both resolvers walk the disk and agree; merging them is a refactor with no failing case. Tests for each (9 new; all fail on fbac227). Checks: pytest 316 passed 4 skipped, keyline 35/35, the three JSON files parse. Windows CI went red on 4b78517 (run 41234638124): four new tests built link targets with "/", which Windows cannot follow; fixed in round 9 (M1).
+
+## Round 9 — head 4b78517
+
+Checks at that head: pytest 316 passed 4 skipped, keyline 35/35, the three JSON files parse; CI green on fbac227 (run 41234061181), red on Windows for 4b78517 (run 41234638124). Reviewers told to skip rounds 1-8.
+
+### code-review skill, high (9 findings; M2-M5 reproduced; details at scratchpad `review-round9-findings.json`, outside the repo)
+- M1 HIGH, CONFIRMED: Windows CI red: four round-8 tests made link targets with "/".join; Windows links with "/" dangle.
+- M2 LOW, CONFIRMED: a link target passing with `..` through a folder a clone lacks (`notes -> build/../docs`, build ignored, a nested repository or untracked) got a confident hint.
+- M3 LOW, CONFIRMED: an ignored real path returned before the links were checked: with `.claude -> cfg` and both ignored, the fix named only `cfg/settings.json`; with an absolute link, the fix could not help.
+- M4 LOW, CONFIRMED: a link at a submodule's own path (`notes` a gitlink, `notes -> docs` on disk) was hinted; `git add notes` replaces the submodule.
+- M5 LOW, CONFIRMED: the `git add -f` path was not quoted (`my cfg/settings.json`).
+- M6 VERY LOW (macOS, not run): gitlinks compared case-sensitively on a case-insensitive file system.
+- M7 LOW: `_gitlinks()` listed the whole index under a 10 s timeout; a timeout silently brought J1 back.
+- M8 docs: round 8's log said 11 tests (9) and never recorded its checks or the red Windows run.
+- M9 VERY LOW: past 40 hops an absolute link landing inside is "ok".
+
+### breaker agent (no high; details at scratchpad `round9-breaker.md`, outside the repo)
+- L1 LOW-MEDIUM = M3.
+- L2 LOW = M2.
+- L3 LOW = M5.
+- T1 test gap: dropping `gitlinks` from the `_links` call passed every test.
+
+### Round 9 fixes
+M1: targets built with `os.path.join`. M2/L2: `_links()` also returns the folders the walk enters and leaves with `..`; one of those that is nested, ignored or holds nothing git records (nor a file this run writes) gets a note naming it. M3/L1: links are checked before the real path; an ignored real path and ignored links are named together, and the force-add names them all. M4: `_nested()` also refuses a path that is itself a gitlink. M5/L3: `_arg()` quotes a path for the shell ('...' on POSIX, "..." on Windows; a leading "-" gets "./"). M6: gitlinks folded with `FOLD` on Windows and macOS. M7: `_ls_files()` asks only about the folders on the way (literal pathspecs); a first walk without gitlinks finds them, a second walk runs only when some are found. M8: round 8's entry corrected. T1: a link inside a submodule that is not checked out. M9 rejected: the OS refuses a path past 40 links (ELOOP) anyway, so no file is written through it. Tests: 8 new (one Windows/macOS only); every new guard fails on 4b78517, and dropping `gitlinks` from `_links` fails two.
