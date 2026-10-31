@@ -668,6 +668,34 @@ def test_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, f
 
 
 @pytest.mark.parametrize("relative,is_dir", [("notes", True), ("notes/learnings.md", False)])
+def test_a_learnings_link_into_a_folder_that_cannot_be_searched_is_not_called_missing(
+        add_to_repo, tmp_path, capsys, monkeypatch, relative, is_dir):
+    # Review 42, L3: os.path.exists() says False for a target it cannot look at, so a `notes`
+    # link that is fine got "a symlink to a missing target" (put back a target that is there).
+    repo = tmp_path / "repo"
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    locked = tmp_path / "locked"
+    (locked / "real").mkdir(parents=True)
+    real = locked / "real" if is_dir else locked / "real" / "learnings.md"
+    if not is_dir:
+        real.write_text("# mine\n", encoding="utf-8")
+    try:
+        link.symlink_to(real, target_is_directory=is_dir)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    refuse_looks_inside(locked, monkeypatch)
+    assert add_to_repo.main([str(repo)]) == 0
+    out = capsys.readouterr().out
+    monkeypatch.undo()
+    assert "note: notes/learnings.md not copied: cannot look at" in out, out
+    assert "missing target" not in out, out
+    assert (repo / ".claude" / "settings.json").is_file()
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert sorted(p.name for p in (locked / "real").iterdir()) == ([] if is_dir else ["learnings.md"])
+
+
+@pytest.mark.parametrize("relative,is_dir", [("notes", True), ("notes/learnings.md", False)])
 def test_dangling_learnings_link_is_a_notice_not_an_error(tmp_path, relative, is_dir):
     # The learnings file is a courtesy: a dangling link on it or on `notes` used to fail the
     # whole run (exit 1, nothing written). Now it gets no copy and a note.

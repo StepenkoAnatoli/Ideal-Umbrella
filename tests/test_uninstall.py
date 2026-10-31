@@ -917,6 +917,27 @@ def test_a_text_that_is_only_a_bare_cr_reads_as_blank_lines_under_a_crlf_line_ad
     assert md.read_bytes() == expected
 
 
+def test_a_text_that_is_only_a_bare_cr_with_the_blank_line_deleted_reads_as_a_crlf_conversion(
+        install_module, uninstall_module, tmp_path):
+    # Review 42, L2: the README clause for this history. With the blank line above the section
+    # also deleted (before or after the line is added), "note\r\n\r\n" is left above it: the
+    # same bytes as the text "note" with no final line break, installed with two LF and converted
+    # to CRLF (test_line_endings_changed_after_install_leave_no_trace_on_uninstall), and read that
+    # way. The CR and the CRLF typed before it go.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"\r")
+    install_module.install(home)
+    data = md.read_bytes()
+    at = data.index(b"<!--")
+    assert data[:at] == b"\r\n\n"
+    md.write_bytes(b"note\r\n" + data[:at - 1] + data[at:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"note"
+
+
 @pytest.mark.parametrize("text, expected", [
     (b"a\r\r\nb\r", b"a\r\nb\r\n"),         # no line break before the last CR: the CR stays
     (b"a\r\r\n\r\r", b"a\r\n\r\r\n"),

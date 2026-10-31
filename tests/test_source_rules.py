@@ -121,14 +121,27 @@ def _prints_to_stdout(node):
 
 
 def _never_fails_to_encode(value):
-    """errors="backslashreplace", or a choice by OS between it and "surrogateescape" (which
+    """errors="backslashreplace", or a choice by `os.name` that gives it on Windows and
+    "surrogateescape" elsewhere (which
     prints a POSIX file name that is not UTF-8 as its bytes on disk, and every string such a
     script prints comes from a file name, argv or repr())."""
     if isinstance(value, ast.Constant):
         return value.value == "backslashreplace"
-    return (isinstance(value, ast.IfExp)
-            and {getattr(v, "value", None) for v in (value.body, value.orelse)}
-            == {"backslashreplace", "surrogateescape"})
+    if not isinstance(value, ast.IfExp):
+        return False
+    test = value.test
+    # Windows must get backslashreplace: a path there can hold a lone surrogate, which
+    # surrogateescape cannot encode. So the test must be os.name compared with "nt".
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.Eq, ast.NotEq))
+            and isinstance(test.left, ast.Attribute) and test.left.attr == "name"
+            and _name(test.left.value) == "os"
+            and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == "nt"):
+        return False
+    windows, other = ((value.body, value.orelse) if isinstance(test.ops[0], ast.Eq)
+                      else (value.orelse, value.body))
+    return (getattr(windows, "value", None) == "backslashreplace"
+            and getattr(other, "value", None) in ("backslashreplace", "surrogateescape"))
 
 
 def _sets_utf8_stdout(node):
@@ -137,6 +150,23 @@ def _sets_utf8_stdout(node):
             and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
                     for k in node.keywords)
             and any(k.arg == "errors" and _never_fails_to_encode(k.value) for k in node.keywords))
+
+
+@pytest.mark.parametrize("source, accepted", [
+    ('"backslashreplace"', True),
+    ('"surrogateescape" if os.name != "nt" else "backslashreplace"', True),
+    ('"backslashreplace" if os.name == "nt" else "surrogateescape"', True),
+    ('"surrogateescape" if os.name == "nt" else "backslashreplace"', False),   # Windows gets surrogateescape
+    ('"backslashreplace" if os.name != "nt" else "surrogateescape"', False),
+    ('"surrogateescape" if sys.platform != "win32" else "backslashreplace"', False),   # not the os.name test
+    ('"surrogateescape" if os.name != "posix" else "backslashreplace"', False),
+    ('"surrogateescape"', False),
+])
+def test_the_encode_rule_wants_backslashreplace_on_windows(source, accepted):
+    # Review 42, L1: the rule took either OS choice whatever the condition said. On Windows a
+    # path can hold a lone surrogate (NTFS names are UTF-16), which surrogateescape cannot
+    # encode, so a print there would end in a traceback.
+    assert _never_fails_to_encode(ast.parse(source, mode="eval").body) is accepted
 
 
 def test_only_main_exits():

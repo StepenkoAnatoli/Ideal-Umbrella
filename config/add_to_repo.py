@@ -572,7 +572,7 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
     every prompt. A hook or settings file that git ignores, or that a symlink puts outside the
     repository, is written all the same (local sessions use it) and gets a notice on every run.
     The learnings file is a courtesy and comes last: a failure there (a `notes` file in the
-    way, a dangling link) is a notice, not an error, and a `notes/` that git ignores or that
+    way, a dangling link, a link it cannot look through) is a notice, not an error, and a `notes/` that git ignores or that
     leads outside the repository gets no copy (cloud sessions would never see it)."""
     if progress is None:
         progress = []
@@ -590,8 +590,18 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
     for p in (claude_dir, os.path.dirname(target), path, target):
         if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
             raise ValueError(f"{p} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
-    dangling = next((p for p in (os.path.dirname(learnings), learnings)
-                     if _is_link(p) and not os.path.exists(p)), None)
+    # Why the courtesy file gets no copy (a notice), looked at the same way: a target that is
+    # there but cannot be looked at is not called missing.
+    skip_learnings, has_learnings = None, False
+    try:
+        for p in (os.path.dirname(learnings), learnings):
+            if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
+                skip_learnings = f"{p} is a symlink to a missing target"
+                break
+        else:
+            has_learnings = _look(learnings, follow=True) is not None
+    except ValueError as e:
+        skip_learnings = str(e)
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     if handoff_at is not None:
@@ -605,7 +615,7 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
     old = _read_bytes(target) if os.path.exists(target) else b""
     source = _read_bytes(SCRIPT)
     # An existing notes/learnings.md is the repository's own, whatever it holds: never replaced.
-    copy_learnings = dangling is None and not os.path.exists(learnings)
+    copy_learnings = skip_learnings is None and not has_learnings
     learnings_template = b""
     if copy_learnings:
         learnings_template = _read_bytes(LEARNINGS)
@@ -722,8 +732,8 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
             check(name, take=name in progress)
         else:
             notices.append(f"{name} is installed, but {why}")
-    if dangling is not None:
-        notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
+    if skip_learnings is not None:
+        notices.append(f"notes/learnings.md not copied: {skip_learnings}")
     elif copy_learnings:
         why = missing("notes/learnings.md")
         if why is not None:
