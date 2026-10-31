@@ -8,16 +8,17 @@
    under a `try` that handles `UnicodeDecodeError` (or `ValueError` / `Exception`, which
    include it). A note, allow file, settings file or transcript that is not UTF-8 is a one-line
    error, never a traceback.
-3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first. The
+3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first (directly
+   or on the name of a loop over a tuple or list holding `sys.stdout`). The
    scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
    the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
    replaced byte becomes) used to end the script with UnicodeEncodeError. It also passes
    `errors="backslashreplace"`: a Linux path that is not UTF-8 holds lone surrogates, which the
    default `errors="strict"` cannot print, and `--verify-only` ended in a traceback on one
    (review 3 of the graphify branch, finding 4). `errors="surrogateescape"`, which prints such a
-   path as its bytes on disk, is also accepted off Windows when the choice is made by `os.name`
-   compared with `"nt"`: a Windows path can hold any lone surrogate, so Windows still gets
-   backslashreplace.
+   path as its bytes on disk, is also accepted off Windows when the choice is made by
+   `os.name == "nt"` or `os.name != "nt"` (in that order): a Windows path can hold any lone
+   surrogate, so Windows still gets backslashreplace.
 4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
    folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
    no transcript at all. The check sees attribute calls (`glob.glob`, `glob.escape`) inside
@@ -147,8 +148,18 @@ def _never_fails_to_encode(value):
             and getattr(other, "value", None) in ("backslashreplace", "surrogateescape"))
 
 
-def _sets_utf8_stdout(node):
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+def _is_sys_stdout(node):
+    return isinstance(node, ast.Attribute) and node.attr == "stdout" and isinstance(node.value, ast.Name) and node.value.id == "sys"
+
+
+def _sets_utf8_stdout(node, stream=None):
+    """`sys.stdout.reconfigure(encoding="utf-8", errors=...)`, or the same call on the name
+    `stream` (the target of a loop over a tuple or list that holds sys.stdout)."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    receiver = node.func.value
+    return ((_is_sys_stdout(receiver)
+             or (stream is not None and isinstance(receiver, ast.Name) and receiver.id == stream))
             and node.func.attr == "reconfigure"
             and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
                     for k in node.keywords)
@@ -188,11 +199,44 @@ def test_the_encode_rule_wants_backslashreplace_on_windows(source, accepted):
     ('sys.stdout.reconfigure(encoding=ENC, errors="backslashreplace")', False),
     ('sys.stdout.write(encoding="utf-8", errors="backslashreplace")', False),   # not reconfigure
     ('reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # not a method call
+    ('sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # not stdout
+    ('log.reconfigure(encoding="utf-8", errors="backslashreplace")', False),
+    ('proc.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # a child's pipe
 ])
 def test_the_utf8_stdout_rule_wants_both_arguments(source, accepted):
     # Review 44, L1: the repo-wide rule fails only when a script breaks it, so a loosened
     # checker went unseen; this pins each clause of `_sets_utf8_stdout` on its own.
     assert _sets_utf8_stdout(ast.parse(source, mode="eval").body) is accepted
+
+
+def _reconfigures_stdout(tree):
+    """A direct `sys.stdout.reconfigure(...)`, or `for s in (sys.stdout, ...): s.reconfigure(...)`."""
+    for node in ast.walk(tree):
+        if _sets_utf8_stdout(node):
+            return True
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and isinstance(node.iter, (ast.Tuple, ast.List)) and any(_is_sys_stdout(e) for e in node.iter.elts)
+                and any(_sets_utf8_stdout(n, node.target.id) for child in node.body for n in ast.walk(child))):
+            return True
+    return False
+
+
+_UTF8 = 'encoding="utf-8", errors="backslashreplace"'
+
+
+@pytest.mark.parametrize("source, accepted", [
+    (f"sys.stdout.reconfigure({_UTF8})", True),
+    (f"for stream in (sys.stdout, sys.stderr):\n    if hasattr(stream, 'reconfigure'):\n        stream.reconfigure({_UTF8})", True),
+    (f"for s in [sys.stdout]:\n    s.reconfigure({_UTF8})", True),
+    (f"sys.stderr.reconfigure({_UTF8})", False),
+    (f"for stream in (sys.stderr,):\n    stream.reconfigure({_UTF8})", False),   # stdout left out
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nlog.reconfigure({_UTF8})", False),   # not the loop's name
+    (f"for stream in (sys.stdout, sys.stderr):\n    other.reconfigure({_UTF8})", False),
+])
+def test_the_utf8_stdout_rule_looks_at_the_stream(source, accepted):
+    # Review 45, L2: the rule took `.reconfigure` on any object, so a script that set up only
+    # sys.stderr passed while its prints to stdout could still fail on Windows.
+    assert _reconfigures_stdout(ast.parse(source)) is accepted
 
 
 def test_only_main_exits():
@@ -241,6 +285,62 @@ def test_named_handlers_reads_module_level_tuples(source, names):
     assert _named_handlers(ast.parse(source), DEPTH_HANDLERS) == names
 
 
+_INNER_TRY_IN_BODY = """
+import json
+def read(p):
+    try:
+        with open(p) as f:
+            try:
+                return json.load(f)
+            except INNER:
+                return None
+    except OUTER:
+        return None
+"""
+_INNER_TRY_IN_HANDLER = """
+import json
+def read(p, text):
+    try:
+        return open(p).read()
+    except OUTER:
+        try:
+            return json.loads(text)
+        except INNER:
+            return None
+"""
+_INNER_TRY_IN_FINALLY = """
+import json
+def read(p, text):
+    try:
+        return open(p).read()
+    except OUTER:
+        return None
+    finally:
+        try:
+            json.loads(text)
+        except INNER:
+            pass
+"""
+
+
+@pytest.mark.parametrize("shape", [_INNER_TRY_IN_BODY, _INNER_TRY_IN_HANDLER, _INNER_TRY_IN_FINALLY],
+                         ids=["body", "handler", "finally"])
+@pytest.mark.parametrize("inner, outer, guarded", [
+    ("ValueError", "OSError", False),   # a decode handler is not a depth handler, at any level
+    ("RecursionError", "OSError", True),
+    ("ValueError", "RecursionError", None),   # guarded only in the outer try's body
+])
+def test_walk_keeps_the_handled_set_in_nested_trys(shape, inner, outer, guarded):
+    # Review 45, L1: no script has a json read under an inner `except ValueError` inside another
+    # try, so a `_walk` that dropped `handled` in one recursion (and fell back to the decode
+    # handlers) passed every repo-wide rule.
+    if guarded is None:
+        guarded = shape is _INNER_TRY_IN_BODY
+    tree = ast.parse(shape.replace("INNER", inner).replace("OUTER", outer))
+    reads = [g for node, _, g in _walk(tree, handled=DEPTH_HANDLERS) if _is_json_read(node)]
+    assert reads == [guarded]
+
+
 def test_json_reads_handle_a_recursion_error():
     bad = []
     for path, tree in sources():
@@ -276,11 +376,11 @@ def test_config_json_reads_are_checked_before_any_write():
 def test_scripts_that_print_set_utf8_stdout():
     bad = []
     for path, tree in sources():
-        nodes = [node for node, _, _ in _walk(tree)]
-        prints = [node for node in nodes if _prints_to_stdout(node)]
-        if prints and not any(_sets_utf8_stdout(node) for node in nodes):
+        prints = [node for node in ast.walk(tree) if _prints_to_stdout(node)]
+        if prints and not _reconfigures_stdout(tree):
             bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
-    assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace"):\n' + "\n".join(bad)
+    assert not bad, ('print() without sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")'
+                     " (directly or in a loop over sys.stdout):\n" + "\n".join(bad))
 
 
 def _glob_call(node, names):
