@@ -57,7 +57,8 @@ while printing to stdout. That script would again end in `UnicodeEncodeError` on
   list that holds `sys.stdout`, inside that loop's body. The repo-wide rule uses it.
 - New `test_the_utf8_stdout_rule_looks_at_the_stream`, with 7 module rows. The argument test also refuses
   `sys.stderr`, `log` and `proc.stdout` receivers.
-- Failing first: with the old check, 6 rows failed.
+- Failing first: with the old check, 6 rows failed then; with the `proc.stdout` row added after, 7 fail
+  (corrected in pass 46, I6).
 - Mutants (`fix45/mut.py`): R1 (any receiver), R2 (any name), R3 (any loop), R4 (`.stdout` of any object) and
   R5 (any loop name) are all killed.
 - The rule-3 docstring and the assertion message name the loop form. The docstring also says the `os.name`

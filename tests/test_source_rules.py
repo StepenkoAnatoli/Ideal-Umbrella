@@ -232,10 +232,13 @@ _UTF8 = 'encoding="utf-8", errors="backslashreplace"'
     (f"for stream in (sys.stderr,):\n    stream.reconfigure({_UTF8})", False),   # stdout left out
     (f"for stream in (sys.stdout, sys.stderr):\n    pass\nlog.reconfigure({_UTF8})", False),   # not the loop's name
     (f"for stream in (sys.stdout, sys.stderr):\n    other.reconfigure({_UTF8})", False),
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nstream.reconfigure({_UTF8})", False),   # after the loop
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nelse:\n    stream.reconfigure({_UTF8})", False),   # in for/else
 ])
 def test_the_utf8_stdout_rule_looks_at_the_stream(source, accepted):
     # Review 45, L2: the rule took `.reconfigure` on any object, so a script that set up only
-    # sys.stderr passed while its prints to stdout could still fail on Windows.
+    # sys.stderr passed while its prints to stdout could still fail on Windows. Review 46, L1:
+    # the loop's name counts only inside the loop's body, not after it or in its `else:`.
     assert _reconfigures_stdout(ast.parse(source)) is accepted
 
 
@@ -321,10 +324,23 @@ def read(p, text):
         except INNER:
             pass
 """
+_INNER_TRY_IN_ELSE = """
+import json
+def read(p):
+    try:
+        text = open(p).read()
+    except OUTER:
+        return None
+    else:
+        try:
+            return json.loads(text)
+        except INNER:
+            return None
+"""
 
 
-@pytest.mark.parametrize("shape", [_INNER_TRY_IN_BODY, _INNER_TRY_IN_HANDLER, _INNER_TRY_IN_FINALLY],
-                         ids=["body", "handler", "finally"])
+@pytest.mark.parametrize("shape", [_INNER_TRY_IN_BODY, _INNER_TRY_IN_HANDLER, _INNER_TRY_IN_FINALLY,
+                                   _INNER_TRY_IN_ELSE], ids=["body", "handler", "finally", "else"])
 @pytest.mark.parametrize("inner, outer, guarded", [
     ("ValueError", "OSError", False),   # a decode handler is not a depth handler, at any level
     ("RecursionError", "OSError", True),
@@ -333,7 +349,8 @@ def read(p, text):
 def test_walk_keeps_the_handled_set_in_nested_trys(shape, inner, outer, guarded):
     # Review 45, L1: no script has a json read under an inner `except ValueError` inside another
     # try, so a `_walk` that dropped `handled` in one recursion (and fell back to the decode
-    # handlers) passed every repo-wide rule.
+    # handlers) passed every repo-wide rule. Review 46, L2: the `else:` shape, which the outer
+    # try's handlers do not cover either.
     if guarded is None:
         guarded = shape is _INNER_TRY_IN_BODY
     tree = ast.parse(shape.replace("INNER", inner).replace("OUTER", outer))
