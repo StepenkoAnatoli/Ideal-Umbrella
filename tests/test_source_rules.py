@@ -120,13 +120,23 @@ def _prints_to_stdout(node):
     return target is None or (isinstance(target, ast.Attribute) and target.attr == "stdout")
 
 
+def _never_fails_to_encode(value):
+    """errors="backslashreplace", or a choice by OS between it and "surrogateescape" (which
+    prints a POSIX file name that is not UTF-8 as its bytes on disk, and every string such a
+    script prints comes from a file name, argv or repr())."""
+    if isinstance(value, ast.Constant):
+        return value.value == "backslashreplace"
+    return (isinstance(value, ast.IfExp)
+            and {getattr(v, "value", None) for v in (value.body, value.orelse)}
+            == {"backslashreplace", "surrogateescape"})
+
+
 def _sets_utf8_stdout(node):
     return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
             and node.func.attr == "reconfigure"
             and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
                     for k in node.keywords)
-            and any(k.arg == "errors" and isinstance(k.value, ast.Constant) and k.value.value == "backslashreplace"
-                    for k in node.keywords))
+            and any(k.arg == "errors" and _never_fails_to_encode(k.value) for k in node.keywords))
 
 
 def test_only_main_exits():
@@ -152,11 +162,23 @@ def _is_json_read(node):
             and node.func.attr in ("load", "loads") and _name(node.func.value) == "json")
 
 
+def _named_handlers(tree, handled):
+    """Module-level names bound to a tuple of exception types that includes one of `handled`
+    (`BAD_RECORD = (ValueError, RecursionError)`): `except BAD_RECORD` handles it too."""
+    names = set()
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
+                and any(_name(e) in handled for e in node.value.elts)):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
 def test_json_reads_handle_a_recursion_error():
     bad = []
     for path, tree in sources():
         relative = path.relative_to(ROOT).as_posix()
-        for node, function, guarded in _walk(tree, handled=DEPTH_HANDLERS):
+        handled = DEPTH_HANDLERS | _named_handlers(tree, DEPTH_HANDLERS)
+        for node, function, guarded in _walk(tree, handled=handled):
             if _is_json_read(node) and not guarded and (relative, function) not in JSON_READS_CAUGHT_BY_CALLER:
                 bad.append(f"{relative}:{node.lineno}")
     assert not bad, "json.load/json.loads with no RecursionError handler:\n" + "\n".join(bad)

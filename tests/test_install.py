@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ROOT, load_module
+from conftest import ROOT, clean_env, load_module
 
 INSTALL = ROOT / "config" / "install.py"
 
@@ -500,13 +500,13 @@ def test_generated_hook_command_runs_the_hook(install_module, tmp_path):
         "type": "assistant",
         "message": {"usage": {"input_tokens": 100_000, "output_tokens": 60_000}},
     }) + "\n", encoding="utf-8")
-    env = dict(os.environ, IDEAL_UMBRELLA_STATE_DIR=str(tmp_path / "state"),
-               IDEAL_UMBRELLA_LOG=str(tmp_path / "hook.log"))
+    env = clean_env(IDEAL_UMBRELLA_STATE_DIR=str(tmp_path / "state"),
+                    IDEAL_UMBRELLA_LOG=str(tmp_path / "hook.log"))
     result = subprocess.run(command, shell=True, input=json.dumps({
         "transcript_path": str(transcript), "session_id": "s-1"}),
         capture_output=True, text=True, encoding="utf-8", env=env)
     assert result.returncode == 0, result.stderr
-    assert "context about 160k tokens" in json.loads(result.stdout)["systemMessage"]
+    assert "now 160k; over 150k" in json.loads(result.stdout)["systemMessage"]
 
 
 def test_verify_reports_a_file_system_error_in_one_line(install_module, tmp_path, capsys):

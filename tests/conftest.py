@@ -18,6 +18,21 @@ def load_module(name, relative_path):
     return module
 
 
+def clean_env(**extra):
+    """os.environ without the hook's own settings, plus `extra`: a subprocess test must not
+    read the host's IDEAL_UMBRELLA_* values (the README tells users to set them)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("IDEAL_UMBRELLA_")}
+    env.update(extra)
+    return env
+
+
+@pytest.fixture(autouse=True)
+def _no_host_hook_settings(monkeypatch):
+    """The same for in-process tests: every IDEAL_UMBRELLA_* variable is removed for the test."""
+    for key in [k for k in os.environ if k.startswith("IDEAL_UMBRELLA_")]:
+        monkeypatch.delenv(key)
+
+
 @pytest.fixture
 def umask_022():
     """Pin the umask for a file-mode test: with the host's own umask the expected mode is

@@ -169,7 +169,7 @@ def test_a_read_only_file_with_nothing_to_write_does_not_stop_add_to_repo(add_to
     repo.mkdir()
     add_to_repo._add(str(repo), False)
     written = [p for p in repo.rglob("*") if p.is_file()]
-    assert len(written) == 2
+    assert len(written) == 3   # the hook, settings.json and notes/learnings.md
     for path in written:
         read_only(path)
     before = snapshot(repo)
