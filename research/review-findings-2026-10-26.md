@@ -237,3 +237,24 @@ Checks at that head: pytest 316 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 9 fixes
 M1: targets built with `os.path.join`. M2/L2: `_links()` also returns the folders the walk enters and leaves with `..`; one of those that is nested, ignored or holds nothing git records (nor a file this run writes) gets a note naming it. M3/L1: links are checked before the real path; an ignored real path and ignored links are named together, and the force-add names them all. M4: `_nested()` also refuses a path that is itself a gitlink. M5/L3: `_arg()` quotes a path for the shell ('...' on POSIX, "..." on Windows; a leading "-" gets "./"). M6: gitlinks folded with `FOLD` on Windows and macOS. M7: `_ls_files()` asks only about the folders on the way (literal pathspecs); a first walk without gitlinks finds them, a second walk runs only when some are found. M8: round 8's entry corrected. T1: a link inside a submodule that is not checked out. M9 rejected: the OS refuses a path past 40 links (ELOOP) anyway, so no file is written through it. Tests: 8 new (one Windows/macOS only); every new guard fails on 4b78517, and dropping `gitlinks` from `_links` fails two.
+
+## Round 10 — head e9ec96d (findings logged, NOT yet fixed)
+
+Checks at that head: pytest 323 passed 5 skipped locally, keyline 35/35, the three JSON files parse. CI run 41235257361: Ubuntu green, **Windows pytest red** (job 124637568608; most likely `test_a_submodule_recorded_in_other_case_is_noted`, see P2; read the job log first). Reviewers told to skip rounds 1-9.
+
+### code-review skill, high (10 findings; P1 reproduced, P2 reproduced on the git side)
+- P1 MEDIUM, CONFIRMED: the untracked check for a folder passed with `..` ignores the links this run names in the hint: `.claude/hooks/context_check.py -> ../../tools/context_check.py` (new, uncommitted) gets "passes through the folder .claude/hooks, which git does not track" and drops out of the hint. Fix: count every link in `links[*]` (and their parent folders) as tracked, along with `recorded` and the written real paths; build one set of tracked folder prefixes once (also P9).
+- P2 MEDIUM, CONFIRMED: M6 does nothing: `git ls-files -- notes` matches pathspecs case-sensitively even with core.ignorecase, so a gitlink "Notes" is never listed. Fix: use `:(icase)` pathspecs when FOLD folds (drop `--literal-pathspecs` then and use `:(literal,icase)`), or list gitlinks differently.
+- P3 LOW: `_ls_files()` returning None (timeout, failure) gives no notice; submodule and untracked checks are silently skipped. Fix: a notice like `_unsure()`.
+- P4 LOW: on_way includes every ancestor, so `ls-files -- packages` lists a whole subtree. Fix: ask ancestors as exact entries (gitlinks) and list only under passed folders.
+- P5 LOW: a passed folder with `ignored` None (git cannot say) gets no "could not say" notice. Fix: `_unsure(folder)` when `ignored.get(folder) is None`.
+- P6 LOW, Windows: `_arg` double quotes leave `$`, backtick (PowerShell) and `%VAR%` (cmd) live; a leading `@` splats. config/install.py has `quote()`/`shell_risk()` for this.
+- P7 cleanup: `_arg` POSIX branch re-implements `shlex.quote`; mirror install.py's `quote()` (copy it: the script runs with -I).
+- P8 cleanup: `unignore()` quotes only for what == "it"; make it take a list of paths, quote and join itself, pick it/them by length.
+- P9 cleanup: the untracked check rebuilds a list per passed folder; one set computed once.
+- P10 docs: README line 92 has a stray comma ("breaks in a clone and, gets") and reads badly; split the sentence.
+
+### breaker agent (details were in the scratchpad, lost with the container; summary here)
+- N1 LOW, CONFIRMED (= P1 variant): `notes -> sub/n`, `sub/n -> ../docs` with sub untracked: committing the hinted links gives the clone `sub`; fix as P1.
+- N2 LOW, contrived, CONFIRMED: `notes -> sub/../docs` with sub a recorded submodule gets "lies in a submodule", but a clone has the empty `sub` folder. Fix: skip the `_nested` check for a passed folder when `FOLD(folder) in gitlinks` (the folder itself, not its contents).
+- Test gaps: dropping `--literal-pathspecs`, `_arg`'s leading "-" handling, or passed folders from the check-ignore call passes every test; the "ignored" layout test asserts only the shared prefix ("git ignores" wording unchecked).
