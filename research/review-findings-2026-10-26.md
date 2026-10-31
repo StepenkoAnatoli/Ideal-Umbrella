@@ -267,3 +267,17 @@ Run 41235731230 (job 124638997364) failed `test_a_folder_a_link_passes_through_m
 
 ## Loop stopped (2026-10-31)
 The user stopped the loop after round 10 and had PR #26 merged at its green head 5fb472c (merge b199638). Round 10's P1, P3-P10, N1, N2 and the test gaps were not fixed and stay open as follow-ups; no round 11 ran.
+
+## Round 10 follow-ups fixed (2026-10-31, branch `round10-follow-ups`)
+The user asked for the follow-ups after PR #26 merged. P2 was already fixed (Windows CI fix above).
+- P1/N1/P9: one `tracked` set built once (what `_ls_files` lists, the real paths written, every link marked "ok", and every folder above each, folded with FOLD); a passed folder is untracked only when it is not in that set. An ignored "ok" link counts too: its own note names the `git add -f` that puts it in the clone.
+- N2: `lacks(folder)`: a passed folder that is itself a recorded submodule is not "in a submodule" (a clone has the empty folder); used for both the check-ignore list and the note.
+- P3: `_ls_files()` returns [] for git's "not a git repository (or any" (exit 128, LC_ALL=C), so a folder outside any repository stays quiet; any other failure gives the note "git could not list what it records on the way, ...".
+- P5: `check()` also gives "git could not say whether <folder> is ignored" for a passed folder git could not judge.
+- P6/P7: `_arg()` is `shlex.quote` on POSIX; on Windows bare only for `[\w+=:,./-]` (no `@`, no `%`), else double quotes, as `config/install.py`'s `quote()` (copied: the script runs with -I). `_risk()` adds a warning when a Windows path holds `$`, backtick or `%`.
+- P8: `unignore(paths, what=None)` quotes and joins the paths itself and picks it/them by count.
+- P10: README sentence split; it also names the two new notices and the Windows warning.
+- P4 rejected: git pathspecs always take in a folder's contents and the index has no exact-entry match (`:(glob)` and `:(literal)` both list `packages/a/f` for `packages`, checked on git 2.43); `ls-tree HEAD` would miss a staged submodule. The listing of one subtree stays far below the 10 s timeout, and a timeout now gives P3's note.
+- Test gaps: the layout test asserts each reason in full (dropping passed folders from check-ignore now fails it); `_arg`'s leading "-" and Windows quoting are unit-tested; literal pathspecs are tested with a folder `:b` (a `b[1]` folder could not catch it: git matches a pathspec literally before as a glob).
+- Tests: 7 new; the 6 behaviour tests fail on the pre-fix code; mutations (literal magic dropped, passed folders dropped from check-ignore, the "-" guard dropped) each fail a test.
+- Checks: pytest 330 passed 5 skipped, keyline 35/35, the JSON files parse.

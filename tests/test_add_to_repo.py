@@ -398,6 +398,7 @@ def test_folder_outside_any_repository_gets_no_git_note(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "git could not say" not in result.stdout
+    assert "could not list" not in result.stdout
 
 
 def test_notes_symlinked_inside_the_repository_is_named_by_its_real_path(tmp_path):
@@ -854,8 +855,10 @@ def test_a_folder_a_link_passes_through_must_reach_a_clone(tmp_path, layout):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "could not say" not in result.stdout
+    why = {"ignored": "git ignores", "untracked": "git does not track (a clone lacks it)",
+           "nested": "lies in a submodule, a nested repository or .git"}[layout]
     assert ("notes/learnings.md not copied: a symlink on its way passes through the folder "
-            "build, which") in result.stdout
+            "build, which " + why) in result.stdout
     assert not (repo / "docs" / "learnings.md").exists()
     if layout == "untracked":
         _git(repo, "add", "build")
@@ -918,3 +921,124 @@ def test_a_submodule_recorded_in_other_case_is_noted(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "notes/learnings.md not copied: it lands in a submodule" in result.stdout
+
+
+def test_a_hook_link_out_of_a_new_claude_folder_is_hinted(tmp_path):
+    # .claude/hooks/context_check.py -> ../../tools/context_check.py, nothing committed yet:
+    # the hint commits .claude/hooks with the link, yet the walk's ".." through it was called
+    # untracked and the hook dropped out of the hint.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "tools").mkdir()
+    (repo / "tools" / "context_check.py").write_text("# old\n", encoding="utf-8")
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    try:
+        os.symlink(os.path.join("..", "..", "tools", "context_check.py"),
+                   repo / ".claude" / "hooks" / "context_check.py")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "note:" not in result.stdout
+    assert "tools/context_check.py" in result.stdout
+    assert ".claude/hooks/context_check.py" in result.stdout.splitlines()[-1]
+
+
+def test_a_folder_holding_only_a_hinted_link_is_tracked(tmp_path):
+    # notes -> sub/n, sub/n -> ../docs, sub new: committing the hinted link sub/n gives the
+    # clone sub.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    (repo / "sub").mkdir()
+    _symlink_or_skip(repo / "sub" / "n", os.path.join("..", "docs"))
+    _symlink_or_skip(repo / "notes", os.path.join("sub", "n"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "not copied" not in result.stdout
+    assert (repo / "docs" / "learnings.md").exists()
+    hint = result.stdout.splitlines()[-1]
+    assert "docs/learnings.md" in hint and "sub/n" in hint and "notes" in hint
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows folds .. in a link target as text")
+def test_passing_through_a_submodule_folder_is_fine(tmp_path):
+    # notes -> sub/../docs with sub a recorded submodule: a clone has the (empty) sub folder.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000," + "1" * 40 + ",sub")
+    (repo / "docs").mkdir()
+    (repo / "sub").mkdir()
+    _symlink_or_skip(repo / "notes", "sub/../docs")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "not copied" not in result.stdout
+    assert (repo / "docs" / "learnings.md").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a fake git on PATH is a POSIX script")
+def test_git_that_cannot_list_its_index_is_a_note(tmp_path):
+    # ls-files failing (a timeout, an error) skipped the submodule and untracked checks
+    # silently.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text('#!/bin/sh\n[ "$3" = ls-files ] && exit 2\nexit 1\n', encoding="utf-8")
+    fake.chmod(0o755)
+    result = run(repo, env=git_env(PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", "")))
+    assert result.returncode == 0, result.stderr
+    assert ("note: git could not list what it records on the way, so submodules that are not "
+            "checked out and folders git does not track went unchecked") in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a fake git on PATH is a POSIX script")
+def test_a_passed_folder_git_cannot_judge_is_a_note(tmp_path):
+    # notes -> build/../docs, build recorded, check-ignore unable to answer: build itself got
+    # no "could not say" note.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "docs").mkdir()
+    (repo / "build").mkdir()
+    _symlink_or_skip(repo / "notes", "build/../docs")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text('#!/bin/sh\nif [ "$3" = ls-files ]; then\n'
+                    "  printf '100644 %s 0\\tbuild/keep\\0' " + "1" * 40 + "\n  exit 0\nfi\n"
+                    "exit 2\n", encoding="utf-8")
+    fake.chmod(0o755)
+    result = run(repo, env=git_env(PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", "")))
+    assert result.returncode == 0, result.stderr
+    assert "note: git could not say whether build is ignored" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="':' cannot be in a Windows file name")
+def test_a_passed_folder_is_asked_about_literally(tmp_path):
+    # notes -> :b/../docs with :b/keep recorded: without literal pathspecs git reads ":b" as
+    # magic for "b", lists nothing, and the tracked folder was called untracked.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    (repo / ":b").mkdir()
+    (repo / ":b" / "keep").write_text("", encoding="utf-8")
+    _git(repo, "add", "./:b")
+    _symlink_or_skip(repo / "notes", ":b/../docs")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "not copied" not in result.stdout
+    assert (repo / "docs" / "learnings.md").exists()
+
+
+def test_a_path_is_quoted_for_the_shell(add_to_repo, monkeypatch):
+    assert add_to_repo._arg("-x") == "./-x"
+    assert add_to_repo._arg("a/b.json") == "a/b.json"
+    monkeypatch.setattr(add_to_repo.os, "name", "nt")
+    assert add_to_repo._arg("-x") == "./-x"
+    assert add_to_repo._arg("@cfg/settings.json") == '"@cfg/settings.json"'
+    assert add_to_repo._arg("100%/x") == '"100%/x"'
+    assert "$ %" in add_to_repo._risk(["a$b/%x%"])
+    assert add_to_repo._risk(["plain"]) == ""
