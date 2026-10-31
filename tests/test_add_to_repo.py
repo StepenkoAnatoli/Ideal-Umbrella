@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -486,7 +487,7 @@ def test_files_a_symlink_puts_outside_the_repository_are_noted_not_hinted(tmp_pa
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "note: .claude/hooks/context_check.py is installed, but it lands outside the repository" in result.stdout
-    assert "note: notes/learnings.md not copied: it lands" in result.stdout
+    assert "note: notes/learnings.md not copied: it lands outside the repository (" in result.stdout
     assert not (outside / "notes" / "learnings.md").exists()
     assert "Commit .claude/settings.json in that repository." in result.stdout
 
@@ -622,7 +623,7 @@ def test_a_submodule_on_the_way_is_outside_the_repository(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "could not say" not in result.stdout
-    assert "note: notes/learnings.md not copied: it lands in a submodule or nested repository (notes/learnings.md)" in result.stdout
+    assert "note: notes/learnings.md not copied: it lands in a submodule, a nested repository or .git (notes/learnings.md)" in result.stdout
     assert ("Commit .claude/hooks/context_check.py and .claude/settings.json in that "
             "repository.") in result.stdout
     assert not (repo / "notes" / "learnings.md").exists()
@@ -656,7 +657,7 @@ def test_a_link_inside_a_nested_repository_is_noted(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert ("notes/learnings.md not copied: it is reached through the symlink sub/x, which lies "
-            "in a submodule or nested repository") in result.stdout
+            "in a submodule, a nested repository or .git") in result.stdout
     assert not (repo / "docs" / "learnings.md").exists()
 
 
@@ -687,3 +688,130 @@ def test_a_chain_out_of_the_repository_and_back_is_noted(tmp_path):
     assert result.returncode == 0, result.stderr
     assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
             "target is an absolute path or lies outside the repository") in result.stdout
+
+
+def test_an_ignored_learnings_folder_is_not_told_to_force_add(tmp_path):
+    # The learnings file is not written when git ignores it: "git add -f" had nothing to add.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".gitignore").write_text("/notes/\n", encoding="utf-8")
+    (repo / "notes").mkdir()
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("note: notes/learnings.md not copied: git ignores it, so cloud sessions would not "
+            "see it; unignore it and run this again") in result.stdout
+    assert "git add -f" not in result.stdout
+
+
+def test_an_ignored_file_behind_a_link_is_force_added_by_its_real_path(tmp_path):
+    # .claude -> cfg with cfg ignored: "git add -f .claude/settings.json" is refused (beyond a
+    # symbolic link); the fix names cfg/settings.json.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "cfg").mkdir()
+    _symlink_or_skip(repo / ".claude", "cfg")
+    (repo / ".gitignore").write_text("/cfg/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("note: .claude/settings.json is installed, but git ignores it, so cloud sessions "
+            "will not see it; unignore it or commit it with git add -f cfg/settings.json") in result.stdout
+
+
+def test_an_ignored_link_is_force_added_by_its_own_path(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "cfg").mkdir()
+    _symlink_or_skip(repo / ".claude", "cfg")
+    (repo / ".gitignore").write_text("/.claude\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("note: .claude/settings.json is installed, but it is reached through the symlink "
+            ".claude, which git ignores, so cloud sessions will not see it; unignore .claude or "
+            "commit it with git add -f .claude") in result.stdout
+
+
+def test_a_target_that_climbs_out_and_back_by_name_is_noted(tmp_path):
+    # notes -> a/b/lnk/../r3/docs with lnk -> ../..: the text stays inside, the walk leaves
+    # the repository and comes back by its folder name, which a clone elsewhere lacks.
+    repo = tmp_path / "r3"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    (repo / "a" / "b").mkdir(parents=True)
+    _symlink_or_skip(repo / "a" / "b" / "lnk", os.path.join("..", ".."))
+    _symlink_or_skip(repo / "notes", "/".join(["a", "b", "lnk", "..", "r3", "docs"]))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
+            "target is an absolute path or lies outside the repository") in result.stdout
+    assert not (repo / "docs" / "learnings.md").exists()
+
+
+def test_a_target_that_only_looks_outside_is_followed(tmp_path):
+    # notes -> lnk/../../docs with lnk -> a/b/c lands in a/docs: inside, so it is copied.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "a" / "b" / "c").mkdir(parents=True)
+    (repo / "a" / "docs").mkdir()
+    _symlink_or_skip(repo / "lnk", "/".join(["a", "b", "c"]))
+    _symlink_or_skip(repo / "notes", "/".join(["lnk", "..", "..", "docs"]))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "not copied" not in result.stdout
+    assert (repo / "a" / "docs" / "learnings.md").exists()
+    assert "a/docs/learnings.md, notes and lnk in that repository." in result.stdout
+
+
+def test_a_link_into_the_git_folder_is_noted(tmp_path):
+    # notes -> .git/info: git add stages nothing there, yet the hint named it.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _symlink_or_skip(repo / "notes", "/".join([".git", "info"]))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it lands in a submodule, a nested repository or .git "
+            "(.git/info/learnings.md)") in result.stdout
+    assert not (repo / ".git" / "info" / "learnings.md").exists()
+
+
+def test_a_submodule_that_is_not_checked_out_is_noted(tmp_path):
+    # A plain clone leaves a submodule's folder empty, with no .git: it was missed.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    subprocess.run(["git", "-C", str(repo), "update-index", "--add", "--cacheinfo",
+                    "160000," + "1" * 40 + ",sub"], check=True, capture_output=True, env=git_env())
+    (repo / "sub" / "notes").mkdir(parents=True)
+    _symlink_or_skip(repo / "notes", "/".join(["sub", "notes"]))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "could not say" not in result.stdout
+    assert ("notes/learnings.md not copied: it lands in a submodule, a nested repository or .git "
+            "(sub/notes/learnings.md)") in result.stdout
+
+
+def test_a_link_past_the_hop_limit_is_judged_by_where_it_lands(add_to_repo, tmp_path):
+    # Past 40 links the walker falls back to realpath, and called the link "ok" even when it
+    # led outside the repository.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (tmp_path / "out").mkdir()
+    _symlink_or_skip(repo / "l40", str(tmp_path / "out"))
+    for i in range(39, 0, -1):
+        _symlink_or_skip(repo / f"l{i}", f"l{i + 1}")
+    _symlink_or_skip(repo / "notes", "l1")
+    found = add_to_repo._links(os.path.realpath(repo), "notes/learnings.md")
+    assert found["l40"] == "absolute"
+
+
+def test_a_stderr_without_reconfigure_does_not_stop_the_run(add_to_repo, tmp_path, monkeypatch):
+    # Only stdout was checked for reconfigure: a plain stderr raised AttributeError.
+    class Plain:
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            pass
+    monkeypatch.setattr(sys, "stdout", io.TextIOWrapper(io.BytesIO(), encoding="utf-8"))
+    monkeypatch.setattr(sys, "stderr", Plain())
+    with pytest.raises(SystemExit) as stopped:
+        add_to_repo.main([str(tmp_path / "missing")])
+    assert "usage:" in str(stopped.value)

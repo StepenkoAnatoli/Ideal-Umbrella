@@ -190,3 +190,26 @@ Checks at that head: pytest 303 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 7 fixes
 All accepted. H7/H1/H2/I1: `_links(real_repo, name)` is now one resolver that walks the path a component at a time as the file system does (link targets re-queued component by component, `..` on the resolved folder, a hop limit), recording every link followed as "ok", "absolute" (absolute, drive, rooted or lexically climbing out: H3/I2, `\\?\UNC\` turned into `\\`) or "nested" (H2; not asked of git). H8/H4/H5: one `missing(name)` gives the reason and fix for core files and the learnings file alike ("is installed, but ..."; "lands in a submodule or nested repository (rel)" vs "lands outside the repository (path)"; the ignored-link note keeps its fix). H6: stdout and stderr both surrogateescape on POSIX. H9: `logged(prefix)`. I4: README step 2 points at the hint. Tests: middle link ignored and named, link in a nested repository, `.claude -> cfg` + `cfg/hooks -> ../real` hint, a chain out and back, submodule wording; each new guard mutation-checked. Checks: pytest 307 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.
+
+## Round 8 — head fbac227
+
+Checks at that head: pytest 307 passed 4 skipped, keyline 35/35, the three JSON files parse; CI green on 519f360 (run 41233492320). Reviewers told to skip rounds 1-7.
+
+### code-review skill, high (10 findings; K1-K3 reproduced)
+- K1 LOW, CONFIRMED: the "commit it with git add -f" fix was given for the learnings file, which is not written when ignored, and for files behind a link, where `git add -f .claude/settings.json` is refused ("beyond a symbolic link").
+- K2 LOW, CONFIRMED: `_links()` judged a link leaving the repository by `normpath` of its text, which folds `..` across links: `notes -> a/b/lnk/../r3/docs` with `lnk -> ../..` was hinted as safe (breaks in a clone under another name); `notes -> lnk/../../docs` with `lnk -> a/b/c` was wrongly called outside.
+- K3 LOW, CONFIRMED: a link into `.git` (`notes -> .git/info`) got a confident hint; `git add` stages nothing there.
+- K4 LOW: past the hop limit or when `readlink` fails, the realpath fallback called the link "ok" even when it led outside.
+- K5 VERY LOW: only stdout was checked for `reconfigure`; a plain stderr raised AttributeError in-process.
+- K6 design: two resolvers (realpath for the file, the walker for links).
+- K7 cleanup: the note sentence built twice from a (reason, fix) tuple.
+- K8 test gap: the outside-link assertion had been weakened to "it lands".
+- K9 docs: `_add`'s docstring did not say links join the hint or which cases are left out.
+- K10 conventions: the link-walker lesson was not saved in notes/learnings.md.
+
+### breaker agent (no high; details at scratchpad `round8-breaker.md`, outside the repo)
+- J1 LOW-MEDIUM, CONFIRMED: a submodule that is not checked out has no `.git`, so `_nested()` missed it: check-ignore failed for every path ("could not say"), the learnings file was copied into the submodule and the hint named a path git add refuses.
+- J2 LOW = K2.
+
+### Round 8 fixes
+K1: `missing()` builds the whole clause; an ignored core file's fix names the path to force-add (the real path, or the link), the learnings file's fix is "unignore it and run this again". K2/J2: each queued part carries the link whose target it came from; a `..` that takes the walk above the repository on disk marks that link "absolute" (the text check is gone). K3/J1: `_nested()` also refuses any `.git` component and any folder git records as a gitlink (`_gitlinks()`, one `git ls-files -s -z`, output to a temp file); wording "a submodule, a nested repository or .git". K4: the fallback marks the link "absolute" when realpath lands outside. K5: each stream checked for `reconfigure`. K7: done with K1. K8: assertion restored. K9: docstring updated. K10: watch-out line added. K6 rejected: with K2 fixed both resolvers walk the disk and agree; merging them is a refactor with no failing case. Tests for each (11 new; all fail on fbac227). Checks below in the commit.
