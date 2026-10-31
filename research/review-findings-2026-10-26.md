@@ -166,3 +166,27 @@ Checks at that head: pytest 297 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 6 fixes
 All accepted. G1 only git's discovery text ("not a git repository (or any") means no repository; G2/G3/F1 `_links()` follows chains and marks a link whose target is absolute or climbs out lexically as not portable; a file behind such a link, or behind an ignored link, gets a `note:` naming the link and stays out of the hint (learnings not copied); G4 one `logged()` helper for both handlers; G5/G8 one `check()` helper with a set of noted paths; G6 the note names the link; G7 stdout uses surrogateescape on POSIX (backslashreplace on Windows); G9 stderr reconfigure dropped; G10 writes take the plain paths (`_write_bytes` resolves); F2 `_repo_path()` treats a folder on the way with its own `.git` (submodule, nested repository) as outside. Tests for each (broken GIT_DIR, chain, absolute and out-and-back targets, shared-link note once on both runs, unexpected error with an unwritable log, submodule, the non-UTF-8 name printed as its bytes); every new guard mutation-checked. Checks: pytest 303 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.
+
+## Round 7 — head 519f360
+
+Checks at that head: pytest 303 passed 4 skipped, keyline 35/35, the three JSON files parse; CI green on 3c92b83 (run 41232882923). Reviewers told to skip rounds 1-6.
+
+### code-review skill, high (9 findings; H1, H2 reproduced; details at scratchpad `review-round7-findings.json`, outside the repo)
+- H1 MEDIUM, CONFIRMED: `_links()` checked only the last part of a link's target: `notes -> lnk/docs` with `lnk` ignored gave a confident hint and a link that breaks in a clone (also an absolute middle link).
+- H2 MEDIUM, CONFIRMED: a link in the chain inside a nested repository (`notes -> sub/x`, `sub` with its own .git) was never noted; git never records it.
+- H3 LOW, Windows: stripping `\\?\` from `\\?\UNC\server\share` left a relative-looking target.
+- H4 LOW: the ignored-link note lost its fix ("unignore it or commit it with git add -f").
+- H5 LOW: a `.claude` in a nested repository was reported as "outside the repository" with a path inside it.
+- H6 LOW: stderr still printed a non-UTF-8 folder as `\udcxx`.
+- H7 design: the link walker gained a special case every round; one step-by-step resolver would do.
+- H8 cleanup: the outside/ignored/blocked checks written twice (core files, learnings), already drifting (H4).
+- H9 cleanup: `logged()` took the error it could read itself.
+
+### breaker agent (no high or medium; the agent's report in its reply)
+- I1 LOW = H1 (repros with `sub` ignored, absolute, and `.claude/hooks -> ../sub/h`).
+- I2 VERY LOW, Windows: Python 3.13's `isabs` no longer calls a rooted `\Users\u\...` absolute; plus H3.
+- I3 LOW, test gaps: the `own is None` guard (a chain out of the repository and back) and the resolved-folder lookup (`.claude -> cfg`, `cfg/hooks -> ../real`) survived mutation.
+- I4 VERY LOW, docs: README step 2 listed fixed paths, which the hint can now differ from.
+
+### Round 7 fixes
+All accepted. H7/H1/H2/I1: `_links(real_repo, name)` is now one resolver that walks the path a component at a time as the file system does (link targets re-queued component by component, `..` on the resolved folder, a hop limit), recording every link followed as "ok", "absolute" (absolute, drive, rooted or lexically climbing out: H3/I2, `\\?\UNC\` turned into `\\`) or "nested" (H2; not asked of git). H8/H4/H5: one `missing(name)` gives the reason and fix for core files and the learnings file alike ("is installed, but ..."; "lands in a submodule or nested repository (rel)" vs "lands outside the repository (path)"; the ignored-link note keeps its fix). H6: stdout and stderr both surrogateescape on POSIX. H9: `logged(prefix)`. I4: README step 2 points at the hint. Tests: middle link ignored and named, link in a nested repository, `.claude -> cfg` + `cfg/hooks -> ../real` hint, a chain out and back, submodule wording; each new guard mutation-checked. Checks: pytest 307 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.

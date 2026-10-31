@@ -356,11 +356,11 @@ def test_ignored_claude_folder_is_written_with_a_note(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert (repo / ".claude" / "settings.json").is_file()
-    assert "note: .claude/settings.json is ignored by git" in result.stdout
-    assert "note: .claude/hooks/context_check.py is ignored by git" in result.stdout
+    assert "note: .claude/settings.json is installed, but git ignores it" in result.stdout
+    assert "note: .claude/hooks/context_check.py is installed, but git ignores it" in result.stdout
     assert "Commit notes/learnings.md in that repository." in result.stdout
     again = run(repo)   # the note stood on the first run only: a second one said "up to date"
-    assert "note: .claude/settings.json is ignored by git" in again.stdout
+    assert "note: .claude/settings.json is installed, but git ignores it" in again.stdout
     assert "Commit" not in again.stdout
 
 
@@ -447,9 +447,9 @@ def test_an_ignored_link_gets_a_note_and_no_hint(tmp_path):
     for _ in range(2):
         result = run(repo)
         assert result.returncode == 0, result.stderr
-        assert ("note: .claude/settings.json is reached through the symlink .claude, which git "
+        assert ("note: .claude/settings.json is installed, but it is reached through the symlink .claude, which git "
                 "ignores") in result.stdout
-        assert ("note: .claude/hooks/context_check.py is reached through the symlink .claude"
+        assert ("note: .claude/hooks/context_check.py is installed, but it is reached through the symlink .claude"
                 in result.stdout)
         assert "Commit" not in result.stdout
         assert ("notes/learnings.md not copied: it is reached through the symlink notes, "
@@ -485,8 +485,8 @@ def test_files_a_symlink_puts_outside_the_repository_are_noted_not_hinted(tmp_pa
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 0, result.stderr
-    assert "note: .claude/hooks/context_check.py lands outside the repository" in result.stdout
-    assert "note: notes/learnings.md not copied: it lands outside the repository" in result.stdout
+    assert "note: .claude/hooks/context_check.py is installed, but it lands outside the repository" in result.stdout
+    assert "note: notes/learnings.md not copied: it lands" in result.stdout
     assert not (outside / "notes" / "learnings.md").exists()
     assert "Commit .claude/settings.json in that repository." in result.stdout
 
@@ -588,7 +588,7 @@ def test_a_link_with_an_absolute_target_is_noted_not_hinted(tmp_path):
     assert result.returncode == 0, result.stderr
     assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
             "target is an absolute path or lies outside the repository") in result.stdout
-    assert ("note: .claude/settings.json is reached through the symlink .claude, whose target"
+    assert ("note: .claude/settings.json is installed, but it is reached through the symlink .claude, whose target"
             in result.stdout)
     assert "Commit" not in result.stdout
     assert (repo / "c" / "settings.json").is_file()   # local sessions still get it
@@ -622,7 +622,68 @@ def test_a_submodule_on_the_way_is_outside_the_repository(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "could not say" not in result.stdout
-    assert "note: notes/learnings.md not copied: it lands outside the repository" in result.stdout
+    assert "note: notes/learnings.md not copied: it lands in a submodule or nested repository (notes/learnings.md)" in result.stdout
     assert ("Commit .claude/hooks/context_check.py and .claude/settings.json in that "
             "repository.") in result.stdout
     assert not (repo / "notes" / "learnings.md").exists()
+
+
+def test_a_link_in_the_middle_of_a_target_is_followed(tmp_path):
+    # notes -> lnk/docs with lnk -> real ignored: lnk was never seen, notes broke in a clone.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "real" / "docs").mkdir(parents=True)
+    _symlink_or_skip(repo / "lnk", "real")
+    _symlink_or_skip(repo / "notes", os.path.join("lnk", "docs"))
+    (repo / ".gitignore").write_text("/lnk\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink lnk, which git "
+            "ignores") in result.stdout
+    (repo / ".gitignore").unlink()
+    result = run(repo)
+    assert "real/docs/learnings.md, notes and lnk in that repository." in result.stdout
+
+
+def test_a_link_inside_a_nested_repository_is_noted(tmp_path):
+    # notes -> sub/x, sub a nested repository, x -> ../docs: git never records sub/x.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    _git_init(repo / "sub")
+    _symlink_or_skip(repo / "sub" / "x", os.path.join("..", "docs"))
+    _symlink_or_skip(repo / "notes", os.path.join("sub", "x"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink sub/x, which lies "
+            "in a submodule or nested repository") in result.stdout
+    assert not (repo / "docs" / "learnings.md").exists()
+
+
+def test_a_link_under_a_linked_folder_is_named_by_its_own_path(tmp_path):
+    # .claude -> cfg, cfg/hooks -> ../real: git is asked about cfg/hooks, not .claude/hooks
+    # (behind a link, which git add refuses).
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "cfg").mkdir()
+    (repo / "real").mkdir()
+    _symlink_or_skip(repo / ".claude", "cfg")
+    _symlink_or_skip(repo / "cfg" / "hooks", os.path.join("..", "real"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "could not say" not in result.stdout
+    assert ("Commit real/context_check.py, .claude, cfg/hooks, cfg/settings.json and "
+            "notes/learnings.md in that repository.") in result.stdout
+
+
+def test_a_chain_out_of_the_repository_and_back_is_noted(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    (tmp_path / "out").mkdir()
+    _symlink_or_skip(tmp_path / "out" / "n", str(repo / "docs"))
+    _symlink_or_skip(repo / "notes", os.path.join("..", "out", "n"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
+            "target is an absolute path or lies outside the repository") in result.stdout
