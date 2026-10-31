@@ -161,6 +161,7 @@ def _sets_utf8_stdout(node):
     ('"surrogateescape" if sys.platform != "win32" else "backslashreplace"', False),   # not the os.name test
     ('"surrogateescape" if os.name != "posix" else "backslashreplace"', False),
     ('"surrogateescape"', False),
+    ('"strict" if os.name != "nt" else "backslashreplace"', False),   # POSIX could still fail to encode
 ])
 def test_the_encode_rule_wants_backslashreplace_on_windows(source, accepted):
     # Review 42, L1: the rule took either OS choice whatever the condition said. On Windows a
