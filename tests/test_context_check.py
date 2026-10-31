@@ -287,14 +287,15 @@ def test_savings_line_with_baseline(tmp_path):
 
 def test_invalid_baseline_warns_and_shows_no_saving(tmp_path):
     path = transcript(tmp_path, {"input_tokens": 40_000, "output_tokens": 2_000})
-    for bad in ("71k", "-5", "0"):
+    for bad in ("71k", "-5"):
         result = run_hook(tmp_path, event(path), baseline=bad)
         assert result.returncode == 0
         assert "IDEAL_UMBRELLA_BASELINE" in result.stderr and "ignoring it" in result.stderr
         assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 42k"}
-    blank = run_hook(tmp_path, event(path), baseline="  ")
-    assert blank.stderr == ""
-    assert json.loads(blank.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 42k"}
+    for off in ("  ", "0"):   # 0 turns the comparison off without a warning on every prompt
+        quiet = run_hook(tmp_path, event(path), baseline=off)
+        assert quiet.stderr == ""
+        assert json.loads(quiet.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 42k"}
 
 
 def test_no_savings_line_before_the_first_call(tmp_path):
@@ -422,7 +423,9 @@ def test_a_failing_hand_off_check_keeps_the_savings_line(tmp_path):
     (tmp_path / "state").write_text("in the way", encoding="utf-8")
     result = run_hook(tmp_path, event(path))
     assert result.returncode == 0
-    assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 160k, now 160k"}
+    message = json.loads(result.stdout)["systemMessage"]
+    # stderr of a hook that exits 0 shows only in verbose mode: the line says it too.
+    assert message.startswith("Ideal-Umbrella: floor 160k, now 160k; the hand-off check failed")
     assert "hand-off check" in (tmp_path / "context_check.log").read_text(encoding="utf-8")
     assert "the hand-off check failed" in result.stderr   # not cosmetic: not only in the log
 
@@ -497,3 +500,45 @@ def test_baseline_under_a_thousand_is_ignored_with_a_warning(tmp_path):
     result = run_hook(tmp_path, event(path), baseline="710")
     assert "IDEAL_UMBRELLA_BASELINE=710" in result.stderr and "ignoring it" in result.stderr
     assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 42k"}
+
+
+def test_deep_nesting_does_not_take_the_note_down(context_check, tmp_path):
+    # One record nested deep enough to exhaust the parser's stack raised RecursionError out of
+    # run(): no JSON, the hand-off note lost.
+    path = tmp_path / "deep.jsonl"
+    path.write_bytes(
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 160000}}}\n'
+        + b'{"type": "user", "toolUseResult": ' + b"[" * 100_000 + b"]" * 100_000 + b"}\n")
+    assert context_check.last_measure(str(path)) == (160_000, False)
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    assert "over 150k" in json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    deep_first = tmp_path / "deep-first.jsonl"
+    deep_first.write_bytes(b"[" * 100_000 + b"]" * 100_000 + b"\n"
+                           b'{"type": "assistant", "message": {"usage": {"input_tokens": 40000}}}\n')
+    assert context_check.floor_tokens(str(deep_first)) == 40_000
+
+
+def test_bad_numbers_outside_the_input_terms_are_guarded(tmp_path):
+    # Survivors of round 3's mutations: an inf usage in the floor scan, a negative output, a
+    # negative postTokens.
+    inf_first = tmp_path / "inf-first.jsonl"
+    inf_first.write_bytes(
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 1e400}}}\n'
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 40000}}}\n'
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 60000}}}\n')
+    result = run_hook(tmp_path, event(inf_first))
+    assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 60k"}
+    negative_output = write_jsonl(tmp_path / "neg-out.jsonl", [
+        {"type": "assistant", "message": {"usage": {"input_tokens": 40_000}}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 60_000, "output_tokens": -1_000}}},
+    ])
+    result = run_hook(tmp_path, event(negative_output))
+    assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 60k"}
+    negative_post = write_jsonl(tmp_path / "neg-post.jsonl", [
+        {"type": "assistant", "message": {"usage": {"input_tokens": 200_000}}},
+        {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": -5}},
+    ])
+    result = run_hook(tmp_path, event(negative_post))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""

@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(HERE, "repo-settings.json")
@@ -182,36 +183,62 @@ def _write_json(path, data):
 
 
 def _in_git_repo(repo):
-    """True when `repo` or a folder above it holds a .git entry."""
+    """True when git would look for a repository here: GIT_DIR is set, or `repo` or a folder
+    above it, short of a GIT_CEILING_DIRECTORIES entry, holds a .git entry (a folder, or the
+    file of a worktree or submodule)."""
+    if os.environ.get("GIT_DIR"):
+        return True
+    ceilings = {os.path.realpath(c) for c in
+                os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep) if c}
     folder = os.path.realpath(repo)
     while True:
         if os.path.exists(os.path.join(folder, ".git")):
             return True
         parent = os.path.dirname(folder)
-        if parent == folder:
+        if parent == folder or parent in ceilings:
             return False
         folder = parent
 
 
-def _git_ignores(repo, relative):
-    """True when git ignores `relative` in `repo`, False when it does not or the folder is not
-    in a repository, None when git cannot say (git missing, a timeout, or another exit status:
-    dubious ownership, a GIT_DIR elsewhere). Only the exit status is read: with the output
-    discarded, not piped, a timed-out git child cannot hold the run on Windows."""
+def _git_ignored(repo, relatives):
+    """{path: True when git ignores it, False when it does not or `repo` is in no repository,
+    None when git cannot say (git missing, a timeout, an exit other than 0 or 1)}, from one
+    `git check-ignore` call. Its input and output are files, not pipes, so a timed-out git
+    child cannot hold the run on Windows."""
+    if not relatives:
+        return {}
     if not _in_git_repo(repo):
-        return False
+        return dict.fromkeys(relatives, False)
     try:
-        result = subprocess.run(["git", "-C", repo, "check-ignore", "-q", relative],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, timeout=10)
+        with tempfile.TemporaryFile() as given, tempfile.TemporaryFile() as out:
+            given.write("\0".join(relatives).encode("utf-8") + b"\0")
+            given.seek(0)
+            result = subprocess.run(["git", "-C", repo, "check-ignore", "-z", "--stdin"],
+                                    stdin=given, stdout=out, stderr=subprocess.DEVNULL,
+                                    timeout=10)
+            out.seek(0)
+            listed = set(out.read().decode("utf-8", "surrogateescape").split("\0"))
     except (OSError, subprocess.SubprocessError):
+        return dict.fromkeys(relatives, None)
+    if result.returncode not in (0, 1):
+        return dict.fromkeys(relatives, None)
+    return {r: r in listed for r in relatives}
+
+
+def _repo_path(repo, full):
+    """Where `full` really lands, symlinks resolved, relative to the real `repo` with "/"
+    separators (the path git knows it by); None when that is outside the repository."""
+    try:
+        rel = os.path.relpath(os.path.realpath(full), os.path.realpath(repo))
+    except ValueError:   # another drive on Windows
         return None
-    return {0: True, 1: False}.get(result.returncode)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        return None
+    return rel.replace(os.sep, "/")
 
 
 def _unsure(relative):
-    return (f"git could not say whether {relative} is ignored; it is written all the same, "
-            "check that git tracks it")
+    return f"git could not say whether {relative} is ignored; check that git tracks it"
 
 
 def main(argv=None):
@@ -222,9 +249,9 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
-    progress, ignored = [], []
+    progress, commit = [], []
     try:
-        changes, notices = _add(argv[0], force, progress=progress, ignored=ignored)
+        changes, notices = _add(argv[0], force, progress=progress, commit=commit)
     except ValueError as e:
         # Raised while reading or merging, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
@@ -241,29 +268,31 @@ def main(argv=None):
     print("\n".join(changes) or "already up to date")
     for notice in notices:
         print(f"note: {notice}")
-    # Name only the files written this run and not ignored by git: an untouched one has
-    # nothing to commit, an ignored one has its own note.
-    files = [name for name in progress if name not in ignored]
+    # Name only the files written this run that git can take: an untouched one has nothing to
+    # commit, an ignored one or one outside the repository has its own note.
+    files = commit
     if files:
         names = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
         print(f"Commit {names} in that repository.")
     return 0
 
 
-def _add(repo, force, progress=None, ignored=None):
+def _add(repo, force, progress=None, commit=None):
     """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
     repository has no notes/learnings.md, the learnings template; return (changes, notices).
     The repository-relative path of each file written is appended to `progress` (when given)
-    as it is done, and to `ignored` when git ignores it. settings.json is written after the
-    hook: a hook entry that points at a hook file that was never copied would exit 2 on every
-    prompt. A hook or settings file that git ignores is written all the same (local sessions
-    use it) with a notice. The learnings file is a courtesy and comes last: a failure there (a
-    `notes` file in the way, a dangling link) is a notice, not an error, and a `notes/` that
-    git ignores gets no copy (cloud sessions would never see it)."""
+    as it is done; `commit` gets the path git knows each written file by (symlinks resolved),
+    unless git ignores it or it lands outside the repository. settings.json is written after
+    the hook: a hook entry that points at a hook file that was never copied would exit 2 on
+    every prompt. A hook or settings file that git ignores, or that a symlink puts outside the
+    repository, is written all the same (local sessions use it) and gets a notice on every run.
+    The learnings file is a courtesy and comes last: a failure there (a `notes` file in the
+    way, a dangling link) is a notice, not an error, and a `notes/` that git ignores or that
+    leads outside the repository gets no copy (cloud sessions would never see it)."""
     if progress is None:
         progress = []
-    if ignored is None:
-        ignored = []
+    if commit is None:
+        commit = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
@@ -296,6 +325,14 @@ def _add(repo, force, progress=None, ignored=None):
         with open(LEARNINGS, "rb") as f:
             learnings_template = f.read()
     hook_changed = source != old
+    # Where each file lands and what git says of it, asked once before anything is written.
+    core = {".claude/hooks/context_check.py": target, ".claude/settings.json": path}
+    real = {name: _repo_path(repo, full) for name, full in core.items()}
+    real["notes/learnings.md"] = _repo_path(repo, learnings) if copy_learnings else None
+    asked = [r for name, r in real.items() if r is not None and
+             (name != "notes/learnings.md" or copy_learnings)]
+    ignored = _git_ignored(repo, asked)
+
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py")
@@ -304,24 +341,28 @@ def _add(repo, force, progress=None, ignored=None):
         progress.append(".claude/settings.json")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
-    for relative in list(progress):
-        state = _git_ignores(repo, relative)
-        if state:
-            ignored.append(relative)
-            notices.append(f"{relative} written, but git ignores it, so cloud sessions will not "
-                           "see it; unignore it or commit it with git add -f")
-        elif state is None:
-            notices.append(_unsure(relative))
+    for name, full in core.items():
+        if real[name] is None:
+            notices.append(f"{name} lands outside the repository through a symlink "
+                           f"({os.path.realpath(full)}), so cloud sessions will not see it")
+        elif ignored[real[name]]:
+            notices.append(f"{name} is ignored by git, so cloud sessions will not see it; "
+                           "unignore it or commit it with git add -f")
+        else:
+            if ignored[real[name]] is None:
+                notices.append(_unsure(real[name]))
+            if name in progress:
+                commit.append(real[name])
     if dangling is not None:
         notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
-    elif copy_learnings:
-        state = _git_ignores(repo, "notes/learnings.md")
-        if state:
-            copy_learnings = False
-            notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
-                           "would not see it")
-        elif state is None:
-            notices.append(_unsure("notes/learnings.md"))
+    elif copy_learnings and real["notes/learnings.md"] is None:
+        copy_learnings = False
+        notices.append("notes/learnings.md not copied: a symlink puts it outside the repository "
+                       f"({os.path.realpath(learnings)}), so cloud sessions would not see it")
+    elif copy_learnings and ignored[real["notes/learnings.md"]]:
+        copy_learnings = False
+        notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
+                       "would not see it")
     if copy_learnings:
         try:
             _write_bytes(learnings, learnings_template)
@@ -330,6 +371,9 @@ def _add(repo, force, progress=None, ignored=None):
                            "installed")
         else:
             progress.append("notes/learnings.md")
+            commit.append(real["notes/learnings.md"])
+            if ignored[real["notes/learnings.md"]] is None:
+                notices.append(_unsure(real["notes/learnings.md"]))
             changes.append("notes/learnings.md written (the learnings template; it is yours "
                            "now, later runs leave it)")
     return changes, notices

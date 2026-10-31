@@ -12,11 +12,20 @@ TEMPLATE = json.loads((ROOT / "config" / "repo-settings.json").read_text(encodin
 LEARNINGS = (ROOT / "config" / "learnings.md").read_bytes()
 
 
+def git_env(**extra):
+    """The environment without the host's git settings: no GIT_* variable (a GIT_DIR from a
+    git hook running pytest), no global or system config, no global excludes file."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1", XDG_CONFIG_HOME=os.devnull)
+    env.update(extra)
+    return env
+
+
 def run(repo, env=None):
     return subprocess.run(
         [sys.executable, "-I", str(ADD), str(repo)],
         cwd=ROOT,
-        env=env,
+        env=env if env is not None else git_env(),
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -319,7 +328,7 @@ def test_notes_ignored_by_git_gets_no_copy(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     try:
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True, env=git_env())
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("git is not available")
     (repo / ".gitignore").write_text("notes/\n", encoding="utf-8")
@@ -333,7 +342,7 @@ def test_notes_ignored_by_git_gets_no_copy(tmp_path):
 def _git_init(repo):
     repo.mkdir()
     try:
-        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True, env=git_env())
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("git is not available")
 
@@ -346,9 +355,12 @@ def test_ignored_claude_folder_is_written_with_a_note(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert (repo / ".claude" / "settings.json").is_file()
-    assert "note: .claude/settings.json written, but git ignores it" in result.stdout
-    assert "note: .claude/hooks/context_check.py written, but git ignores it" in result.stdout
+    assert "note: .claude/settings.json is ignored by git" in result.stdout
+    assert "note: .claude/hooks/context_check.py is ignored by git" in result.stdout
     assert "Commit notes/learnings.md in that repository." in result.stdout
+    again = run(repo)   # the note stood on the first run only: a second one said "up to date"
+    assert "note: .claude/settings.json is ignored by git" in again.stdout
+    assert "Commit" not in again.stdout
 
 
 @pytest.mark.skipif(os.name == "nt", reason="a fake git on PATH is a POSIX script")
@@ -362,12 +374,20 @@ def test_git_that_cannot_answer_is_a_note_not_not_ignored(tmp_path):
     fake = bin_dir / "git"
     fake.write_text("#!/bin/sh\nexit 128\n", encoding="utf-8")
     fake.chmod(0o755)
-    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    env = git_env(PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
     result = run(repo, env=env)
     assert result.returncode == 0, result.stderr
     assert "note: git could not say whether notes/learnings.md is ignored" in result.stdout
     assert "note: git could not say whether .claude/settings.json is ignored" in result.stdout
     assert (repo / "notes" / "learnings.md").is_file()
+    # When the copy then fails, no note claims it was written.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / ".git").mkdir()
+    (other / "notes").write_text("in the way", encoding="utf-8")
+    result = run(other, env=env)
+    assert "note: notes/learnings.md not written" in result.stdout
+    assert "whether notes/learnings.md is ignored" not in result.stdout
 
 
 def test_folder_outside_any_repository_gets_no_git_note(tmp_path):
@@ -376,3 +396,72 @@ def test_folder_outside_any_repository_gets_no_git_note(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "git could not say" not in result.stdout
+
+
+def test_notes_symlinked_inside_the_repository_is_named_by_its_real_path(tmp_path):
+    # `notes -> docs`: git refuses "notes/learnings.md" (beyond a symbolic link), so the note
+    # said git could not say, and the hint named a path `git add` rejects.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    try:
+        (repo / "notes").symlink_to("docs", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "could not say" not in result.stdout
+    assert ("Commit .claude/hooks/context_check.py, .claude/settings.json and docs/learnings.md "
+            "in that repository.") in result.stdout
+    assert (repo / "docs" / "learnings.md").is_file()
+
+
+def test_files_a_symlink_puts_outside_the_repository_are_noted_not_hinted(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".claude").mkdir()
+    outside = tmp_path / "outside"
+    (outside / "hooks").mkdir(parents=True)
+    (outside / "notes").mkdir()
+    try:
+        (repo / ".claude" / "hooks").symlink_to(outside / "hooks", target_is_directory=True)
+        (repo / "notes").symlink_to(outside / "notes", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "note: .claude/hooks/context_check.py lands outside the repository" in result.stdout
+    assert "note: notes/learnings.md not copied: a symlink puts it outside the repository" in result.stdout
+    assert not (outside / "notes" / "learnings.md").exists()
+    assert "Commit .claude/settings.json in that repository." in result.stdout
+
+
+def test_a_git_file_marks_a_worktree_as_a_repository(tmp_path):
+    # A worktree or submodule has a .git file, not a folder.
+    main_repo = tmp_path / "main"
+    _git_init(main_repo)
+    env = git_env(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                  GIT_COMMITTER_EMAIL="t@t")
+    (main_repo / ".gitignore").write_text("notes/\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(main_repo), "add", ".gitignore"], check=True, env=env)
+    subprocess.run(["git", "-C", str(main_repo), "commit", "-qm", "init"], check=True, env=env)
+    tree = tmp_path / "tree"
+    subprocess.run(["git", "-C", str(main_repo), "worktree", "add", "-q", str(tree)],
+                   check=True, capture_output=True, env=env)
+    assert (tree / ".git").is_file()
+    result = run(tree)
+    assert result.returncode == 0, result.stderr
+    assert "note: notes/learnings.md not copied: git ignores it" in result.stdout
+
+
+def test_git_dir_in_the_environment_is_a_repository(tmp_path):
+    # GIT_DIR names a repository with no .git entry in the folder: the .git walk alone read
+    # it as no repository, and an ignored notes/ got the copy.
+    store = tmp_path / "store"
+    _git_init(store)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".gitignore").write_text("notes/\n", encoding="utf-8")
+    result = run(repo, env=git_env(GIT_DIR=str(store / ".git"), GIT_WORK_TREE=str(repo)))
+    assert result.returncode == 0, result.stderr
+    assert "note: notes/learnings.md not copied: git ignores it" in result.stdout

@@ -93,3 +93,29 @@ Checked and found correct by the breaker: floor_tokens boundaries (exact-limit r
 
 ### Round 3 fixes (2026-10-31)
 All 13 applied. Hook: R1 OverflowError in both handler tuples; R2 a compact boundary always ends the scan, an unreadable `postTokens` is `(0, True)` (the round-2 test's last record is now an `inf` usage; a new test ends in a bad boundary: no line, no note); R3 `max(0, ...)` per term, and on `postTokens`; R8/R4/R11 one bound in `floor_tokens()`: `f.tell() < 4 * limit`, checked per chunk in the skip loop, `seen` gone; README and docstring say "within 4 times `IDEAL_UMBRELLA_TAIL_BYTES` of the start"; the bound test uses 1000; the skip-loop test (one 10 KB record, limit 1000, `sum(reads) < 5000`) fails when the per-chunk check is removed (mutation run). `add_to_repo.py`: R12 only `.claude`, `.claude/hooks`, settings.json and the hook raise on a dangling link; on `notes` or `notes/learnings.md` it is a `note:`, exit 0; R5 every written core path is checked with `_git_ignores`: an ignored one is written, gets a `note:` and is left out of the hint; R6 `_git_ignores` returns True/False/None: a folder with no `.git` entry at or above it is False without running git (no note outside repositories), git missing, a timeout or an exit other than 0/1 is None, which gives a "git could not say" `note:` and the file is written; R13 stdin/stdout/stderr to DEVNULL; R7 `copy_learnings` is only "copy it", the change line is added after the write succeeds, the hint is built from `progress` less `ignored`. R9 the notes-in-the-way test asserts the first run's hint. R10 was already right in the resume point (3 overlaps, 13 unique: 10 fixed, 2 rejected, 1 docs only). New tests: inf usage, bad boundary, negative usage, skip-loop bound, dangling learnings links (2 params), ignored `.claude/`, git exit 128 (POSIX, a fake git on PATH), no git note outside a repository. Checks: pytest 284 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc`), keyline 35/35, the three JSON files parse.
+
+## Round 4 — head d64316b
+
+Checks at that head: pytest 284 passed 4 skipped, keyline 35/35, the three JSON files parse. Reviewers told to skip rounds 1-3.
+
+### code-review skill, high (10 findings; C1-C3 confirmed by execution; details at scratchpad `review-round4-findings.json`, outside the repo)
+- C1 LOW-MEDIUM, CONFIRMED: a symlinked `.claude`, `.claude/hooks` or `notes` folder: `git check-ignore` exits 128 ("beyond a symbolic link"), the note says git could not say, and the hint names paths `git add` refuses; files outside the repository never reach cloud sessions.
+- C2 LOW, CONFIRMED: RecursionError (one record nested 100000 deep) is not in the handler tuples: the note is lost.
+- C3 LOW, CONFIRMED: the git tests read the host's git config and environment (a global excludes file, GIT_DIR).
+- C4 LOW: with git unable to answer and a `notes` file in the way, one note says "written all the same", the next "not written".
+- C5 LOW: the hand-off failure goes to stderr, which Claude Code shows for an exit-0 hook only in verbose mode.
+- C6 LOW: the resume point was only partly replaced after round 3.
+- C7 LOW: `_in_git_repo` ignored GIT_DIR and GIT_CEILING_DIRECTORIES.
+- C8 LOW, simplification: the exception tuple written three times, the clamp four.
+- C9 LOW: `IDEAL_UMBRELLA_BASELINE=0` warned on every prompt.
+- C10 LOW, efficiency: up to three git spawns, each with its own 10 s timeout.
+
+### breaker agent (no high or medium; 5 findings, the agent's report in its reply)
+- B1 LOW = C1 (repro: `notes -> docs` inside the repo, `.claude/hooks -> outside`).
+- B2 VERY LOW: the "git ignores it" note only on the run that writes the file; a second run said "already up to date".
+- B3 LOW, test gap: mutations survive: no clamp on `output_tokens` or `postTokens`, OverflowError dropped from `floor_tokens`.
+- B4 LOW, test gap: no test with `.git` as a file (worktree, submodule): `exists` -> `isdir` survives.
+- B5 VERY LOW: the oversize-record branch in `floor_tokens` is near-dead (`readline(limit)` never returns more than `limit`; the outer bound already bounds reads; pieces do not parse).
+
+### Round 4 fixes
+All 15 accepted (14 unique). Hook: C2/C8 one `BAD_RECORD` tuple (RecursionError added) and one `_count()` helper for every usage number; B5 the oversize branch dropped, the docstring says such a record is read in `limit`-sized pieces that do not parse; C9 0 turns an off-by-default setting off without a warning; C5 a hand-off failure is also appended to the systemMessage. `add_to_repo.py`: C1/B1 `_repo_path()` resolves where each file really lands: outside the repository -> a `note:` and out of the hint (the learnings file not copied); inside -> git is asked by that real path and the hint names it; C10 one `git check-ignore -z --stdin` call before any write, input and output through temp files (no pipes, R13 kept); B2 both core files are checked on every run, not only when written; C4 the "could not say" note no longer claims a write and is given for the learnings file only after it is written; C7 `_in_git_repo` honours GIT_DIR and GIT_CEILING_DIRECTORIES. Tests: C3 `git_env()` strips GIT_* and the global and system config and excludes file, used by `run()` and every `git init`; B3 inf in the floor scan, negative output, negative postTokens (each mutation now fails a test); B4 a worktree (`exists` -> `isdir` now fails); deep nesting; symlinked `notes -> docs`; files outside through symlinks; GIT_DIR; the second-run note; the contradiction case. C6 the resume point is replaced in full. Checks: pytest 290 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.

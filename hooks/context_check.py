@@ -46,6 +46,9 @@ DEFAULT_STEP = 25000
 TAIL_BYTES = 4 * 1024 * 1024
 STATE_MAX_AGE = 30 * 24 * 3600   # state files of sessions older than this are removed
 LOG_MAX_BYTES = 1024 * 1024      # the log keeps about its last half when it passes this
+# What a transcript record can raise when read as numbers: torn or non-JSON lines, values that
+# are not numbers, inf (1e400), NaN, and nesting deep enough to exhaust the parser's stack.
+BAD_RECORD = (ValueError, TypeError, AttributeError, OverflowError, RecursionError)
 
 
 def config_dir():
@@ -123,6 +126,8 @@ def parse_int(name, default):
     except ValueError:
         warn(f"{name}={raw!r} is not an integer; {fallback}")
         return default
+    if value == 0 and default == 0:
+        return 0   # 0 turns an off-by-default setting off, as leaving it unset does
     if value <= 0:
         warn(f"{name}={raw!r} must be positive; {fallback}")
         return default
@@ -136,9 +141,14 @@ def _usage(event):
     return (event.get("message") or {}).get("usage") or {}
 
 
+def _count(value):
+    """A token count from the transcript: a non-negative int; raises one of BAD_RECORD."""
+    return max(0, int(value or 0))
+
+
 def _prompt_tokens(usage):
-    """What the call carried in: input, cache write and cache read (a negative term is 0)."""
-    return sum(max(0, int(usage.get(key) or 0)) for key in (
+    """What the call carried in: input, cache write and cache read."""
+    return sum(_count(usage.get(key)) for key in (
         "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"
     ))
 
@@ -165,7 +175,7 @@ def last_measure(path, limit=None):
     for raw in reversed(lines):
         try:
             measure = _measure(json.loads(raw))
-        except (ValueError, TypeError, AttributeError, OverflowError):
+        except BAD_RECORD:
             continue   # a torn line, or a record whose usage is not finite numbers
         if measure is not None:
             return measure
@@ -184,8 +194,8 @@ def _measure(event):
         # A boundary always ends the scan: an unreadable postTokens is 0, never the usage
         # from before the compaction.
         try:
-            return max(0, int((event.get("compactMetadata") or {}).get("postTokens") or 0)), True
-        except (ValueError, TypeError, AttributeError, OverflowError):
+            return _count((event.get("compactMetadata") or {}).get("postTokens")), True
+        except BAD_RECORD:
             return 0, True
     usage = _usage(event)
     if usage is None:
@@ -193,7 +203,7 @@ def _measure(event):
     n = _prompt_tokens(usage)
     if n:
         # Thinking tokens are part of the context window, so count all output here.
-        return n + max(0, int(usage.get("output_tokens") or 0)), False
+        return n + _count(usage.get("output_tokens")), False
     return None
 
 
@@ -202,7 +212,7 @@ def floor_tokens(path, limit=None):
     the tools and the first message), read from the start of the transcript. 0 when no such
     call starts within 4 * `limit` bytes (`limit` is TAIL_BYTES) of the start. At most `limit`
     bytes are held at once: a record of `limit` bytes or more (a file pasted into the first
-    prompt) is skipped unparsed, chunk by chunk, and the search goes on after it."""
+    prompt) is read in `limit`-sized pieces, which do not parse, and the search goes on."""
     if limit is None:
         limit = tail_limit()
     bound = 4 * limit
@@ -211,14 +221,10 @@ def floor_tokens(path, limit=None):
             raw = f.readline(limit)
             if not raw:
                 return 0
-            if len(raw) >= limit and not raw.endswith(b"\n"):
-                while raw and not raw.endswith(b"\n") and f.tell() < bound:
-                    raw = f.readline(limit)
-                continue
             try:
                 usage = _usage(json.loads(raw))
                 n = _prompt_tokens(usage) if usage else 0
-            except (ValueError, TypeError, AttributeError, OverflowError):
+            except BAD_RECORD:
                 n = 0
             if n:
                 return n
@@ -302,10 +308,12 @@ def run():
     try:
         due = record_handoff(n, threshold, step, session)
     except Exception:
-        # Not cosmetic: say so on stderr, as main() does for any other failure.
+        # Not cosmetic: say so where the user sees it (stderr of a hook that exits 0 shows only
+        # in verbose mode, so the systemMessage carries it too).
         log("hand-off check: " + traceback.format_exc().strip())
-        print("Ideal-Umbrella hook: the hand-off check failed; details in " + log_path(),
-              file=sys.stderr)
+        failed = "the hand-off check failed; details in " + log_path()
+        print("Ideal-Umbrella hook: " + failed, file=sys.stderr)
+        status = f"{status}; {failed}" if status else "Ideal-Umbrella: " + failed
         due = False
     # A hook prints one JSON object, so the savings line and the hand-off note share it.
     if not due:
