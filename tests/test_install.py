@@ -56,9 +56,9 @@ def test_install_preserves_user_data_and_is_idempotent(install_module, tmp_path)
     assert sys.executable in ours_hooks[0]["command"]
     assert ours_hooks[0]["timeout"] == 30
 
-    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == (
-        ROOT / "config" / "CLAUDE.md"
-    ).read_text(encoding="utf-8")
+    # The user's own rules stay; the template is added below them as a marked section.
+    assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n\n" + install_module.section_text(
+        (ROOT / "config" / "CLAUDE.md").read_text(encoding="utf-8"))
     backups = list(claude.glob("CLAUDE.md.bak-*"))
     assert backups and backups[0].read_text(encoding="utf-8") == "my own rules\n"
     assert list(claude.glob("settings.json.bak-*"))
@@ -109,11 +109,82 @@ def test_missing_scalar_still_fails_verification(install_module, tmp_path):
     assert any("autoCompactWindow is missing" in issue for issue in issues)
 
 
+@pytest.mark.parametrize("record, ok", [(None, True), ("{not json", False)], ids=["no-record", "corrupt-record"])
+def test_verify_only_does_not_need_a_readable_record(install_module, tmp_path, capsys, record, ok):
+    # Review 32, finding L2: --verify-only does not check the record, so a deleted one still
+    # verifies, and a corrupt one (here with no hooks in settings.json, so verify() binds no
+    # other entry first) gives the verification's own result, not a traceback.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)["record"]
+    if record is None:
+        path.unlink()
+    else:
+        path.write_text(record, encoding="utf-8")
+        settings_file(home).write_text("{}\n", encoding="utf-8")
+    capsys.readouterr()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == (0 if ok else 1)
+    out = capsys.readouterr().out
+    assert ("[OK] Installation verified" if ok else "[FAIL] Verification failed") in out, out
+
+
 def test_verify_only_does_not_create_files(install_module, tmp_path, capsys):
     home = tmp_path / "home"
     assert install_module.main(["--home", str(home), "--verify-only"]) == 1
     assert not (home / ".claude").exists()
     assert "[FAIL] Verification failed" in capsys.readouterr().out
+
+
+def _edit_settings(home, change):
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    change(settings)
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+
+
+def _point_hook_elsewhere(settings):
+    for entry in settings["hooks"]["UserPromptSubmit"]:
+        for hook in entry.get("hooks", []):
+            hook["command"] = hook["command"].replace("ballast", "elsewhere")
+
+
+def _drop_a_required_tool(settings):
+    settings["permissions"]["deny"].remove("Artifact")
+
+
+def _edit_the_section(home):
+    path = home / ".claude" / "CLAUDE.md"
+    text = path.read_text(encoding="utf-8")
+    assert text.count("# Side sessions and subagents") == 1
+    path.write_text(text.replace("# Side sessions and subagents", "# Side sessions"), encoding="utf-8")
+
+
+@pytest.mark.parametrize("breaks, line", [
+    (lambda home: settings_file(home).unlink(), "Missing: {settings}"),
+    (lambda home: _edit_settings(home, lambda s: s.update(permissions=[])), "permissions is not an object"),
+    (lambda home: _edit_settings(home, _drop_a_required_tool), "permissions.deny is missing: Artifact"),
+    (lambda home: _edit_settings(home, lambda s: s.update(hooks=[])), "hooks is not an object"),
+    (lambda home: _edit_settings(home, lambda s: s["hooks"].update(UserPromptSubmit=[])),
+     "Ideal-Umbrella hook not found in UserPromptSubmit"),
+    (lambda home: _edit_settings(home, _point_hook_elsewhere), "Hook command does not point at {hook}"),
+    (_edit_the_section, "the Ideal-Umbrella section of CLAUDE.md differs from config/CLAUDE.md"),
+    (lambda home: (home / ".claude" / "CLAUDE.md").unlink(), "Missing: {claude_md}"),
+    (lambda home: (home / ".claude" / "ballast" / "context_check.py").unlink(), "Missing: {hook}"),
+    (lambda home: (home / ".claude" / "ballast" / "context_check.py").write_bytes(b"print()\n"),
+     "Hook content differs from hooks/context_check.py"),
+], ids=["no-settings", "permissions", "deny", "hooks", "no-hook-entry", "hook-elsewhere", "section",
+        "no-claude-md", "no-hook", "hook-content"])
+def test_verify_only_names_each_kind_of_broken_install(install_module, tmp_path, capsys, breaks, line):
+    # Review 20, finding T1: no test reached these branches of verify(), so a regression could
+    # have made --verify-only print OK for a broken install.
+    home = tmp_path / "home"
+    install_module.install(home)
+    breaks(home)
+    capsys.readouterr()
+    assert install_module.main(["--home", str(home), "--verify-only"]) == 1
+    out = capsys.readouterr().out
+    paths = {name: str(path) for name, path in install_module.layout(home).items()}
+    assert line.format(**paths) in out, out
+    assert "[FAIL] Verification failed" in out
 
 
 def test_non_object_settings_are_rejected(install_module, tmp_path):
@@ -160,16 +231,64 @@ def test_failed_install_writes_nothing(install_module, tmp_path, capsys):
     assert not (claude / "ballast").exists()
 
 
-@pytest.mark.parametrize("home_arg", [".", "~"])
+@pytest.mark.parametrize("home_arg", [".", "~", "~other", None, "~/sub", "./~other"])
 def test_relative_home_gives_absolute_hook_path(install_module, tmp_path, monkeypatch, home_arg):
+    # None: no --home and a HOME with ".." in it; "~other": another user's home that exists
+    # (review 16: the HOME is resolved as --home is, and only a "~name" that is not there is refused).
+    # "~/sub": a folder not made yet in your own home (review 17, K4). "./~other": a folder named
+    # "~other" here, not that user's home; pathlib drops the "./" (review 17, K2).
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    assert install_module.main(["--home", home_arg]) == 0
+    (tmp_path / "x").mkdir()
+    home = tmp_path / "x" / ".." if home_arg is None else tmp_path
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    real_expanduser = Path.expanduser
+    if home_arg == "~other":
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path.joinpath(*self.parts[1:])
+                            if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    if home_arg == "./~other":
+        (tmp_path / "~other").mkdir()
+        monkeypatch.setattr(Path, "expanduser", lambda self: tmp_path / "x"
+                            if self.parts and self.parts[0] == "~other" else real_expanduser(self))
+    assert install_module.main([] if home_arg is None else ["--home", home_arg]) == 0
 
-    settings = json.loads(settings_file(tmp_path).read_text(encoding="utf-8"))
+    home = tmp_path / {"~/sub": "sub", "./~other": "~other"}.get(home_arg, "")
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
     command = settings["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
-    assert str((tmp_path / ".claude" / "ballast" / "context_check.py").resolve()) in command
+    assert str((home / ".claude" / "ballast" / "context_check.py").resolve()) in command
+    assert str(tmp_path / "x" / "..") not in command
+    assert list((tmp_path / "x").iterdir()) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot delete the current folder")
+def test_a_relative_home_from_a_deleted_current_folder_is_a_one_line_error(install_module, tmp_path, monkeypatch,
+                                                                            capsys):
+    # Review 32, finding L2: making the home absolute needs the current folder, and its
+    # FileNotFoundError is reported as the other errors before any write are.
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    assert install_module.main(["--home", "relhome"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error:") and err.endswith("; nothing written\n") and "Traceback" not in err, err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the passwd entry is POSIX")
+def test_an_unset_home_is_taken_from_the_passwd_entry(install_module, tmp_path, monkeypatch):
+    # Review 17, K4: cron, env -i and systemd units run with no HOME; Path.home() then reads the
+    # passwd entry, which is where Claude Code looks too. Only an empty HOME is refused.
+    import pwd
+    home = tmp_path / "home"
+    home.mkdir()
+    # Built from scratch: the user running the tests may have no passwd entry (review 19, T1).
+    entry = pwd.struct_passwd(("u", "x", os.getuid(), os.getgid(), "", str(home), "/bin/sh"))
+    monkeypatch.setattr(pwd, "getpwuid", lambda uid: entry)
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    assert install_module.main([]) == 0
+    assert settings_file(home).is_file()
 
 
 def test_symlinked_settings_stay_symlinks(install_module, tmp_path):
@@ -244,30 +363,56 @@ def test_home_with_a_quote_in_its_path_verifies(install_module, tmp_path):
     assert ok, issues
 
 
-def test_record_is_written_after_settings(install_module, tmp_path, monkeypatch):
-    # A record of an install whose settings.json write failed would make uninstall report
-    # values that were never installed, so settings.json goes first and the record last.
+def test_a_record_written_before_a_failed_settings_write_undoes_cleanly(install_module, tmp_path, monkeypatch):
+    # The record is written first and names this run's changes (review 2, findings 4 and 5:
+    # written last, it stranded what landed before a failed write). A key it names that never
+    # reached settings.json must not be reported as a value the user changed.
+    uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     home = tmp_path / "home"
     paths = install_module.layout(home)
-    real_write = install_module._write_json
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text(json.dumps({"autoCompactWindow": 1}), encoding="utf-8")
+    real_write = uninstall_module.install._write_json
 
     def failing_write(path, data):
         if path == paths["settings"]:
             raise OSError("disk full")
         real_write(path, data)
 
-    monkeypatch.setattr(install_module, "_write_json", failing_write)
+    monkeypatch.setattr(uninstall_module.install, "_write_json", failing_write)
     with pytest.raises(OSError):
-        install_module.install(home)
-    record = install_module.read_record(paths["record"]) or {}
-    assert not any(record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
-    assert not paths["settings"].exists()
-    assert paths["hook"].exists()
+        uninstall_module.install.install(home, force=True)
+    monkeypatch.setattr(uninstall_module.install, "_write_json", real_write)
+    assert install_module.read_record(paths["record"])["replaced"] == {"autoCompactWindow": 1}
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 1}
+    _, notices = uninstall_module.uninstall(home)
+    assert not any("not the installed value" in n for n in notices), notices
+    assert json.loads(settings_file(home).read_text(encoding="utf-8")) == {"autoCompactWindow": 1}
+    assert not paths["hook"].exists()
+
+
+@pytest.mark.parametrize("tool", ["install", "uninstall"])
+def test_a_pending_record_naming_a_key_deleted_since_is_settled(install_module, tmp_path, capsys, tool):
+    # Review 32, finding L2: a record left pending by a failed write, whose earlier install
+    # wrote a key the user has deleted since; settling it must not look the key up.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)["record"]
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["pending"] = {k: v for k, v in record.items() if k != "claude_md"}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    _edit_settings(home, lambda s: s.pop("autoCompactWindow"))
+    module = install_module if tool == "install" else load_module("uninstall_module", "config/uninstall.py")
+    capsys.readouterr()
+    assert module.main(["--home", str(home)]) == 0, capsys.readouterr().err
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    # install adds the key again; uninstall leaves it deleted.
+    assert ("autoCompactWindow" in settings) == (tool == "install")
 
 
 def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
     # The record holds the values an uninstall puts back. It used to be read as "no record"
-    # and overwritten; now the user is told to fix or delete it first.
+    # and overwritten; now the user is told to fix it first.
     home = tmp_path / "home"
     install_module.install(home)
     record = install_module.layout(home)["record"]
@@ -279,6 +424,46 @@ def test_unreadable_record_stops_the_install(install_module, tmp_path, capsys):
     assert "not valid JSON" in err and "nothing written" in err
     assert record.read_text(encoding="utf-8") == "{broken"
     assert settings_file(home).read_text(encoding="utf-8") == settings_before
+
+
+DEEP = '{"a": ' + "[" * 100000 + "]" * 100000 + "}"
+
+
+@pytest.mark.parametrize("name", ["settings", "record"])
+def test_json_nested_too_deep_is_a_one_line_error(install_module, tmp_path, capsys, name):
+    # json.load raises RecursionError, not ValueError, for a file nested thousands of levels
+    # deep; it used to end the install with a traceback instead of the one-line error. Whether
+    # it does depends on the stack (3.14 parses 100000 levels with a big one), so either the
+    # RecursionError message or the depth check's message is right here.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)[name]
+    path.write_text(DEEP, encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err or "nested more than 100 levels deep" in err, err
+    assert "nothing written" in err and "Traceback" not in err
+    assert path.read_text(encoding="utf-8") == DEEP
+
+
+@pytest.mark.parametrize("name", ["settings", "record"])
+def test_a_recursion_error_while_reading_is_a_one_line_error(install_module, tmp_path, capsys, monkeypatch,
+                                                            name):
+    # The RecursionError branch on any stack: json.load raises it for this one file.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = install_module.layout(home)[name]
+    real = json.load
+
+    def load(f, *args, **kwargs):
+        if os.path.samefile(f.name, path):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(f, *args, **kwargs)
+
+    monkeypatch.setattr(install_module.json, "load", load)
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err and "nothing written" in err and "Traceback" not in err
 
 
 def test_record_that_is_not_an_object_is_an_error(install_module, tmp_path):
@@ -299,7 +484,7 @@ def test_dangling_symlink_is_reported_before_anything_is_written(install_module,
         pytest.skip("cannot create symlinks here")
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "nothing written" in err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err
     assert not (claude / "ballast").exists()
     assert not settings_file(home).exists()
 
@@ -415,7 +600,7 @@ def test_dangling_hook_or_record_symlink_is_reported_before_anything_is_written(
         pytest.skip("cannot create symlinks here")
     assert install_module.main(["--home", str(home)]) == 1
     err = capsys.readouterr().err
-    assert "symlink to a missing target" in err and "nothing written" in err, err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
     assert not settings_file(home).exists()
     assert not (home / ".claude" / "CLAUDE.md").exists()
 
@@ -531,9 +716,9 @@ def test_write_bytes_removes_the_temp_file_when_the_rename_fails(install_module,
 
 
 def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it(install_module, tmp_path, monkeypatch):
-    # CLAUDE.md was replaced and backed up, then the settings write failed and no record was
-    # written; the next install saw a CLAUDE.md that already matched, recorded nothing for it,
-    # and uninstall never restored the user's file from the first backup.
+    # CLAUDE.md was changed, then the settings write failed and no record was written; the
+    # next install saw a CLAUDE.md that already matched, recorded nothing for it, and uninstall
+    # never undid the CLAUDE.md change.
     home = tmp_path / "home"
     claude = home / ".claude"
     claude.mkdir(parents=True)
@@ -553,8 +738,31 @@ def test_a_failed_settings_write_after_claude_md_still_lets_uninstall_restore_it
     install_module.install(home)
     uninstall_module = load_module("uninstall_module", "config/uninstall.py")
     changes, notices = uninstall_module.uninstall(home)
-    assert any(c.startswith("CLAUDE.md restored from") for c in changes), (changes, notices)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
     assert (claude / "CLAUDE.md").read_text(encoding="utf-8") == "my own rules\n"
+
+
+@pytest.mark.parametrize("own", [b"mine\rmore\r", b"rules\nmine\r"], ids=["cr", "lf-then-cr"])
+def test_a_rules_update_keeps_the_line_ends_of_the_section(install_module, tmp_path, monkeypatch, own):
+    # Review 34, I1: a text ending in a bare CR is followed by the installer's LF, which makes a
+    # CRLF at the join; an update took that for a CRLF file and wrote the new rules with CRLF.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    md = claude / "CLAUDE.md"
+    md.write_bytes(own)
+    install_module.install(home)
+    newer = tmp_path / "CLAUDE.md"
+    # Bytes, not write_text: on Windows the template is checked out with CRLF, and write_text
+    # would make each of its line ends CR CR LF.
+    rules = install_module._lf(install_module._read_text(install_module.CLAUDE_MD))
+    newer.write_bytes((rules + "\n- one more rule\n").encode("utf-8"))
+    monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
+    changes, _ = install_module.install(home)
+    assert "CLAUDE.md section updated" in changes
+    data = md.read_bytes()
+    assert data.startswith(own + b"\n\n<!--"), data[:40]
+    assert b"one more rule" in data and data.count(b"\r\n") == 1, data.count(b"\r\n")
 
 
 def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_file(install_module, tmp_path, monkeypatch):
@@ -569,8 +777,299 @@ def test_reinstall_after_a_template_change_does_not_back_up_the_installers_own_f
     newer.write_text(install_module._read_text(install_module.CLAUDE_MD) + "\n- one more rule\n", encoding="utf-8")
     monkeypatch.setattr(install_module, "CLAUDE_MD", newer)
     changes, _ = install_module.install(home)
-    assert "CLAUDE.md updated" in changes
+    assert "CLAUDE.md section updated" in changes
     assert not any(c.startswith("CLAUDE.md backup:") for c in changes), changes
     backups = sorted(claude.glob("CLAUDE.md.bak-*"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == "my own rules\n"
+
+
+NOT_WRITABLE = [
+    # Review 2, finding 6: json.loads reads this, but on Python 3.12 json.dumps(indent=2) runs
+    # out of stack writing it back, after the hook and CLAUDE.md were already written.
+    pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
+    # Review 2, finding 7: valid JSON holding a lone surrogate, which UTF-8 cannot encode.
+    pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+    # Review 3, info 2d: the same in a key.
+    pytest.param('{"\\ud800": 1}', "not valid Unicode", id="surrogate-key"),
+    # Review 3, finding 5: read as inf and written back as Infinity, which is not JSON, so
+    # Claude Code could read none of settings.json.
+    pytest.param('{"myTool": {"limit": 1e400}}', "not a JSON number", id="too-big"),
+    pytest.param('{"limit": NaN}', "not a JSON number", id="nan"),
+]
+
+
+@pytest.mark.parametrize("text, message", NOT_WRITABLE)
+def test_settings_that_cannot_be_written_back_stop_before_any_write(install_module, tmp_path, capsys, text, message):
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    settings_file(home).write_text(text, encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert message in err and "nothing written" in err and "Traceback" not in err
+    assert sorted(p.name for p in (home / ".claude").iterdir()) == ["settings.json"]
+
+
+def test_an_error_after_a_write_does_not_say_nothing_was_written(install_module, tmp_path, capsys, monkeypatch):
+    # Review 2, finding 7, the class: main() said "nothing written" for every ValueError.
+    home = tmp_path / "home"
+    real = install_module._write_json
+
+    def failing(path, data):
+        if path.name == "settings.json":
+            raise ValueError("cannot encode")
+        real(path, data)
+    monkeypatch.setattr(install_module, "_write_json", failing)
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "nothing written" not in err and "Done before the error" in err and "hook written" in err
+    # Review 32, finding L3: the record is written first, and is named too.
+    assert "  - install record written\n" in err, err
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="a path that is not UTF-8 needs a Linux file system")
+def test_a_home_path_that_is_not_utf8_stops_before_any_write_and_verify_has_no_traceback(tmp_path):
+    # Review 3 of the graphify branch, finding 4: the hook command holds the path, and
+    # settings.json is UTF-8, so the install wrote the record, the hook and CLAUDE.md and then
+    # failed on settings.json, on every rerun; --verify-only printed a traceback.
+    home = os.fsencode(tmp_path) + b"/caf\xe9-home"
+    os.makedirs(home + b"/.claude")
+    run = [os.fsencode(sys.executable), b"-I", os.fsencode(INSTALL), b"--home", home]
+    result = subprocess.run(run, cwd=ROOT, capture_output=True)
+    stderr = result.stderr.decode("utf-8", "replace")
+    assert result.returncode != 0
+    assert "UTF-8" in stderr and "Traceback" not in stderr and "nothing written" in stderr, stderr
+    assert os.listdir(home + b"/.claude") == []
+    result = subprocess.run(run + [b"--verify-only"], cwd=ROOT, capture_output=True)
+    assert result.returncode != 0
+    assert b"Traceback" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("depth, ok", [(100, True), (101, False)])
+def test_settings_nested_up_to_the_limit_are_read(install_module, tmp_path, depth, ok):
+    # Review 5, info I1 (m16): the limit itself was not tested. The outermost list is level 1.
+    value = 1
+    for _ in range(depth):
+        value = [value]
+    if ok:
+        install_module._check_json(value, "settings.json")
+    else:
+        with pytest.raises(ValueError, match="nested"):
+            install_module._check_json(value, "settings.json")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_a_private_settings_file_stays_private(install_module, tmp_path):
+    # Review 5, info I2 (m35): nothing checked that a rewrite keeps the file's mode.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings = home / ".claude" / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    settings.chmod(0o600)
+    install_module.install(home)
+    assert settings.stat().st_mode & 0o777 == 0o600
+
+
+# Review 5, finding L5: a record field of the wrong JSON type ended in a TypeError traceback
+# (or a cryptic message) instead of the one-line error a broken record gives.
+BAD_FIELDS = [("added_keys", 5), ("added_keys", None), ("added_keys", [1]), ("replaced", None),
+              ("replaced", ["a"]), ("replaced", "ab"), ("installed", ["autoCompactWindow"]),
+              ("deny_added", 5), ("deny_added", "Artifact"), ("created", 5), ("claude_md", "x"),
+              ("pending", 5), ("pending", {"added_keys": 5}),
+              # Review 32, finding L6: a list holding something other than a name.
+              ("deny_added", ["Artifact", 5]), ("created", [5])]
+
+
+@pytest.mark.parametrize("field, value", BAD_FIELDS)
+def test_a_record_field_of_the_wrong_type_is_a_one_line_error(install_module, tmp_path, field, value):
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(ValueError, match="install-record.json"):
+        install_module.install(home)
+
+
+def link_or_skip(link, target):
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+
+def test_a_claude_md_linked_to_an_earlier_backup_gets_a_backup_of_its_own(install_module, tmp_path):
+    # Review 12, finding C1: the earlier backup holds the same bytes as CLAUDE.md (it is the
+    # file), so it was reused as the backup, and the section was written into it through the
+    # link. Uninstall then found CLAUDE.md equal to its backup and left the section for good.
+    uninstall_module = load_module("uninstall", ROOT / "config" / "uninstall.py")
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    earlier = claude / "CLAUDE.md.bak-20250101-000000"
+    earlier.write_text("my own notes\n", encoding="utf-8")
+    link_or_skip(claude / "CLAUDE.md", earlier.name)
+    install_module.install(home)
+    record = json.loads((claude / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert record["claude_md"]["safety_backup"] != earlier.name
+    uninstall_module.uninstall(home)
+    assert (claude / "CLAUDE.md").is_symlink() and earlier.read_text(encoding="utf-8") == "my own notes\n"
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_edits_in_a_section_whose_recorded_backup_is_the_file_itself_are_backed_up(install_module, tmp_path):
+    # Review 12, finding C1 (b): a record from before the fix names the link's target as the
+    # backup. The check for "an earlier run made this backup, then stopped" took the target
+    # for that backup, so the edits were written over with no copy.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    md = claude / "CLAUDE.md"
+    md.write_text("my own notes\n", encoding="utf-8")
+    install_module.install(home)
+    path = claude / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    target = claude / record["claude_md"]["safety_backup"]
+    text = md.read_text(encoding="utf-8")
+    end = text.index("<!-- Ideal-Umbrella rules: end -->")
+    edited = text[:end] + "- my own rule\n" + text[end:]
+    target.write_text(edited, encoding="utf-8")
+    md.unlink()
+    link_or_skip(md, target.name)
+    record["claude_md"]["sha256"] = "0" * 64   # a template change since: the section is replaced
+    path.write_text(json.dumps(record), encoding="utf-8")
+    install_module.install(home)
+    copies = [b for b in claude.glob("CLAUDE.md.bak-*") if b != target]
+    assert any(b.read_text(encoding="utf-8") == edited for b in copies), [b.name for b in copies]
+
+
+def test_a_settings_file_linked_to_an_earlier_backup_gets_a_backup_of_its_own(install_module, tmp_path):
+    # Review 12, finding C1, other hit: the same for settings.json; no copy of the settings
+    # from before the run was left.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    earlier = claude / "settings.json.bak-20250101-000000"
+    earlier.write_text('{"model": "mine"}', encoding="utf-8")
+    link_or_skip(settings_file(home), earlier.name)
+    install_module.install(home)
+    copies = [b for b in claude.glob("settings.json.bak-*") if b != earlier]
+    assert [b.read_text(encoding="utf-8") for b in copies] == ['{"model": "mine"}']
+
+
+@pytest.mark.parametrize("name", ["settings", "claude", "ballast"])
+def test_a_dangling_settings_or_folder_link_stops_install_before_anything_is_written(install_module, tmp_path,
+                                                                                     capsys, name):
+    # Review 13, finding D2 (and mutant x01 for settings.json): only the last part of each path
+    # was checked, so a ~/.claude or ballast folder linked into a moved dotfiles folder was
+    # created at the missing target and written there.
+    home = tmp_path / "home"
+    paths = install_module.layout(home)
+    link = {"settings": paths["settings"], "claude": paths["claude"], "ballast": paths["record"].parent}[name]
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link_or_skip(link, tmp_path / "missing")
+    assert install_module.main(["--home", str(home)]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+def test_a_dangling_claude_config_dir_stops_install_before_anything_is_written(install_module, tmp_path,
+                                                                               monkeypatch, capsys):
+    # Review 13, finding D2 (D): CLAUDE_CONFIG_DIR was resolved first, so the link was gone by
+    # the time of the check and the install wrote into the missing target.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    config = tmp_path / "cfg"
+    link_or_skip(config, tmp_path / "missing")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    assert install_module.main([]) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+@pytest.mark.parametrize("how", ["env", "home"])
+def test_a_config_dir_under_a_dangling_folder_link_stops_install(install_module, tmp_path, monkeypatch,
+                                                                 capsys, how):
+    # Review 13, mutant y3: the dangling link is a folder above the config dir, not the dir itself.
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    link_or_skip(tmp_path / "link", tmp_path / "missing")
+    if how == "env":
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "link" / "cfg"))
+        args = []
+    else:
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        args = ["--home", str(tmp_path / "link" / "h")]
+    assert install_module.main(args) == 1
+    err = capsys.readouterr().err
+    assert "symlink to a missing target" in err and "put the target back" in err and "remove it" not in err and "nothing written" in err, err
+    assert not (tmp_path / "missing").exists()
+
+
+def test_a_symlinked_claude_md_reuses_the_backup_of_a_run_that_failed(install_module, tmp_path, monkeypatch):
+    # Review 13, mutant x23: a run that failed after its backup, then a rerun, with CLAUDE.md
+    # linked into dotfiles: the rerun reuses the backup with the same bytes, not a second one.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    link_or_skip(claude / "CLAUDE.md", dotfiles / "CLAUDE.md")
+    write = install_module._write_bytes
+
+    def fail_claude_md(path, data):
+        if Path(path).resolve() == (dotfiles / "CLAUDE.md").resolve():
+            raise OSError(28, "No space left on device")
+        write(path, data)
+    monkeypatch.setattr(install_module, "_write_bytes", fail_claude_md)
+    with pytest.raises(OSError):
+        install_module.install(home)
+    monkeypatch.setattr(install_module, "_write_bytes", write)
+    install_module.install(home)
+    assert len(list(claude.glob("CLAUDE.md.bak-*"))) == 1
+
+
+def test_an_unreadable_old_backup_does_not_stop_the_install(install_module, tmp_path, monkeypatch):
+    # Review 13, finding D5: a backup left unreadable (root-owned by a sudo run) stopped every
+    # install while looking for one to reuse; it is no match.
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    claude.mkdir(parents=True)
+    (claude / "CLAUDE.md").write_text("my own notes\n", encoding="utf-8")
+    old = claude / "CLAUDE.md.bak-20250101-000000"
+    old.write_text("older notes\n", encoding="utf-8")
+    read = Path.read_bytes
+
+    def refuse(self):
+        if self.name == old.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return read(self)
+    monkeypatch.setattr(Path, "read_bytes", refuse)
+    install_module.install(home)
+    backups = sorted(b.name for b in claude.glob("CLAUDE.md.bak-*"))
+    assert len(backups) == 2 and old.name in backups
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+@pytest.mark.parametrize("which", ["settings", "record"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(install_module, tmp_path, capsys, which, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    home = tmp_path / "home"
+    if which == "record":
+        install_module.install(home)
+        path = home / ".claude" / "ballast" / "install-record.json"
+    else:
+        path = home / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True)
+    body = b'{"a": "caf\xe9"}'
+    path.write_bytes(bom + body)
+    assert install_module.main(["--home", str(home)]) == 1
+    assert f"at byte {len(bom) + body.index(0xE9)})" in capsys.readouterr().err

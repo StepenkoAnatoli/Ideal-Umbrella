@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from conftest import ROOT
+from conftest import ROOT, refuse_looks_inside
 
 ADD = ROOT / "config" / "add_to_repo.py"
 TEMPLATE = json.loads((ROOT / "config" / "repo-settings.json").read_text(encoding="utf-8"))
@@ -79,6 +79,40 @@ def test_non_object_json_is_rejected_without_writing(tmp_path):
     assert not (repo / ".claude" / "hooks").exists()
 
 
+def test_json_nested_too_deep_is_rejected_without_writing(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    # Closed nesting inside an object: 3.14 parses 100000 levels with a big stack, so either
+    # the RecursionError message or the depth check's message is right here.
+    (repo / ".claude" / "settings.json").write_text('{"a": ' + "[" * 100000 + "]" * 100000 + "}",
+                                                    encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "nested too deeply" in result.stderr or "nested more than 100 levels deep" in result.stderr
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_a_recursion_error_while_reading_is_a_one_line_error(add_to_repo, tmp_path, capsys, monkeypatch):
+    # The RecursionError branch on any stack: json.load raises it for the repo's settings.json.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    path = repo / ".claude" / "settings.json"
+    path.write_text("{}", encoding="utf-8")
+    real = json.load
+
+    def load(f, *args, **kwargs):
+        if os.path.samefile(f.name, path):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(f, *args, **kwargs)
+
+    monkeypatch.setattr(add_to_repo.json, "load", load)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "nested too deeply" in err and "nothing written" in err and "Traceback" not in err
+    assert not (repo / ".claude" / "hooks").exists()
+
+
 def test_second_run_is_idempotent(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -137,6 +171,23 @@ def test_non_utf8_settings_say_so(tmp_path):
     assert (repo / ".claude" / "settings.json").read_bytes() == b'{"a": "caf\xe9"}'
 
 
+@pytest.mark.parametrize("relative", [".claude", ".claude/hooks"])
+def test_a_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, relative):
+    # Review 13, finding D2: only the files were checked, so a .claude or hooks folder linked
+    # into a moved folder was created at the missing target and written there.
+    repo = tmp_path / "repo"
+    link = repo / relative
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(tmp_path / "gone")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "put the target back" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert not (tmp_path / "gone").exists()
+
+
 @pytest.mark.parametrize("relative", ["settings.json", "hooks/context_check.py"])
 def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relative):
     # install.py got this check in an earlier fix; add_to_repo.py, which writes the same two
@@ -150,7 +201,7 @@ def test_dangling_symlink_is_reported_before_anything_is_written(tmp_path, relat
         pytest.skip("cannot create symlinks here")
     result = run(repo)
     assert result.returncode == 1
-    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "symlink to a missing target" in result.stderr and "put the target back" in result.stderr and "remove it" not in result.stderr and "nothing written" in result.stderr, result.stderr
     assert "Traceback" not in result.stderr
     assert not (repo / ".claude" / "settings.json").is_file()
 
@@ -165,6 +216,42 @@ def test_new_files_get_the_umask_mode_not_the_temp_file_mode(add_to_repo, tmp_pa
     for name in ("settings.json", os.path.join("hooks", "context_check.py")):
         path = repo / ".claude" / name
         assert path.stat().st_mode & 0o777 == 0o644, name
+
+
+def test_a_symlinked_settings_file_stays_a_link_and_its_target_is_updated(add_to_repo, tmp_path):
+    # Review 20, finding T2: nothing tested the write through a link.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "settings.json").write_text('{"customKey": 1}\n', encoding="utf-8")
+    link = repo / ".claude" / "settings.json"
+    try:
+        link.symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    add_to_repo._add(str(repo), force=False)
+    assert link.is_symlink()
+    settings = json.loads((dotfiles / "settings.json").read_text(encoding="utf-8"))
+    assert settings["customKey"] == 1 and "UserPromptSubmit" in settings["hooks"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
+def test_an_existing_file_keeps_its_mode(add_to_repo, tmp_path):
+    # Review 20, finding T2: nothing tested that a rewrite keeps the mode.
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    settings = repo / ".claude" / "settings.json"
+    hook = repo / ".claude" / "hooks" / "context_check.py"
+    settings.write_text("{}\n", encoding="utf-8")
+    hook.write_text("old\n", encoding="utf-8")
+    settings.chmod(0o640)   # neither is a mode a new file gets (0644 or 0600)
+    hook.chmod(0o750)
+    add_to_repo._add(str(repo), force=False)
+    assert "UserPromptSubmit" in settings.read_text(encoding="utf-8")
+    assert hook.read_text(encoding="utf-8") != "old\n"
+    assert settings.stat().st_mode & 0o777 == 0o640
+    assert hook.stat().st_mode & 0o777 == 0o750
 
 
 def test_writing_a_new_file_never_touches_the_process_umask(add_to_repo, tmp_path, monkeypatch):
@@ -200,3 +287,298 @@ def test_error_after_a_write_lists_what_was_written(add_to_repo, tmp_path, monke
     err = capsys.readouterr().err
     assert "Done before the error" in err and "context_check.py written" in err, err
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+
+
+def run_with(repo, *flags):
+    return subprocess.run([sys.executable, "-I", str(ADD), *flags, str(repo)], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+def settings_of(repo):
+    return json.loads((repo / ".claude" / "settings.json").read_text(encoding="utf-8"))
+
+
+def repo_with(tmp_path, settings=None):
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    if settings is not None:
+        (repo / ".claude" / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    return repo
+
+
+@pytest.mark.parametrize("flags", [["--handoff-at", "120000"], ["--handoff-at=120000"]])
+def test_handoff_at_writes_the_env_key_as_a_string(tmp_path, context_check, monkeypatch, flags):
+    repo = repo_with(tmp_path)
+    result = run_with(repo, *flags)
+    assert result.returncode == 0, result.stderr
+    assert "env.IDEAL_UMBRELLA_HANDOFF_AT: added '120000'" in result.stdout
+    value = settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"]
+    assert value == "120000"   # Claude Code env values are strings
+    monkeypatch.setenv("IDEAL_UMBRELLA_HANDOFF_AT", value)
+    assert context_check.parse_int("IDEAL_UMBRELLA_HANDOFF_AT", 150000) == 120000
+
+
+def test_handoff_at_keeps_other_env_keys_and_is_idempotent(tmp_path):
+    repo = repo_with(tmp_path, {"env": {"FOO": "1"}})
+    assert run_with(repo, "--handoff-at", "90000").returncode == 0
+    assert settings_of(repo)["env"] == {"FOO": "1", "IDEAL_UMBRELLA_HANDOFF_AT": "90000"}
+    before = (repo / ".claude" / "settings.json").read_bytes()
+    again = run_with(repo, "--handoff-at", "90000")
+    assert again.returncode == 0 and "already up to date" in again.stdout
+    assert (repo / ".claude" / "settings.json").read_bytes() == before
+
+
+def test_a_different_handoff_value_is_kept_unless_forced(tmp_path):
+    repo = repo_with(tmp_path, {"env": {"IDEAL_UMBRELLA_HANDOFF_AT": "100000", "FOO": "1"}})
+    kept = run_with(repo, "--handoff-at", "120000")
+    assert kept.returncode == 0, kept.stderr
+    assert "note: env.IDEAL_UMBRELLA_HANDOFF_AT is '100000'" in kept.stdout and "--force" in kept.stdout
+    assert settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"] == "100000"
+    forced = run_with(repo, "--force", "--handoff-at", "120000")
+    assert forced.returncode == 0, forced.stderr
+    assert settings_of(repo)["env"] == {"IDEAL_UMBRELLA_HANDOFF_AT": "120000", "FOO": "1"}
+
+
+def test_without_handoff_at_no_env_key_is_written_or_removed(tmp_path):
+    repo = repo_with(tmp_path)
+    assert run_with(repo).returncode == 0
+    assert "env" not in settings_of(repo)
+    (repo / ".claude" / "settings.json").write_text(
+        json.dumps({**settings_of(repo), "env": {"IDEAL_UMBRELLA_HANDOFF_AT": "100000"}}), encoding="utf-8")
+    assert run_with(repo, "--force").returncode == 0
+    assert settings_of(repo)["env"] == {"IDEAL_UMBRELLA_HANDOFF_AT": "100000"}
+
+
+@pytest.mark.parametrize("flags", [
+    ["--handoff-at", "0"], ["--handoff-at", "-5"], ["--handoff-at", "abc"], ["--handoff-at", "1.5"],
+    ["--handoff-at", "١٢٠"], ["--handoff-at="], ["--handoff-at"], ["--handoff-at", "1", "--handoff-at", "2"],
+    ["--handof-at", "1"],
+])
+def test_a_bad_handoff_value_is_a_usage_error_and_nothing_is_written(tmp_path, flags):
+    repo = repo_with(tmp_path)
+    result = run_with(repo, *flags)
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("flags, message", [
+    (["--handoff-at", "1", "--handoff-at", "2"], "--handoff-at is given more than once"),
+    (["--handoff-at", "abc"], "--handoff-at needs a whole number of tokens above 0, not 'abc'"),
+], ids=["twice", "not-a-number"])
+def test_a_bad_handoff_value_says_what_is_wrong_before_the_usage_line(add_to_repo, tmp_path, flags, message):
+    # Review 32, L3 (mutant A90): without the reason only the usage line was printed.
+    repo = repo_with(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([*flags, str(repo)])
+    assert e.value.code == f"{message}\n{add_to_repo.USAGE}"
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+@pytest.mark.parametrize("args", [[], ["no-such-repo"]], ids=["no-argument", "missing-repo"])
+def test_no_repo_or_a_missing_one_is_the_usage_line(add_to_repo, tmp_path, args):
+    # Review 32, L2: no argument gave an IndexError (mutant A47), and a repo that is not there an
+    # AttributeError on None (mutant A50), where the usage line is right.
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([str(tmp_path / a) for a in args])
+    assert e.value.code == add_to_repo.USAGE
+    assert not (tmp_path / "no-such-repo").exists()
+
+
+@pytest.mark.parametrize("depth, ok", [(100, True), (101, False)])
+def test_settings_nested_up_to_the_limit_are_read(add_to_repo, depth, ok):
+    # Review 32, L4 (mutant A135): test_install.py has this boundary test, add_to_repo had not.
+    # The outermost list is level 1.
+    value = 1
+    for _ in range(depth):
+        value = [value]
+    if ok:
+        add_to_repo._check_json(value, "settings.json")
+    else:
+        with pytest.raises(ValueError, match="nested"):
+            add_to_repo._check_json(value, "settings.json")
+
+
+def test_env_that_is_not_an_object_stops_before_any_write(tmp_path):
+    repo = repo_with(tmp_path, {"env": ["IDEAL_UMBRELLA_HANDOFF_AT=1"]})
+    before = (repo / ".claude" / "settings.json").read_bytes()
+    result = run_with(repo, "--handoff-at", "120000")
+    assert result.returncode == 1
+    assert "env must be an object" in result.stderr and "nothing written" in result.stderr
+    assert (repo / ".claude" / "settings.json").read_bytes() == before
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_an_object_valued_template_key_merges_key_by_key(add_to_repo):
+    # Class of the env case: a template key whose value is an object used to be compared as a
+    # whole, so a repository with any other key in it got none of the template's keys.
+    settings = {"env": {"FOO": "1"}}
+    changes, notices = add_to_repo.merge(settings, {"env": {"BAR": "2"}})
+    assert settings == {"env": {"FOO": "1", "BAR": "2"}, "hooks": {}}
+    assert changes == ["env.BAR: added '2'"] and notices == []
+
+
+@pytest.mark.parametrize("text, message", [
+    pytest.param('{"a": ' + "[" * 150 + "]" * 150 + "}", "nested more than", id="deep"),
+    pytest.param('{"statusLine": "\\ud800"}', "not valid Unicode", id="surrogate"),
+    pytest.param('{"\\ud800": 1}', "not valid Unicode", id="surrogate-key"),
+    # Review 3, finding 5: written back as Infinity, which Claude Code cannot read.
+    pytest.param('{"limit": 1e400}', "not a JSON number", id="too-big"),
+])
+def test_settings_that_cannot_be_written_back_stop_before_any_write(tmp_path, text, message):
+    # Review 2, findings 6 and 7: the hook was copied before the settings write failed.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text(text, encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 1
+    assert message in result.stderr and "nothing written" in result.stderr and "Traceback" not in result.stderr
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+def test_a_huge_handoff_value_is_a_plain_usage_error(tmp_path):
+    # Review 2, info 5: int() of 5000 digits printed Python's own digit-limit message.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", "9" * 5000)
+    assert result.returncode != 0
+    # Review 32, L3 (mutant A90): the usage line names --handoff-at too, so check the reason.
+    assert f"--handoff-at {'9' * 20}... is too large" in result.stderr and "Exceeds" not in result.stderr
+
+
+def test_a_handoff_value_padded_with_zeros_is_read_without_the_digit_limit(tmp_path):
+    # Review 3, info 1: leading zeros got past the digit limit to int(), which counts them.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", "0" * 5000 + "120000")
+    assert result.returncode == 0, result.stderr[-300:]
+    assert settings_of(repo)["env"]["IDEAL_UMBRELLA_HANDOFF_AT"] == "120000"
+
+
+@pytest.mark.parametrize("value, ok", [("9" * 15, True), ("1" + "0" * 15, False)])
+def test_the_handoff_value_takes_at_most_fifteen_digits(tmp_path, value, ok):
+    # Review 6, info I1 (n24): the limit itself was not tested.
+    repo = repo_with(tmp_path)
+    result = run_with(repo, "--handoff-at", value)
+    assert (result.returncode == 0) is ok, result.stderr[-300:]
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    body = b'{"a": "caf\xe9"}'
+    (repo / ".claude" / "settings.json").write_bytes(bom + body)
+    result = run(repo)
+    assert result.returncode == 1
+    assert f"at byte {len(bom) + body.index(0xE9)})" in result.stderr, result.stderr
+
+
+def test_a_settings_file_that_cannot_be_read_stops_before_anything_is_written(tmp_path):
+    # Review 23, F1 other hits: settings.json was read outside any OSError catch, so the error
+    # was a bare [Errno] without "nothing written".
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "settings.json").mkdir(parents=True)
+    result = run(repo)
+    assert result.returncode == 1
+    assert "cannot read" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "[Errno" not in result.stderr, result.stderr
+
+
+def test_a_json_error_in_a_file_with_bare_cr_line_ends_names_the_line(tmp_path):
+    # Review 23, I1: reading bytes kept bare CRs, so a JSON error on line 3 was reported on line 1.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_bytes(b'{\r"a": 1,\r"b": }\r')
+    result = run(repo)
+    assert result.returncode == 1
+    assert "line 3" in result.stderr, result.stderr
+
+
+def test_a_hook_file_that_cannot_be_read_stops_before_anything_is_written(tmp_path):
+    # Review 24, F3: the hook was read outside any handler, so a folder in its place gave a
+    # bare [Errno 21] without "nothing written".
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks" / "context_check.py").mkdir(parents=True)
+    result = run(repo)
+    assert result.returncode == 1
+    assert "cannot read" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert "[Errno" not in result.stderr and not (repo / ".claude" / "settings.json").exists(), result.stderr
+
+
+def test_a_source_hook_that_cannot_be_read_stops_before_anything_is_written(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 24, F3: the hook shipped with the repo was read outside any handler too.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(add_to_repo, "SCRIPT", os.fspath(tmp_path))
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot read" in err and "nothing written" in err and "[Errno" not in err, err
+    assert not (repo / ".claude").exists()
+
+
+def test_a_folder_that_cannot_be_searched_stops_before_anything_is_written(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 24, F1 other hits: os.path.exists() says False for a hook it cannot look at (a
+    # folder only root may search), so the user's own hook would be taken for none.
+    repo = tmp_path / "repo"
+    hooks = repo / ".claude" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "context_check.py").write_text("# my own hook\n", encoding="utf-8")
+    refuse_looks_inside(hooks, monkeypatch)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "nothing written" in err and "[Errno" not in err, err
+    monkeypatch.undo()
+    assert not (repo / ".claude" / "settings.json").exists()
+
+
+def test_a_settings_link_into_a_folder_that_cannot_be_searched_is_not_called_missing(add_to_repo, tmp_path, capsys,
+                                                                                    monkeypatch):
+    # Review 25, E (mutant b04): the target is there, it just cannot be looked at; "put the
+    # target back" would be wrong advice.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "settings.json").write_text("{}", encoding="utf-8")
+    try:
+        (repo / ".claude" / "settings.json").symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    refuse_looks_inside(dotfiles, monkeypatch)
+    assert add_to_repo.main([str(repo)]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "missing target" not in err and "nothing written" in err, err
+    monkeypatch.undo()
+    assert (dotfiles / "settings.json").read_text(encoding="utf-8") == "{}"
+
+
+def test_a_repo_that_cannot_be_looked_at_says_so_not_usage(add_to_repo, tmp_path, capsys, monkeypatch):
+    # Review 25, info 2: os.path.isdir() says False for a repo in a folder that cannot be
+    # searched, so the user got the usage line instead of the reason.
+    locked = tmp_path / "locked"
+    (locked / "repo").mkdir(parents=True)
+    refuse_looks_inside(locked, monkeypatch)
+    assert add_to_repo.main([str(locked / "repo")]) == 1
+    err = capsys.readouterr().err
+    assert "cannot look at" in err and "nothing written" in err and "usage" not in err, err
+
+
+def test_a_repo_that_is_a_link_to_a_folder_is_followed(add_to_repo, tmp_path, capsys):
+    # Review 26, C3: nothing failed when the repo check looked at the link itself, not at the
+    # folder it names.
+    (tmp_path / "repo").mkdir()
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / "repo", target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    assert add_to_repo.main([str(tmp_path / "link")]) == 0, capsys.readouterr().err
+    assert (tmp_path / "repo" / ".claude" / "settings.json").is_file()
+
+
+def test_a_repo_that_is_a_file_is_the_usage_line(add_to_repo, tmp_path):
+    # Review 26, C3: nothing failed when the repo check took any file for a folder.
+    (tmp_path / "repo").write_text("not a folder\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        add_to_repo.main([str(tmp_path / "repo")])
+    assert e.value.code == add_to_repo.USAGE
+    assert (tmp_path / "repo").read_text(encoding="utf-8") == "not a folder\n"

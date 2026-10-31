@@ -287,3 +287,12 @@ def test_an_exponent_or_hex_number_is_one_invariant(keyline_check, tok):
     assert keyline_check.invariants(source) == {tok: "number"}
     assert keyline_check.check(source, source).ok
     assert not keyline_check.check(source, source.replace(tok, "9")).ok
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(keyline_check, tmp_path, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    note = tmp_path / "latin.txt"
+    note.write_bytes(bom + b"caf\xe9 503\n")
+    with pytest.raises(OSError, match=rf"at byte {len(bom) + 3}\)"):
+        keyline_check.read(note)
