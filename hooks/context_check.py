@@ -26,8 +26,8 @@ Environment:
   IDEAL_UMBRELLA_STATE_DIR     override the per-session state folder (tests)
   IDEAL_UMBRELLA_LOG           override the error log path
   IDEAL_UMBRELLA_TAIL_BYTES    how much of the transcript end to read (default 4 MB);
-                               raise it if a single turn writes more than that; it also
-                               bounds how far into the transcript the floor is looked for
+                               raise it if a single turn writes more than that; the floor
+                               is looked for within 4 times this many bytes of the start
                                (set below the size of the first turn, the line is left out)
 
 Invalid integer settings fall back to the defaults with a warning; they never
@@ -137,8 +137,8 @@ def _usage(event):
 
 
 def _prompt_tokens(usage):
-    """What the call carried in: input, cache write and cache read."""
-    return sum(int(usage.get(key) or 0) for key in (
+    """What the call carried in: input, cache write and cache read (a negative term is 0)."""
+    return sum(max(0, int(usage.get(key) or 0)) for key in (
         "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"
     ))
 
@@ -165,8 +165,8 @@ def last_measure(path, limit=None):
     for raw in reversed(lines):
         try:
             measure = _measure(json.loads(raw))
-        except (ValueError, TypeError, AttributeError):
-            continue   # a torn line, or a record whose usage is not numbers
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            continue   # a torn line, or a record whose usage is not finite numbers
         if measure is not None:
             return measure
     return 0, False
@@ -181,7 +181,12 @@ def _measure(event):
         # out the system prompt and tool definitions, so it is a floor until the next
         # assistant event reports real usage. Older transcripts carry only preTokens: then
         # report 0, which also clears the band state so the reminder can fire again later.
-        return int((event.get("compactMetadata") or {}).get("postTokens") or 0), True
+        # A boundary always ends the scan: an unreadable postTokens is 0, never the usage
+        # from before the compaction.
+        try:
+            return max(0, int((event.get("compactMetadata") or {}).get("postTokens") or 0)), True
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return 0, True
     usage = _usage(event)
     if usage is None:
         return None
@@ -195,27 +200,25 @@ def _measure(event):
 def floor_tokens(path, limit=None):
     """Context size at the first main-chain call: the session's floor (the system prompt,
     the tools and the first message), read from the start of the transcript. 0 when no such
-    call is found within `limit` bytes (TAIL_BYTES) of parsed records, or within 4 * `limit`
-    bytes read in all. At most `limit` bytes are held at once: a record of `limit` bytes or
-    more (a file pasted into the first prompt) is skipped unparsed, chunk by chunk, and the
-    search goes on after it."""
+    call starts within 4 * `limit` bytes (`limit` is TAIL_BYTES) of the start. At most `limit`
+    bytes are held at once: a record of `limit` bytes or more (a file pasted into the first
+    prompt) is skipped unparsed, chunk by chunk, and the search goes on after it."""
     if limit is None:
         limit = tail_limit()
-    seen = 0
+    bound = 4 * limit
     with open(path, "rb") as f:
-        while seen < limit and f.tell() < 4 * limit:
+        while f.tell() < bound:
             raw = f.readline(limit)
             if not raw:
                 return 0
             if len(raw) >= limit and not raw.endswith(b"\n"):
-                while raw and not raw.endswith(b"\n") and f.tell() < 4 * limit:
+                while raw and not raw.endswith(b"\n") and f.tell() < bound:
                     raw = f.readline(limit)
                 continue
-            seen += len(raw)
             try:
                 usage = _usage(json.loads(raw))
                 n = _prompt_tokens(usage) if usage else 0
-            except (ValueError, TypeError, AttributeError):
+            except (ValueError, TypeError, AttributeError, OverflowError):
                 n = 0
             if n:
                 return n

@@ -181,15 +181,37 @@ def _write_json(path, data):
     _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
+def _in_git_repo(repo):
+    """True when `repo` or a folder above it holds a .git entry."""
+    folder = os.path.realpath(repo)
+    while True:
+        if os.path.exists(os.path.join(folder, ".git")):
+            return True
+        parent = os.path.dirname(folder)
+        if parent == folder:
+            return False
+        folder = parent
+
+
 def _git_ignores(repo, relative):
-    """True when git ignores `relative` in `repo`; False when it does not, or git is missing
-    or the folder is not a repository."""
+    """True when git ignores `relative` in `repo`, False when it does not or the folder is not
+    in a repository, None when git cannot say (git missing, a timeout, or another exit status:
+    dubious ownership, a GIT_DIR elsewhere). Only the exit status is read: with the output
+    discarded, not piped, a timed-out git child cannot hold the run on Windows."""
+    if not _in_git_repo(repo):
+        return False
     try:
         result = subprocess.run(["git", "-C", repo, "check-ignore", "-q", relative],
-                                capture_output=True, timeout=10)
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, timeout=10)
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0
+        return None
+    return {0: True, 1: False}.get(result.returncode)
+
+
+def _unsure(relative):
+    return (f"git could not say whether {relative} is ignored; it is written all the same, "
+            "check that git tracks it")
 
 
 def main(argv=None):
@@ -200,9 +222,9 @@ def main(argv=None):
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
         sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
-    progress = []
+    progress, ignored = [], []
     try:
-        changes, notices = _add(argv[0], force, progress=progress)
+        changes, notices = _add(argv[0], force, progress=progress, ignored=ignored)
     except ValueError as e:
         # Raised while reading or merging, before any write.
         print(f"Error: {e}; nothing written", file=sys.stderr)
@@ -219,34 +241,41 @@ def main(argv=None):
     print("\n".join(changes) or "already up to date")
     for notice in notices:
         print(f"note: {notice}")
-    # Name only the files written this run: an untouched one has nothing to commit.
-    files = progress
+    # Name only the files written this run and not ignored by git: an untouched one has
+    # nothing to commit, an ignored one has its own note.
+    files = [name for name in progress if name not in ignored]
     if files:
         names = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
         print(f"Commit {names} in that repository.")
     return 0
 
 
-def _add(repo, force, progress=None):
+def _add(repo, force, progress=None, ignored=None):
     """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
     repository has no notes/learnings.md, the learnings template; return (changes, notices).
     The repository-relative path of each file written is appended to `progress` (when given)
-    as it is done. settings.json is
-    written after the hook: a hook entry that points at a hook file that was never copied would
-    exit 2 on every prompt. The learnings file is a courtesy and comes last: a failure there (a
-    `notes` file in the way) is a notice, not an error, and a `notes/` that git ignores gets
-    no copy (cloud sessions would never see it)."""
+    as it is done, and to `ignored` when git ignores it. settings.json is written after the
+    hook: a hook entry that points at a hook file that was never copied would exit 2 on every
+    prompt. A hook or settings file that git ignores is written all the same (local sessions
+    use it) with a notice. The learnings file is a courtesy and comes last: a failure there (a
+    `notes` file in the way, a dangling link) is a notice, not an error, and a `notes/` that
+    git ignores gets no copy (cloud sessions would never see it)."""
     if progress is None:
         progress = []
+    if ignored is None:
+        ignored = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     learnings = os.path.join(repo, "notes", "learnings.md")
     # A dangling link, on a file or on a folder above it, would be written through: the
-    # missing target would be created outside the repository.
-    for p in (claude_dir, os.path.dirname(target), os.path.dirname(learnings), path, target, learnings):
+    # missing target would be created outside the repository. For the core files that is an
+    # error; for the courtesy file it means no copy.
+    for p in (claude_dir, os.path.dirname(target), path, target):
         if _is_link(p) and not os.path.exists(p):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
+    dangling = next((p for p in (os.path.dirname(learnings), learnings)
+                     if _is_link(p) and not os.path.exists(p)), None)
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
     try:
@@ -261,9 +290,9 @@ def _add(repo, force, progress=None):
     with open(SCRIPT, "rb") as f:
         source = f.read()
     # An existing notes/learnings.md is the repository's own, whatever it holds: never replaced.
-    learnings_missing = not os.path.exists(learnings)
+    copy_learnings = dangling is None and not os.path.exists(learnings)
     learnings_template = b""
-    if learnings_missing:
+    if copy_learnings:
         with open(LEARNINGS, "rb") as f:
             learnings_template = f.read()
     hook_changed = source != old
@@ -273,23 +302,36 @@ def _add(repo, force, progress=None):
     if changes:
         _write_json(path, settings)
         progress.append(".claude/settings.json")
-    if learnings_missing and _git_ignores(repo, "notes/learnings.md"):
-        learnings_missing = False
-        notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
-                       "would not see it")
-    if learnings_missing:
-        try:
-            _write_bytes(learnings, learnings_template)
-            progress.append("notes/learnings.md")
-        except OSError as e:
-            learnings_missing = False
-            notices.append(f"notes/learnings.md not written ({e}); the hook and settings are "
-                           "installed")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
-    if learnings_missing:
-        changes.append("notes/learnings.md written (the learnings template; it is yours now, "
-                       "later runs leave it)")
+    for relative in list(progress):
+        state = _git_ignores(repo, relative)
+        if state:
+            ignored.append(relative)
+            notices.append(f"{relative} written, but git ignores it, so cloud sessions will not "
+                           "see it; unignore it or commit it with git add -f")
+        elif state is None:
+            notices.append(_unsure(relative))
+    if dangling is not None:
+        notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
+    elif copy_learnings:
+        state = _git_ignores(repo, "notes/learnings.md")
+        if state:
+            copy_learnings = False
+            notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
+                           "would not see it")
+        elif state is None:
+            notices.append(_unsure("notes/learnings.md"))
+    if copy_learnings:
+        try:
+            _write_bytes(learnings, learnings_template)
+        except OSError as e:
+            notices.append(f"notes/learnings.md not written ({e}); the hook and settings are "
+                           "installed")
+        else:
+            progress.append("notes/learnings.md")
+            changes.append("notes/learnings.md written (the learnings template; it is yours "
+                           "now, later runs leave it)")
     return changes, notices
 
 

@@ -241,7 +241,7 @@ def test_floor_search_is_bounded_by_tail_bytes(context_check, tmp_path, monkeypa
     path = write_jsonl(tmp_path / "long.jsonl", padding + [
         {"type": "assistant", "message": {"usage": {"input_tokens": 40_000}}}])
     assert context_check.floor_tokens(str(path)) == 40_000
-    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "2000")
+    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "1000")   # the call starts past 4 * 1000
     assert context_check.floor_tokens(str(path)) == 0
 
 
@@ -392,6 +392,15 @@ def test_oversize_first_record_is_skipped_and_the_search_goes_on(context_check, 
     assert context_check.floor_tokens(str(path)) == 40_000
     assert max(reads) <= 4096
 
+    # The skip loop checks the bound per chunk: one record of 10 * limit bytes is not read
+    # to its end (a 1 GiB record took seconds without that check).
+    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "1000")
+    huge = tmp_path / "huge.jsonl"
+    huge.write_bytes(b'{"x": "' + b"x" * 10_000 + b'"}\n' + call + b"\n")
+    reads.clear()
+    assert context_check.floor_tokens(str(huge)) == 0
+    assert sum(reads) < 5 * 1000
+
 
 def test_bad_usage_in_the_first_call_does_not_take_the_note_down(tmp_path):
     # A non-integer usage value raised out of run(): no JSON at all, the hand-off note lost.
@@ -431,12 +440,43 @@ def test_bad_usage_in_the_last_call_falls_back_to_the_one_before(tmp_path):
     path = write_jsonl(tmp_path / "odd-last.jsonl", [
         {"type": "assistant", "message": {"usage": {"input_tokens": 160_000}}},
         {"type": "assistant", "message": {"usage": {"input_tokens": 170_000, "output_tokens": "n/a"}}},
-        {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": "x"}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 1e400}}},
     ])
     result = run_hook(tmp_path, event(path))
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["systemMessage"].startswith("Ideal-Umbrella: floor 160k, now 160k; over 150k")
+
+
+def test_infinite_usage_is_skipped(context_check, tmp_path):
+    # 1e400 parses as inf, and int(inf) raised OverflowError past the handler: the note was lost.
+    path = tmp_path / "inf.jsonl"
+    path.write_bytes(
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 1e400}}}\n'
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": 160000}}}\n'
+        b'{"type": "assistant", "message": {"usage": {"input_tokens": Infinity}}}\n')
+    assert context_check.last_measure(str(path)) == (160_000, False)
+    assert context_check.floor_tokens(str(path)) == 160_000
+
+
+def test_a_bad_compact_boundary_still_ends_the_scan(context_check, tmp_path):
+    # An unreadable postTokens used to be skipped, and the scan read the usage from before the
+    # compaction: "now 200k" and a false hand-off note.
+    path = write_jsonl(tmp_path / "bad-boundary.jsonl", [
+        {"type": "assistant", "message": {"usage": {"input_tokens": 200_000}}},
+        {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": "x"}},
+    ])
+    assert context_check.last_measure(str(path)) == (0, True)
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+
+
+def test_negative_usage_counts_as_zero(context_check, tmp_path):
+    path = write_jsonl(tmp_path / "negative.jsonl", [
+        {"type": "assistant", "message": {"usage": {"input_tokens": -50_000, "cache_read_input_tokens": 40_000}}},
+    ])
+    assert context_check.floor_tokens(str(path)) == 40_000
 
 
 def test_floor_search_reads_at_most_four_times_the_limit(context_check, tmp_path, monkeypatch):
