@@ -274,17 +274,33 @@ def test_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, f
     assert not (tmp_path / "gone").exists()
 
 
-def test_notes_as_a_file_in_the_way_is_one_line_with_what_was_done(tmp_path):
-    # The learnings file is a courtesy and is written last: a `notes` that is a file stops the
-    # run with the core install (hook and hook entry) whole, and says so.
+def test_notes_as_a_file_in_the_way_is_a_notice_not_an_error(tmp_path):
+    # The learnings file is a courtesy and is written last: a `notes` that is a file used to
+    # make every run exit 1 with no commit hint, the core install whole all along.
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "notes").write_text("in the way", encoding="utf-8")
-    result = run(repo)
-    assert result.returncode == 1
-    assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
-    assert "Done before the error" in result.stderr and "context_check.py written" in result.stderr
-    assert "settings.json written" in result.stderr
+    for _ in range(2):
+        result = run(repo)
+        assert result.returncode == 0, result.stderr
+        assert "note: notes/learnings.md not written" in result.stdout
+    first_hint = "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository."
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
     assert (repo / ".claude" / "settings.json").is_file()
     assert (repo / "notes").read_text(encoding="utf-8") == "in the way"
+    assert first_hint not in result.stdout   # the second run wrote nothing
+
+
+def test_notes_ignored_by_git_gets_no_copy(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    try:
+        subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        pytest.skip("git is not available")
+    (repo / ".gitignore").write_text("notes/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert not (repo / "notes" / "learnings.md").exists()
+    assert "note: notes/learnings.md not copied: git ignores it" in result.stdout
+    assert "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository." in result.stdout

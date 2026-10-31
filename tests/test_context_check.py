@@ -364,7 +364,7 @@ def test_oversize_first_record_is_skipped_and_the_search_goes_on(context_check, 
     # the search (no line all session) and was read whole into memory first.
     monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "4096")
     path = tmp_path / "pasted.jsonl"
-    big = json.dumps({"type": "user", "message": {"content": "x" * 50_000}}).encode()
+    big = json.dumps({"type": "user", "message": {"content": "x" * 10_000}}).encode()
     call = json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 40_000}}}).encode()
     path.write_bytes(big + b"\n" + call + b"\n")
     reads = []
@@ -379,6 +379,9 @@ def test_oversize_first_record_is_skipped_and_the_search_goes_on(context_check, 
 
         def __exit__(self, *a):
             self.f.close()
+
+        def tell(self):
+            return self.f.tell()
 
         def readline(self, size=-1):
             line = self.f.readline(size)
@@ -412,6 +415,7 @@ def test_a_failing_hand_off_check_keeps_the_savings_line(tmp_path):
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 160k, now 160k"}
     assert "hand-off check" in (tmp_path / "context_check.log").read_text(encoding="utf-8")
+    assert "the hand-off check failed" in result.stderr   # not cosmetic: not only in the log
 
 
 def test_invalid_tail_bytes_warns_once(tmp_path):
@@ -419,3 +423,37 @@ def test_invalid_tail_bytes_warns_once(tmp_path):
     env_result = run_hook(tmp_path, event(path), tail_bytes="abc")
     assert env_result.stderr.count("IDEAL_UMBRELLA_TAIL_BYTES") == 1, env_result.stderr
     assert json.loads(env_result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 40k"}
+
+
+def test_bad_usage_in_the_last_call_falls_back_to_the_one_before(tmp_path):
+    # The round-1 test put the bad records first; the reverse scan never reached them, and a
+    # bad value in the newest record still took the note and the line down.
+    path = write_jsonl(tmp_path / "odd-last.jsonl", [
+        {"type": "assistant", "message": {"usage": {"input_tokens": 160_000}}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 170_000, "output_tokens": "n/a"}}},
+        {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": "x"}},
+    ])
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["systemMessage"].startswith("Ideal-Umbrella: floor 160k, now 160k; over 150k")
+
+
+def test_floor_search_reads_at_most_four_times_the_limit(context_check, tmp_path, monkeypatch):
+    # Oversize records were skipped without counting: a huge first prompt was read to its end.
+    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "1000")
+    big = json.dumps({"type": "user", "message": {"content": "x" * 3000}}).encode()
+    call = json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 40_000}}}).encode()
+    near = tmp_path / "near.jsonl"
+    near.write_bytes(big + b"\n" + call + b"\n")          # the call starts within 4 * limit
+    assert context_check.floor_tokens(str(near)) == 40_000
+    far = tmp_path / "far.jsonl"
+    far.write_bytes(big + b"\n" + big + b"\n" + call + b"\n")   # it starts past 4 * limit
+    assert context_check.floor_tokens(str(far)) == 0
+
+
+def test_baseline_under_a_thousand_is_ignored_with_a_warning(tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 40_000, "output_tokens": 2_000})
+    result = run_hook(tmp_path, event(path), baseline="710")
+    assert "IDEAL_UMBRELLA_BASELINE=710" in result.stderr and "ignoring it" in result.stderr
+    assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 42k"}

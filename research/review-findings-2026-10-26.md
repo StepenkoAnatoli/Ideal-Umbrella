@@ -37,3 +37,30 @@ Checked by the breaker and found correct (no action): the Keyline lint passes on
 
 ### Round 1 fixes (2026-10-31)
 All 16 applied as planned. 1: `.gitattributes` `*.md text eol=lf`. Hook: 2/15 the savings line and the hand-off check each under their own handler (logged as "savings line:" / "hand-off check:"), the floor parse catches `(ValueError, TypeError, AttributeError)`; 4 `IDEAL_UMBRELLA_TAIL_BYTES` parsed once in `run()` (`tail_limit()`), passed to `last_measure()` and `floor_tokens()`; 5 no floor read when `n == 0`; 7 `handoff_due` -> `record_handoff`; 11 `last_measure()` returns `(tokens, compacted)`, the line says `now 20k after compaction`; 13/14 `floor_tokens()` reads with `readline(limit)`, an oversize record is skipped chunk by chunk and the search goes on; 16 saving from the shown thousands. `add_to_repo.py`: 3 learnings file written after `settings.json`; 6 commit hint built from `progress`; 8 dangling-link check covers `.claude`, `.claude/hooks`, `notes`. Tests: 12 `clean_env()` and an autouse fixture in `tests/conftest.py`; `run_hook` and the install test use `clean_env`. Docs: 9 README quick start says to add the files the script names (a comment, not a `<...>` placeholder that a shell would read as a redirect); 10 snippet qualifier, keyline/README 148 -> 153. New tests: saving rounding, compaction suffix, oversize first record (reads bounded by the limit), bad usage keeps the note, failing hand-off check keeps the line, invalid tail bytes warns once, commit hint for a learnings-only run, dangling folder links (3 params). Checks: pytest 274 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=71000 IDEAL_UMBRELLA_TAIL_BYTES=abc` and with `IDEAL_UMBRELLA_TAIL_BYTES=1000` set on the host), keyline 35/35, the three JSON files parse.
+
+## Round 2 — head 49ecc6d
+
+Checks at that head: pytest 274 passed 4 skipped, keyline 35/35, the three JSON files parse. CI: Ubuntu and Windows green (run 41230145951).
+
+### code-review skill, high (9 findings; CR1 confirmed by execution)
+- CR1 MEDIUM, CONFIRMED: `last_measure()` parsed usage outside any handler, so a non-integer usage on the newest main-chain record still lost the line and the note (on main too); the round-1 test put the bad records first. Fixed: per-record `_measure()` under `except (ValueError, TypeError, AttributeError)`, older records used.
+- CR2 LOW: a learnings write failure still exits 1 on every run with no commit hint. Fixed (with B1).
+- CR3 LOW: a hand-off check failure went only to the log. Fixed: also one stderr line.
+- CR4 LOW: skipped oversize bytes did not count, so the floor scan's time was unbounded. Fixed (with B3).
+- CR5 LOW: the resume point still said "nothing is fixed yet". Fixed: replaced in this round's commit.
+- CR6 LOW, perf: floor re-read on every prompt. Rejected: round 1 decided against a state-file cache; the read stops at the first call, now also within 4 * limit.
+- CR7 LOW: a baseline under 1000 shows as 0k. Fixed: warning, ignored.
+- CR8 LOW: commit hint sliced " written" off messages. Fixed: `progress` holds paths; the messages add " written".
+- CR9 LOW, style: `context_tokens()` is only a wrapper. Rejected: the stable entry point the tests and the docs use.
+
+### breaker agent (7 findings, each with a repro; the agent could not write its report file, so its findings are summarized here)
+- B1 LOW-MEDIUM = CR2. Fixed: the learnings write is under `except OSError` -> `note: notes/learnings.md not written (...)`, exit 0, left out of the hint; the in-the-way test now runs twice and expects exit 0 both times.
+- B2 LOW = CR1.
+- B3 LOW = CR4: 1 GiB of oversize records took 1.67 s. Fixed: the scan stops at `f.tell() >= 4 * limit`, docstring says so.
+- B4 LOW: `IDEAL_UMBRELLA_TAIL_BYTES` below the first turn's size hides the line. Docs only (README and hook docstring): lowering it is the user's choice, and the bound is what the setting is for.
+- B5 LOW, docs: the floor includes the first message. Fixed: one sentence in the README and the hook docstring.
+- B6 LOW: a gitignored `notes/` got the copy and the hint named it. Fixed: `git check-ignore` (git missing or not a repo: not ignored) -> no copy, a `note:`.
+- B7 VERY LOW: "longer than limit" vs a skip at exactly `limit` bytes. Fixed: docstring says "`limit` bytes or more".
+
+### Round 2 fixes
+Tests added: bad usage in the newest record, floor scan bound at 4 * limit (near and far), baseline under 1000, notes file in the way (exit 0 twice), gitignored notes; the failing-hand-off test also checks stderr; the oversize test's record is 10 KB (inside the new bound). Checks: pytest 278 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc` on the host), keyline 35/35, the three JSON files parse.

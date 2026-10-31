@@ -14,7 +14,8 @@ write and cache read: the system prompt, the tools and the first message), "now"
 the context after the last call ("now 20k after compaction" right after one, when it
 leaves out the system prompt and tools). With IDEAL_UMBRELLA_BASELINE set to the floor of
 an unoptimised session, the line ends in ", saved 31k vs baseline" (or ", 2k over
-baseline"). The line is left out until the transcript holds a first call, and on
+baseline"). The floor includes the first message, so the comparison holds only after a
+short first prompt. The line is left out until the transcript holds a first call, and on
 PostToolUse, where it would repeat on every tool call.
 Stdlib only; run with `python -I`.
 
@@ -27,6 +28,7 @@ Environment:
   IDEAL_UMBRELLA_TAIL_BYTES    how much of the transcript end to read (default 4 MB);
                                raise it if a single turn writes more than that; it also
                                bounds how far into the transcript the floor is looked for
+                               (set below the size of the first turn, the line is left out)
 
 Invalid integer settings fall back to the defaults with a warning; they never
 crash the hook before it can read the prompt event.
@@ -162,43 +164,51 @@ def last_measure(path, limit=None):
         lines = f.read().splitlines()
     for raw in reversed(lines):
         try:
-            event = json.loads(raw)
-        except ValueError:
-            continue
-        if not isinstance(event, dict) or event.get("isSidechain"):
-            continue
-        if event.get("subtype") == "compact_boundary":
-            # compactMetadata.postTokens is the size of the compacted conversation. It leaves
-            # out the system prompt and tool definitions, so it is a floor until the next
-            # assistant event reports real usage. Older transcripts carry only preTokens: then
-            # report 0, which also clears the band state so the reminder can fire again later.
-            return (event.get("compactMetadata") or {}).get("postTokens") or 0, True
-        usage = _usage(event)
-        if usage is None:
-            continue
-        n = _prompt_tokens(usage)
-        if n:
-            # Thinking tokens are part of the context window, so count all output here.
-            return n + max(0, int(usage.get("output_tokens") or 0)), False
+            measure = _measure(json.loads(raw))
+        except (ValueError, TypeError, AttributeError):
+            continue   # a torn line, or a record whose usage is not numbers
+        if measure is not None:
+            return measure
     return 0, False
+
+
+def _measure(event):
+    """(tokens, compacted) for one transcript record, or None when it carries no measure."""
+    if not isinstance(event, dict) or event.get("isSidechain"):
+        return None
+    if event.get("subtype") == "compact_boundary":
+        # compactMetadata.postTokens is the size of the compacted conversation. It leaves
+        # out the system prompt and tool definitions, so it is a floor until the next
+        # assistant event reports real usage. Older transcripts carry only preTokens: then
+        # report 0, which also clears the band state so the reminder can fire again later.
+        return int((event.get("compactMetadata") or {}).get("postTokens") or 0), True
+    usage = _usage(event)
+    if usage is None:
+        return None
+    n = _prompt_tokens(usage)
+    if n:
+        # Thinking tokens are part of the context window, so count all output here.
+        return n + max(0, int(usage.get("output_tokens") or 0)), False
+    return None
 
 
 def floor_tokens(path, limit=None):
     """Context size at the first main-chain call: the session's floor (the system prompt,
     the tools and the first message), read from the start of the transcript. 0 when no such
-    call is found within `limit` bytes (TAIL_BYTES) of parsed records. At most `limit` bytes
-    are held at once: a record longer than that (a file pasted into the first prompt) is
-    skipped unparsed, chunk by chunk, and the search goes on after it."""
+    call is found within `limit` bytes (TAIL_BYTES) of parsed records, or within 4 * `limit`
+    bytes read in all. At most `limit` bytes are held at once: a record of `limit` bytes or
+    more (a file pasted into the first prompt) is skipped unparsed, chunk by chunk, and the
+    search goes on after it."""
     if limit is None:
         limit = tail_limit()
     seen = 0
     with open(path, "rb") as f:
-        while seen < limit:
+        while seen < limit and f.tell() < 4 * limit:
             raw = f.readline(limit)
             if not raw:
                 return 0
             if len(raw) >= limit and not raw.endswith(b"\n"):
-                while raw and not raw.endswith(b"\n"):
+                while raw and not raw.endswith(b"\n") and f.tell() < 4 * limit:
                     raw = f.readline(limit)
                 continue
             seen += len(raw)
@@ -262,6 +272,9 @@ def run():
     threshold = parse_int("IDEAL_UMBRELLA_HANDOFF_AT", DEFAULT_THRESHOLD)
     step = parse_int("IDEAL_UMBRELLA_HANDOFF_STEP", DEFAULT_STEP)
     baseline = parse_int("IDEAL_UMBRELLA_BASELINE", 0)
+    if 0 < baseline < 1000:
+        warn(f"IDEAL_UMBRELLA_BASELINE={baseline} is under 1000 tokens (shown as 0k); ignoring it")
+        baseline = 0
     # Claude Code sends UTF-8; the locale codec (cp1252 on many Windows hosts) would choke on
     # a non-ASCII transcript path, so read the bytes and decode them as UTF-8 ourselves.
     stdin = getattr(sys.stdin, "buffer", None)
@@ -286,7 +299,10 @@ def run():
     try:
         due = record_handoff(n, threshold, step, session)
     except Exception:
+        # Not cosmetic: say so on stderr, as main() does for any other failure.
         log("hand-off check: " + traceback.format_exc().strip())
+        print("Ideal-Umbrella hook: the hand-off check failed; details in " + log_path(),
+              file=sys.stderr)
         due = False
     # A hook prints one JSON object, so the savings line and the hand-off note share it.
     if not due:

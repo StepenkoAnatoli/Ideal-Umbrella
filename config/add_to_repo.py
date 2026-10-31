@@ -22,6 +22,7 @@ names in that repository.
 import errno
 import json
 import os
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -180,6 +181,17 @@ def _write_json(path, data):
     _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
+def _git_ignores(repo, relative):
+    """True when git ignores `relative` in `repo`; False when it does not, or git is missing
+    or the folder is not a repository."""
+    try:
+        result = subprocess.run(["git", "-C", repo, "check-ignore", "-q", relative],
+                                capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
@@ -201,14 +213,14 @@ def main(argv=None):
         print(f"Error: {e}", file=sys.stderr)
         if progress:
             print("Done before the error:", file=sys.stderr)
-            for line in progress:
-                print(f"  - {line}", file=sys.stderr)
+            for name in progress:
+                print(f"  - {name} written", file=sys.stderr)
         return 1
     print("\n".join(changes) or "already up to date")
     for notice in notices:
         print(f"note: {notice}")
     # Name only the files written this run: an untouched one has nothing to commit.
-    files = [line[:-len(" written")] for line in progress]
+    files = progress
     if files:
         names = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
         print(f"Commit {names} in that repository.")
@@ -218,10 +230,12 @@ def main(argv=None):
 def _add(repo, force, progress=None):
     """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
     repository has no notes/learnings.md, the learnings template; return (changes, notices).
-    Each file written is appended to `progress` (when given) as it is done. settings.json is
+    The repository-relative path of each file written is appended to `progress` (when given)
+    as it is done. settings.json is
     written after the hook: a hook entry that points at a hook file that was never copied would
-    exit 2 on every prompt. The learnings file is a courtesy and comes last, so a failure there
-    (a `notes` file in the way) leaves the core install whole."""
+    exit 2 on every prompt. The learnings file is a courtesy and comes last: a failure there (a
+    `notes` file in the way) is a notice, not an error, and a `notes/` that git ignores gets
+    no copy (cloud sessions would never see it)."""
     if progress is None:
         progress = []
     claude_dir = os.path.join(repo, ".claude")
@@ -255,13 +269,22 @@ def _add(repo, force, progress=None):
     hook_changed = source != old
     if hook_changed:
         _write_bytes(target, source)
-        progress.append(".claude/hooks/context_check.py written")
+        progress.append(".claude/hooks/context_check.py")
     if changes:
         _write_json(path, settings)
-        progress.append(".claude/settings.json written")
+        progress.append(".claude/settings.json")
+    if learnings_missing and _git_ignores(repo, "notes/learnings.md"):
+        learnings_missing = False
+        notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
+                       "would not see it")
     if learnings_missing:
-        _write_bytes(learnings, learnings_template)
-        progress.append("notes/learnings.md written")
+        try:
+            _write_bytes(learnings, learnings_template)
+            progress.append("notes/learnings.md")
+        except OSError as e:
+            learnings_missing = False
+            notices.append(f"notes/learnings.md not written ({e}); the hook and settings are "
+                           "installed")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
     if learnings_missing:
