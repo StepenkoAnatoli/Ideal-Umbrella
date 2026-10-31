@@ -11,7 +11,8 @@ Claude Code shows to the user and never sends to the model (0 tokens):
   Ideal-Umbrella: floor 40k, now 42k
 The floor is the context of the session's first main-chain call (input, cache
 write and cache read: the system prompt, the tools and the first message), "now"
-the context after the last call. With IDEAL_UMBRELLA_BASELINE set to the floor of
+the context after the last call ("now 20k after compaction" right after one, when it
+leaves out the system prompt and tools). With IDEAL_UMBRELLA_BASELINE set to the floor of
 an unoptimised session, the line ends in ", saved 31k vs baseline" (or ", 2k over
 baseline"). The line is left out until the transcript holds a first call, and on
 PostToolUse, where it would repeat on every tool call.
@@ -140,11 +141,24 @@ def _prompt_tokens(usage):
     ))
 
 
-def context_tokens(path):
+def tail_limit():
+    return parse_int("IDEAL_UMBRELLA_TAIL_BYTES", TAIL_BYTES)
+
+
+def context_tokens(path, limit=None):
     """Context size at the last main-chain call, or after the last compaction."""
+    return last_measure(path, limit)[0]
+
+
+def last_measure(path, limit=None):
+    """(tokens, compacted): the context size at the last main-chain call, or after the last
+    compaction, and whether it came from a compact boundary (then it leaves out the system
+    prompt and the tools)."""
+    if limit is None:
+        limit = tail_limit()
     size = os.path.getsize(path)
     with open(path, "rb") as f:
-        f.seek(max(0, size - parse_int("IDEAL_UMBRELLA_TAIL_BYTES", TAIL_BYTES)))
+        f.seek(max(0, size - limit))
         lines = f.read().splitlines()
     for raw in reversed(lines):
         try:
@@ -158,52 +172,66 @@ def context_tokens(path):
             # out the system prompt and tool definitions, so it is a floor until the next
             # assistant event reports real usage. Older transcripts carry only preTokens: then
             # report 0, which also clears the band state so the reminder can fire again later.
-            return (event.get("compactMetadata") or {}).get("postTokens") or 0
+            return (event.get("compactMetadata") or {}).get("postTokens") or 0, True
         usage = _usage(event)
         if usage is None:
             continue
         n = _prompt_tokens(usage)
         if n:
             # Thinking tokens are part of the context window, so count all output here.
-            return n + max(0, int(usage.get("output_tokens") or 0))
-    return 0
+            return n + max(0, int(usage.get("output_tokens") or 0)), False
+    return 0, False
 
 
-def floor_tokens(path):
+def floor_tokens(path, limit=None):
     """Context size at the first main-chain call: the session's floor (the system prompt,
     the tools and the first message), read from the start of the transcript. 0 when no such
-    call is found within TAIL_BYTES of the start."""
-    limit = parse_int("IDEAL_UMBRELLA_TAIL_BYTES", TAIL_BYTES)
+    call is found within `limit` bytes (TAIL_BYTES) of parsed records. At most `limit` bytes
+    are held at once: a record longer than that (a file pasted into the first prompt) is
+    skipped unparsed, chunk by chunk, and the search goes on after it."""
+    if limit is None:
+        limit = tail_limit()
     seen = 0
     with open(path, "rb") as f:
-        for raw in f:
+        while seen < limit:
+            raw = f.readline(limit)
+            if not raw:
+                return 0
+            if len(raw) >= limit and not raw.endswith(b"\n"):
+                while raw and not raw.endswith(b"\n"):
+                    raw = f.readline(limit)
+                continue
             seen += len(raw)
             try:
                 usage = _usage(json.loads(raw))
-            except ValueError:
-                usage = None
-            n = _prompt_tokens(usage) if usage else 0
+                n = _prompt_tokens(usage) if usage else 0
+            except (ValueError, TypeError, AttributeError):
+                n = 0
             if n:
                 return n
-            if seen >= limit:
-                return 0
     return 0
 
 
-def status_line(floor, now, baseline):
-    """The savings line, or "" while the transcript holds no first call or no context."""
+def status_line(floor, now, baseline, compacted=False):
+    """The savings line, or "" while the transcript holds no first call or no context. The
+    numbers are shown in whole thousands and the saving is taken from the shown ones, so the
+    line adds up. Right after a compaction "now" leaves out the system prompt and the tools,
+    so it can be below the floor: the line says where it comes from."""
     if not (floor and now):
         return ""
-    line = f"Ideal-Umbrella: floor {floor // 1000}k, now {now // 1000}k"
+    floor_k, base_k = floor // 1000, baseline // 1000
+    line = f"Ideal-Umbrella: floor {floor_k}k, now {now // 1000}k"
+    if compacted:
+        line += " after compaction"
     if baseline:
-        if baseline >= floor:
-            line += f", saved {(baseline - floor) // 1000}k vs baseline"
+        if base_k >= floor_k:
+            line += f", saved {base_k - floor_k}k vs baseline"
         else:
-            line += f", {(floor - baseline) // 1000}k over baseline"
+            line += f", {floor_k - base_k}k over baseline"
     return line
 
 
-def handoff_due(n, threshold, step, session):
+def record_handoff(n, threshold, step, session):
     """True when the hand-off note is due: the context is over the threshold and in a band
     this session has not been told about. Keeps the band in the per-session state file;
     below the threshold the state is dropped, so the note can fire again after a compaction."""
@@ -244,11 +272,24 @@ def run():
     session = "".join(c for c in str(data.get("session_id", "")) if c.isalnum() or c == "-")
     if not (path and session and os.path.isfile(path)):
         return
-    n = context_tokens(path)
+    limit = tail_limit()
+    n, compacted = last_measure(path, limit)
     event = data.get("hook_event_name") or "UserPromptSubmit"
-    status = status_line(floor_tokens(path), n, baseline) if event == "UserPromptSubmit" else ""
+    # The savings line and the hand-off check each run under their own handler: a failure in
+    # one is logged and leaves the other standing (the line is cosmetic; the note is not).
+    status = ""
+    if n and event == "UserPromptSubmit":
+        try:
+            status = status_line(floor_tokens(path, limit), n, baseline, compacted)
+        except Exception:
+            log("savings line: " + traceback.format_exc().strip())
+    try:
+        due = record_handoff(n, threshold, step, session)
+    except Exception:
+        log("hand-off check: " + traceback.format_exc().strip())
+        due = False
     # A hook prints one JSON object, so the savings line and the hand-off note share it.
-    if not handoff_due(n, threshold, step, session):
+    if not due:
         if status:
             print(json.dumps({"systemMessage": status}))
         return

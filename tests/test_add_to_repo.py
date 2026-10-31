@@ -217,7 +217,7 @@ def test_learnings_template_is_copied_once_and_then_left_alone(tmp_path):
     learnings = repo / "notes" / "learnings.md"
     assert learnings.read_bytes() == LEARNINGS
     assert "notes/learnings.md written" in first.stdout
-    assert ("Commit .claude/settings.json, .claude/hooks/context_check.py and notes/learnings.md "
+    assert ("Commit .claude/hooks/context_check.py, .claude/settings.json and notes/learnings.md "
             "in that repository.") in first.stdout
 
     # The file is the repository's data from now on: a second run, forced or not, leaves it.
@@ -241,12 +241,42 @@ def test_existing_learnings_file_is_not_replaced_and_not_named(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (repo / "notes" / "learnings.md").read_bytes() == b""
     assert "notes/learnings.md" not in result.stdout
-    assert "Commit .claude/settings.json and .claude/hooks/context_check.py in that repository." in result.stdout
+    assert "Commit .claude/hooks/context_check.py and .claude/settings.json in that repository." in result.stdout
+
+
+def test_commit_hint_names_only_the_files_written_this_run(tmp_path):
+    # A repository that already had the hook and settings and now gets only the learnings file
+    # was told to commit all three.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    assert run(repo).returncode == 0
+    (repo / "notes" / "learnings.md").unlink()
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "Commit notes/learnings.md in that repository." in result.stdout
+
+
+@pytest.mark.parametrize("folder", [".claude", ".claude/hooks", "notes"])
+def test_dangling_folder_link_is_reported_before_anything_is_written(tmp_path, folder):
+    # A dangling `notes -> /mnt/sync/notes` was written through: the missing folder was
+    # created where the link points and the template written outside the repository.
+    repo = tmp_path / "repo"
+    link = repo / folder
+    link.parent.mkdir(parents=True, exist_ok=True)
+    gone = tmp_path / "gone" / "target"
+    try:
+        link.symlink_to(gone, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1
+    assert "symlink to a missing target" in result.stderr and "nothing written" in result.stderr, result.stderr
+    assert not (tmp_path / "gone").exists()
 
 
 def test_notes_as_a_file_in_the_way_is_one_line_with_what_was_done(tmp_path):
-    # The hook is written before the template, settings.json after it: a `notes` that is a file
-    # stops the run with the hook in place and no hook entry pointing nowhere.
+    # The learnings file is a courtesy and is written last: a `notes` that is a file stops the
+    # run with the core install (hook and hook entry) whole, and says so.
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "notes").write_text("in the way", encoding="utf-8")
@@ -254,6 +284,7 @@ def test_notes_as_a_file_in_the_way_is_one_line_with_what_was_done(tmp_path):
     assert result.returncode == 1
     assert result.stderr.startswith("Error:") and "Traceback" not in result.stderr
     assert "Done before the error" in result.stderr and "context_check.py written" in result.stderr
+    assert "settings.json written" in result.stderr
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
-    assert not (repo / ".claude" / "settings.json").exists()
+    assert (repo / ".claude" / "settings.json").is_file()
     assert (repo / "notes").read_text(encoding="utf-8") == "in the way"

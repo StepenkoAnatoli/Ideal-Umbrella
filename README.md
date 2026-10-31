@@ -23,7 +23,7 @@ claude -p "Call get_usage and list every context category with its tokens."
 
 # 3. Optional: give a repository's cloud sessions the hook and the two keys.
 python -I config/add_to_repo.py /path/to/your/repo
-cd /path/to/your/repo && git add .claude notes/learnings.md && git commit -m "chore: add Ideal-Umbrella cloud config"
+# Then, in that repository, git add the files its last line names ("Commit ... in that repository.") and commit.
 ```
 
 Then turn off the three app switches by hand: **Settings -> Claude Code -> Browser**, **Claude.ai connectors**, and **Prompt suggestions**. These are account/app settings, not JSON keys; the installer cannot change them. The Browser switch is the largest measured win in the table below.
@@ -117,7 +117,7 @@ The hook prints one line to you on every prompt, as a `systemMessage` that Claud
 Ideal-Umbrella: floor 40k, now 42k
 ```
 
-The floor is the context of the session's first main-chain call (input, cache write and cache read: the system prompt, the tools and the first message); `now` is the context after the last call. Set `IDEAL_UMBRELLA_BASELINE` to the floor of a session without Ideal-Umbrella (the numbers under [Measured numbers](#measured-numbers) put it near 71k on this setup) and the line ends in `, saved 31k vs baseline`, or `, 2k over baseline` when the floor is above it. Unset, no saving is shown. The line is left out until the transcript holds a first call (the hook runs before the first model call of a session), and on `PostToolUse`, where it would repeat on every tool call. Past the hand-off threshold the same line carries the notice: `Ideal-Umbrella: floor 40k, now 152k; over 150k, a fresh session is due at the next step boundary.`
+The floor is the context of the session's first main-chain call (input, cache write and cache read: the system prompt, the tools and the first message); `now` is the context after the last call. Set `IDEAL_UMBRELLA_BASELINE` to the floor of a session without Ideal-Umbrella (the numbers under [Measured numbers](#measured-numbers) put it near 71k on this setup) and the line ends in `, saved 31k vs baseline`, or `, 2k over baseline` when the floor is above it. Unset, no saving is shown. The line is left out until the transcript holds a first call (the hook runs before the first model call of a session), and on `PostToolUse`, where it would repeat on every tool call. Right after a compaction `now` is the compacted conversation without the system prompt and the tools, so it can be below the floor until the next call; the line then reads `now 20k after compaction`. The saving is taken from the shown thousands, so the line adds up. Past the hand-off threshold the same line carries the notice: `Ideal-Umbrella: floor 40k, now 152k; over 150k, a fresh session is due at the next step boundary.`
 
 ## Learnings file
 

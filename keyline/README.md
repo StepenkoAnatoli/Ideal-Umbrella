@@ -14,7 +14,7 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
 | `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
 | `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
-| `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (148 tokens o200k, header included; the last sentence says when to save a learning in `notes/learnings.md`). |
+| `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (153 tokens o200k, header included; the last sentence says when to save a learning in `notes/learnings.md`). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
 | `cache/` | Built on first use: tiktoken encodings and the single-token word list. |
 

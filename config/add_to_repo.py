@@ -207,11 +207,11 @@ def main(argv=None):
     print("\n".join(changes) or "already up to date")
     for notice in notices:
         print(f"note: {notice}")
-    if changes:
-        files = ".claude/settings.json and .claude/hooks/context_check.py"
-        if any(change.startswith("notes/learnings.md") for change in changes):
-            files = ".claude/settings.json, .claude/hooks/context_check.py and notes/learnings.md"
-        print(f"Commit {files} in that repository.")
+    # Name only the files written this run: an untouched one has nothing to commit.
+    files = [line[:-len(" written")] for line in progress]
+    if files:
+        names = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
+        print(f"Commit {names} in that repository.")
     return 0
 
 
@@ -219,15 +219,18 @@ def _add(repo, force, progress=None):
     """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
     repository has no notes/learnings.md, the learnings template; return (changes, notices).
     Each file written is appended to `progress` (when given) as it is done. settings.json is
-    written last: a hook entry that points at a hook file that was never copied would exit 2
-    on every prompt."""
+    written after the hook: a hook entry that points at a hook file that was never copied would
+    exit 2 on every prompt. The learnings file is a courtesy and comes last, so a failure there
+    (a `notes` file in the way) leaves the core install whole."""
     if progress is None:
         progress = []
     claude_dir = os.path.join(repo, ".claude")
     path = os.path.join(claude_dir, "settings.json")
     target = os.path.join(claude_dir, "hooks", "context_check.py")
     learnings = os.path.join(repo, "notes", "learnings.md")
-    for p in (path, target, learnings):
+    # A dangling link, on a file or on a folder above it, would be written through: the
+    # missing target would be created outside the repository.
+    for p in (claude_dir, os.path.dirname(target), os.path.dirname(learnings), path, target, learnings):
         if _is_link(p) and not os.path.exists(p):
             raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
     settings = _read_json(path) if os.path.exists(path) else {}
@@ -253,12 +256,12 @@ def _add(repo, force, progress=None):
     if hook_changed:
         _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py written")
-    if learnings_missing:
-        _write_bytes(learnings, learnings_template)
-        progress.append("notes/learnings.md written")
     if changes:
         _write_json(path, settings)
         progress.append(".claude/settings.json written")
+    if learnings_missing:
+        _write_bytes(learnings, learnings_template)
+        progress.append("notes/learnings.md written")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
     if learnings_missing:

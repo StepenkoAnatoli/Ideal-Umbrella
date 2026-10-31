@@ -3,20 +3,22 @@ import os
 import subprocess
 import sys
 
-from conftest import ROOT, write_jsonl
+from conftest import ROOT, clean_env, write_jsonl
 
 HOOK = ROOT / "hooks" / "context_check.py"
 
 
-def run_hook(tmp_path, event, threshold="150000", step="25000", stdin=None, baseline=None):
-    env = os.environ.copy()
+def run_hook(tmp_path, event, threshold="150000", step="25000", stdin=None, baseline=None,
+             tail_bytes=None):
+    env = clean_env()
     env["IDEAL_UMBRELLA_HANDOFF_AT"] = threshold
     env["IDEAL_UMBRELLA_HANDOFF_STEP"] = step
     env["IDEAL_UMBRELLA_STATE_DIR"] = str(tmp_path / "state")
     env["IDEAL_UMBRELLA_LOG"] = str(tmp_path / "context_check.log")
-    env.pop("IDEAL_UMBRELLA_BASELINE", None)
     if baseline is not None:
         env["IDEAL_UMBRELLA_BASELINE"] = baseline
+    if tail_bytes is not None:
+        env["IDEAL_UMBRELLA_TAIL_BYTES"] = tail_bytes
     payload = stdin if stdin is not None else json.dumps(event)
     return subprocess.run(
         [sys.executable, "-I", str(HOOK)],
@@ -337,3 +339,83 @@ def test_hook_never_blocks_on_an_unreadable_transcript(tmp_path):
     folder.mkdir()
     result = run_hook(tmp_path, event(folder))
     assert result.returncode == 0 and result.stdout == ""
+
+
+def test_saving_is_taken_from_the_shown_thousands(context_check):
+    # 40,999 shows as 40k; 71,000 - 40,999 floored is 30k, and the line read "40k ... saved 30k".
+    assert context_check.status_line(40_999, 42_000, 71_000) == (
+        "Ideal-Umbrella: floor 40k, now 42k, saved 31k vs baseline")
+    assert context_check.status_line(40_999, 42_000, 38_500) == (
+        "Ideal-Umbrella: floor 40k, now 42k, 2k over baseline")
+
+
+def test_now_after_a_compaction_says_so(tmp_path):
+    # postTokens leaves out the system prompt and the tools, so "now" can be below the floor.
+    path = transcript(tmp_path, {"input_tokens": 40_000}, extra=[
+        {"type": "system", "subtype": "compact_boundary", "compactMetadata": {"postTokens": 20_000}}])
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "systemMessage": "Ideal-Umbrella: floor 40k, now 20k after compaction"}
+
+
+def test_oversize_first_record_is_skipped_and_the_search_goes_on(context_check, tmp_path, monkeypatch):
+    # A file pasted into the first prompt: the record is longer than the limit. It used to end
+    # the search (no line all session) and was read whole into memory first.
+    monkeypatch.setenv("IDEAL_UMBRELLA_TAIL_BYTES", "4096")
+    path = tmp_path / "pasted.jsonl"
+    big = json.dumps({"type": "user", "message": {"content": "x" * 50_000}}).encode()
+    call = json.dumps({"type": "assistant", "message": {"usage": {"input_tokens": 40_000}}}).encode()
+    path.write_bytes(big + b"\n" + call + b"\n")
+    reads = []
+    real_open = open
+
+    class Spy:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            self.f.close()
+
+        def readline(self, size=-1):
+            line = self.f.readline(size)
+            reads.append(len(line))
+            return line
+
+    monkeypatch.setattr(context_check, "open", lambda *a, **k: Spy(real_open(*a, **k)), raising=False)
+    assert context_check.floor_tokens(str(path)) == 40_000
+    assert max(reads) <= 4096
+
+
+def test_bad_usage_in_the_first_call_does_not_take_the_note_down(tmp_path):
+    # A non-integer usage value raised out of run(): no JSON at all, the hand-off note lost.
+    path = write_jsonl(tmp_path / "odd.jsonl", [
+        {"type": "assistant", "message": {"usage": ["not", "a", "dict"]}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": "n/a"}}},
+        {"type": "assistant", "message": {"usage": {"input_tokens": 160_000}}},
+    ])
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["systemMessage"].startswith("Ideal-Umbrella: floor 160k, now 160k; over 150k")
+    assert "over 150k" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_a_failing_hand_off_check_keeps_the_savings_line(tmp_path):
+    # The state folder cannot be created (a file in its place): the line used to be lost too.
+    path = transcript(tmp_path, {"input_tokens": 160_000})
+    (tmp_path / "state").write_text("in the way", encoding="utf-8")
+    result = run_hook(tmp_path, event(path))
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 160k, now 160k"}
+    assert "hand-off check" in (tmp_path / "context_check.log").read_text(encoding="utf-8")
+
+
+def test_invalid_tail_bytes_warns_once(tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 40_000})
+    env_result = run_hook(tmp_path, event(path), tail_bytes="abc")
+    assert env_result.stderr.count("IDEAL_UMBRELLA_TAIL_BYTES") == 1, env_result.stderr
+    assert json.loads(env_result.stdout) == {"systemMessage": "Ideal-Umbrella: floor 40k, now 40k"}
