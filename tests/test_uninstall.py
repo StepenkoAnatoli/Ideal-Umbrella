@@ -838,7 +838,10 @@ def test_a_crlf_separator_goes_when_the_lines_above_it_were_rewritten_with_lf(in
     assert md.read_bytes() == b"note\n"
 
 
-@pytest.mark.parametrize("own", [b"mine\rmore\r", b"a\nb\r"], ids=["cr-only", "lf-cr"])
+# Review 37, T1: the last three pin each term of the check that the CR is the text's own: a blank
+# line then a CR (only "\r\n\n", not "\n\n", is excluded), two CRs, and an LF then a CR.
+@pytest.mark.parametrize("own", [b"mine\rmore\r", b"a\nb\r", b"a\n\n\r", b"a\r\r", b"a\n\r"],
+                         ids=["cr-only", "lf-cr", "blank-cr", "cr-cr", "lf-only-cr"])
 def test_a_crlf_line_added_above_a_text_ending_in_a_bare_cr_keeps_that_cr(install_module, uninstall_module,
                                                                           tmp_path, own):
     # Review 36, L1: a text ending in a bare CR gets two LF before the section. A line added at
@@ -854,6 +857,28 @@ def test_a_crlf_line_added_above_a_text_ending_in_a_bare_cr_keeps_that_cr(instal
     changes, notices = uninstall_module.uninstall(home)
     assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
     assert md.read_bytes() == b"note\r\n" + own
+
+
+def test_a_crlf_conversion_then_a_deleted_and_an_lf_blank_line_is_read_as_a_bare_cr_text(
+        install_module, uninstall_module, tmp_path):
+    # Review 37, L1: these bytes have two readings, and no rule gets both right. "x\ny" installed
+    # (two LF recorded), the file converted to CRLF, the blank line above the section deleted and
+    # an LF blank line added gives "x\r\ny\r\n\n" above the section. That is also the text "y\r"
+    # with a line "x" added at the top with CRLF, and uninstall reads it that way: it keeps the
+    # CR. This test pins that choice so a later change to it is deliberate.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"x\ny")
+    install_module.install(home)
+    data = md.read_bytes()
+    assert data.startswith(b"x\ny\n\n<!--"), data[:40]
+    data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    assert data.startswith(b"x\r\ny\r\n\r\n<!--"), data[:40]
+    md.write_bytes(b"x\r\ny\r\n\n" + data[len(b"x\r\ny\r\n\r\n"):])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"x\r\ny\r"
 
 
 def test_a_crlf_blank_line_added_after_a_bare_cr_is_not_split(install_module, uninstall_module, tmp_path):

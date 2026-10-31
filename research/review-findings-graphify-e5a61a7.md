@@ -66,6 +66,11 @@ the brute force). The exclusion is `\r\n\n` instead, which is right in 127 more 
 in blank lines and a bare CR, and wrong in none. The CRLF in `\r\n\n` is a CRLF blank line the user
 added, and reading its CR as the text's would leave half of it (mutant j5).
 
+(Review 37 scopes these counts: 376/10, 127 and "wrong in none" hold at 6 pieces and 2 edits. At 4
+pieces and 3 edits the fix leaves a bare CR in 663 histories e5a61a7 got right, and the `\n\n`
+exclusion would beat `\r\n\n` (330 to 109). Every such file also reads as a text ending in a bare CR
+with CRLF lines added, so no rule gets both readings right; see `-50990a4.md`.)
+
 **Test (failing first):** `test_a_crlf_line_added_above_a_text_ending_in_a_bare_cr_keeps_that_cr`
 (`mine\rmore\r` and `a\nb\r`), and `test_a_crlf_blank_line_added_after_a_bare_cr_is_not_split` (kills j5).
 Mutants j1 (old rule), j3, j4, j6, j7 and j8 (each term changed) are killed. j9 (`\n\n` for `\r\n\n`) is
