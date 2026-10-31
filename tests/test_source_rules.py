@@ -237,6 +237,8 @@ _UTF8 = 'encoding="utf-8", errors="backslashreplace"'
     (f"STREAMS = (sys.stdout, sys.stderr)\nfor s in STREAMS:\n    s.reconfigure({_UTF8})", False),   # not a literal
     (f"for s in streams():\n    s.reconfigure({_UTF8})", False),   # a call: not looked into
     (f"for stream in (sys.stdout, sys.stderr):\n    proc.stream.reconfigure({_UTF8})", False),   # not the bare name
+    (f"for stream in (sys.stdout, sys.stderr):\n    stream.buffer.reconfigure({_UTF8})", False),   # an attribute of it
+    (f"for stream in (sys.stdout, sys.stderr):\n    proc.stdout.reconfigure({_UTF8})", False),   # another stdout
     (f"for s, t in (sys.stdout, sys.stderr):\n    s.reconfigure({_UTF8})", False),   # target not a name
 ])
 def test_the_utf8_stdout_rule_looks_at_the_stream(source, accepted):
