@@ -81,5 +81,12 @@ Checks at that head: pytest 278 passed 4 skipped, keyline 35/35, the three JSON 
 - R9 LOW, test: the notes-in-the-way test never asserts the first run's commit hint. Fix: assert it on run 1.
 - R10 LOW, resume point counts: round 2 had 3 overlaps (B1=CR2, B2=CR1, B3=CR4), 13 unique items: 10 fixed, 2 rejected, 1 docs only. Fix: corrected in the resume point.
 
-### breaker agent
-Running at the time of this log (fresh-context general-purpose agent, breaker brief, head 8ce006d). Its findings are to be added here; if this session ended first, rerun it on the current head.
+### breaker agent (5 findings, 3 low and 2 very low; no high or medium; 2 repeat code-review)
+F4 (first run's commit hint never asserted) is R9; F5 (bad `postTokens` falls back to pre-compaction usage) is R2. New, all accepted, planned fixes:
+- R11 LOW, CONFIRMED by mutation: the `f.tell()` bound inside the skip loop has no test (removing it keeps 278 passing; a 1 GiB record goes 0.03 s -> 7.68 s). Disappears with R8 if the single position bound is checked per chunk; test: the `Spy` on one record of 10 * limit bytes (limit 1000), `assert sum(reads) < 5 * 1000`.
+- R12 LOW, CONFIRMED: a dangling `notes` or `notes/learnings.md` link is still a hard error (exit 1, nothing written), against the courtesy rule, even when git ignores `notes/`. Fix: only `.claude`, `.claude/hooks`, settings.json and the hook stay in the raising loop; for the two learnings paths a dangling link means no copy and a `note:` "notes/learnings.md not copied: <p> is a symlink to a missing target"; the `notes` and `notes/learnings.md` params of the two dangling-link tests expect exit 0, the note, the `.claude` files, and still nothing created under `gone`.
+- R13 LOW, Windows only (reasoned and simulated on Linux, not run on Windows): `_git_ignores` uses `capture_output=True, timeout=10`; on timeout CPython's Windows branch calls `communicate()` without a timeout, so a git child holding the pipes outlives the bound. Fix: `stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL` (only the exit status is used).
+Checked and found correct by the breaker: floor_tokens boundaries (exact-limit records with and without newline, EOF in the skip loop, limit=1, outer bound covered), the last-record fallback, rounding, compaction suffix, baseline under 1000, separate handlers, `_git_ignores` non-repo and git-missing paths, notices vs `progress` vs "Done before the error", conftest scrubbing, `.gitattributes`, the four token counts.
+
+### Round 3 total
+13 unique items (R1-R13). Fix order: hook R1, R2, R3, R8+R4+R11 (one position bound, docs, skip-loop test); `add_to_repo.py` R12, R5, R6, R13, R7; tests R9; resume point R10. Then the checks, push, round 4.
