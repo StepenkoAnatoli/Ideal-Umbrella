@@ -859,6 +859,28 @@ def test_a_crlf_line_added_above_a_text_ending_in_a_bare_cr_keeps_that_cr(instal
     assert md.read_bytes() == b"note\r\n" + own
 
 
+def test_a_crlf_line_added_above_and_the_blank_line_deleted_reads_the_crlf_end_as_typed(
+        install_module, uninstall_module, tmp_path):
+    # Review 40, L1: these bytes have two readings. "a\n\r" installed (two LF recorded), a line
+    # added at the top with CRLF and the blank line above the section deleted gives
+    # "note\r\na\n\r\n" above it. That is also the text "a" with the same line added, the blank
+    # line deleted and a CRLF blank line typed in its place, and uninstall reads it that way (the
+    # rule for a CRLF typed into an LF file): "\n\r\n" goes. Keeping it instead would leave the
+    # installer's LF in far more files. This test pins that choice so a later change is deliberate.
+    home = tmp_path / "home"
+    seed(home, {})
+    md = home / ".claude" / "CLAUDE.md"
+    md.write_bytes(b"a\n\r")
+    install_module.install(home)
+    data = md.read_bytes()
+    at = data.index(b"<!--")
+    assert data[:at] == b"a\n\r\n\n"
+    md.write_bytes(b"note\r\n" + data[:at - 1] + data[at:])
+    changes, notices = uninstall_module.uninstall(home)
+    assert "CLAUDE.md: Ideal-Umbrella section removed" in changes, (changes, notices)
+    assert md.read_bytes() == b"note\r\na"
+
+
 def test_a_crlf_conversion_then_a_deleted_and_an_lf_blank_line_is_read_as_a_bare_cr_text(
         install_module, uninstall_module, tmp_path):
     # Review 37, L1: these bytes have two readings, and no rule gets both right. "x\ny" installed
