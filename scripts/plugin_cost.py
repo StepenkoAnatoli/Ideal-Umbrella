@@ -11,6 +11,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def plugin_rows(app_dir, enc):
     for r in plugin_roots(app_dir):
         try:
             man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             man = {}
         if not isinstance(man, dict):
             man = {}
@@ -73,7 +74,7 @@ def plugin_rows(app_dir, enc):
         if os.path.isfile(mf):
             try:
                 mcp = len(json.load(open(mf, encoding="utf-8")).get("mcpServers") or {})
-            except (OSError, ValueError, AttributeError):
+            except (OSError, ValueError, RecursionError, AttributeError):
                 pass
         hooks = os.path.isfile(os.path.join(r, "hooks", "hooks.json")) or bool(man.get("hooks"))
         agents = len(glob.glob(os.path.join(glob.escape(r), "agents", "*.md")))
@@ -84,13 +85,23 @@ def plugin_rows(app_dir, enc):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if not 1 <= len(argv) <= 2:
         print(__doc__.strip(), file=sys.stderr)
         return 2
     out = Path(argv[0])
     app_dir = Path(argv[1]) if len(argv) == 2 else default_app_dir()
-    if not app_dir.is_dir():
+    try:
+        # os.stat, not is_dir(): that raises on 3.13 and says False on 3.14 for a folder it
+        # cannot look at.
+        is_dir = stat.S_ISDIR(os.stat(app_dir).st_mode)
+    except (FileNotFoundError, NotADirectoryError):
+        is_dir = False
+    except OSError as e:
+        print(f"Error: cannot read {app_dir} ({e.strerror or e})", file=sys.stderr)
+        return 1
+    if not is_dir:
         print(f"Error: {app_dir} is not a folder (pass the Claude app folder as the second argument)",
               file=sys.stderr)
         return 1

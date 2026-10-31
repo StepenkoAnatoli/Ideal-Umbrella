@@ -82,7 +82,10 @@ def read(path):
         with open(path, encoding="utf-8-sig") as f:
             return f.read()
     except UnicodeDecodeError as e:
-        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
+        # utf-8-sig counts from after a BOM; the offset names the byte in the file.
+        with open(path, "rb") as f:
+            bom = 3 if f.read(3) == b"\xef\xbb\xbf" else 0
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start + bom}); save it as UTF-8") from None
 
 
 def build_cache():
@@ -229,7 +232,7 @@ def lint_file(path, words=None, extra_allow=(), use_allow_files=True):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     extra, use_files, files = [], True, []
     it = iter(argv)
     for a in it:

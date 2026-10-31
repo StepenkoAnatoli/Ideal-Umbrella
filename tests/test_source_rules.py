@@ -8,10 +8,17 @@
    under a `try` that handles `UnicodeDecodeError` (or `ValueError` / `Exception`, which
    include it). A note, allow file, settings file or transcript that is not UTF-8 is a one-line
    error, never a traceback.
-3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first. The
+3. A script that prints to stdout sets `sys.stdout.reconfigure(encoding="utf-8")` first (directly
+   or on the name of a loop over a tuple or list holding `sys.stdout`). The
    scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
    the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
-   replaced byte becomes) used to end the script with UnicodeEncodeError.
+   replaced byte becomes) used to end the script with UnicodeEncodeError. It also passes
+   `errors="backslashreplace"`: a Linux path that is not UTF-8 holds lone surrogates, which the
+   default `errors="strict"` cannot print, and `--verify-only` ended in a traceback on one
+   (review 3 of the graphify branch, finding 4). `errors="surrogateescape"`, which prints such a
+   path as its bytes on disk, is also accepted off Windows when the choice is made by
+   `os.name == "nt"` or `os.name != "nt"` (in that order): a Windows path can hold any lone
+   surrogate, so Windows still gets backslashreplace.
 4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
    folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
    no transcript at all. The check sees attribute calls (`glob.glob`, `glob.escape`) inside
@@ -22,6 +29,16 @@
    folder on `sys.path`. A module run (`-m`) is not a script of this repository and is not
    checked; `-c code` is. `tests/test_utf8_output.py` is the exception: it sets
    `PYTHONIOENCODING` on purpose, which `-I` would discard.
+6. A `json.load()` / `json.loads()` call runs under a `try` that handles `RecursionError` (or
+   `Exception` / `BaseException`). A line or file nested a few thousand levels deep (a hand
+   edit, a damaged file) raises RecursionError, not ValueError, so `except ValueError` let
+   `scripts/ledger.py` end with a traceback (review 1 of the graphify branch, finding 5). The
+   hook's `run()` reads stdin outside a `try` on purpose: its `main()` catches every Exception.
+7. In `config/`, a function that calls `json.load()` / `json.loads()` also calls
+   `_check_json()`. The installers write back what they read; a file nested deeper than
+   `json.dumps(indent=2)` can write, or holding a lone surrogate UTF-8 cannot encode, made the
+   write fail after the hook and CLAUDE.md were already written (review 2 of the graphify
+   branch, findings 6 and 7). Checking right after the read stops the run before any write.
 """
 import ast
 
@@ -33,6 +50,8 @@ FOLDERS = ["config", "hooks", "keyline", "scripts"]
 TEST_FOLDERS = ["tests", "keyline/tests"]
 RUNS_WITHOUT_ISOLATION = {"tests/test_utf8_output.py"}
 DECODE_HANDLERS = {"UnicodeDecodeError", "ValueError", "Exception", "BaseException"}
+DEPTH_HANDLERS = {"RecursionError", "Exception", "BaseException"}
+JSON_READS_CAUGHT_BY_CALLER = {("hooks/context_check.py", "run")}
 
 
 def sources():
@@ -49,28 +68,28 @@ def _name(node):
     return ""
 
 
-def _handles_decode(handler):
+def _handles(handler, handled):
     types = handler.type
     if types is None:
         return True
     names = [_name(e) for e in types.elts] if isinstance(types, ast.Tuple) else [_name(types)]
-    return any(n in DECODE_HANDLERS for n in names)
+    return any(n in handled for n in names)
 
 
-def _walk(node, in_function=None, guarded=False):
-    """Yield (node, enclosing function name, under a decode-handling try) for every node."""
+def _walk(node, in_function=None, guarded=False, handled=DECODE_HANDLERS):
+    """Yield (node, enclosing function name, under a try handling one of `handled`) for every node."""
     yield node, in_function, guarded
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         in_function = node.name
     if isinstance(node, ast.Try):
-        body_guarded = guarded or any(_handles_decode(h) for h in node.handlers)
+        body_guarded = guarded or any(_handles(h, handled) for h in node.handlers)
         for child in node.body:
-            yield from _walk(child, in_function, body_guarded)
+            yield from _walk(child, in_function, body_guarded, handled)
         for child in [*node.handlers, *node.orelse, *node.finalbody]:
-            yield from _walk(child, in_function, guarded)
+            yield from _walk(child, in_function, guarded, handled)
         return
     for child in ast.iter_child_nodes(node):
-        yield from _walk(child, in_function, guarded)
+        yield from _walk(child, in_function, guarded, handled)
 
 
 def _is_exit(node):
@@ -105,11 +124,130 @@ def _prints_to_stdout(node):
     return target is None or (isinstance(target, ast.Attribute) and target.attr == "stdout")
 
 
-def _sets_utf8_stdout(node):
-    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+def _never_fails_to_encode(value):
+    """errors="backslashreplace", or a choice by `os.name` that gives it on Windows and
+    "surrogateescape" elsewhere (which
+    prints a POSIX file name that is not UTF-8 as its bytes on disk, and every string such a
+    script prints comes from a file name, argv or repr())."""
+    if isinstance(value, ast.Constant):
+        return value.value == "backslashreplace"
+    if not isinstance(value, ast.IfExp):
+        return False
+    test = value.test
+    # Windows must get backslashreplace: a path there can hold a lone surrogate, which
+    # surrogateescape cannot encode. So the test must be os.name compared with "nt".
+    if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+            and isinstance(test.ops[0], (ast.Eq, ast.NotEq))
+            and isinstance(test.left, ast.Attribute) and test.left.attr == "name"
+            and _name(test.left.value) == "os"
+            and isinstance(test.comparators[0], ast.Constant) and test.comparators[0].value == "nt"):
+        return False
+    windows, other = ((value.body, value.orelse) if isinstance(test.ops[0], ast.Eq)
+                      else (value.orelse, value.body))
+    return (getattr(windows, "value", None) == "backslashreplace"
+            and getattr(other, "value", None) in ("backslashreplace", "surrogateescape"))
+
+
+def _is_sys_stdout(node):
+    return isinstance(node, ast.Attribute) and node.attr == "stdout" and isinstance(node.value, ast.Name) and node.value.id == "sys"
+
+
+def _sets_utf8_stdout(node, stream=None):
+    """`sys.stdout.reconfigure(encoding="utf-8", errors=...)`, or the same call on the name
+    `stream` (the target of a loop over a tuple or list that holds sys.stdout)."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    receiver = node.func.value
+    return ((_is_sys_stdout(receiver)
+             or (stream is not None and isinstance(receiver, ast.Name) and receiver.id == stream))
             and node.func.attr == "reconfigure"
             and any(k.arg == "encoding" and isinstance(k.value, ast.Constant) and k.value.value == "utf-8"
-                    for k in node.keywords))
+                    for k in node.keywords)
+            and any(k.arg == "errors" and _never_fails_to_encode(k.value) for k in node.keywords))
+
+
+@pytest.mark.parametrize("source, accepted", [
+    ('"backslashreplace"', True),
+    ('"surrogateescape" if os.name != "nt" else "backslashreplace"', True),
+    ('"backslashreplace" if os.name == "nt" else "surrogateescape"', True),
+    ('"surrogateescape" if os.name == "nt" else "backslashreplace"', False),   # Windows gets surrogateescape
+    ('"backslashreplace" if os.name != "nt" else "surrogateescape"', False),
+    ('"surrogateescape" if sys.platform != "win32" else "backslashreplace"', False),   # not the os.name test
+    ('"surrogateescape" if os.name != "posix" else "backslashreplace"', False),
+    ('"surrogateescape"', False),
+    ('"strict" if os.name != "nt" else "backslashreplace"', False),   # POSIX could still fail to encode
+    # Review 44, L1: one refused row for each clause of the condition test.
+    ('"surrogateescape" if os.name != "nt" != x else "backslashreplace"', False),   # a chained compare
+    ('"surrogateescape" if os.name in "nt" else "backslashreplace"', False),   # not == or !=
+    ('"surrogateescape" if os.sep != "nt" else "backslashreplace"', False),   # not .name
+    ('"surrogateescape" if sys.name != "nt" else "backslashreplace"', False),   # not os.
+    ('ERRORS', False),   # a name, whose value the rule cannot see
+])
+def test_the_encode_rule_wants_backslashreplace_on_windows(source, accepted):
+    # Review 42, L1: the rule took either OS choice whatever the condition said. On Windows a
+    # path can hold a lone surrogate (NTFS names are UTF-16), which surrogateescape cannot
+    # encode, so a print there would end in a traceback.
+    assert _never_fails_to_encode(ast.parse(source, mode="eval").body) is accepted
+
+
+@pytest.mark.parametrize("source, accepted", [
+    ('sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")', True),
+    ('sys.stdout.reconfigure(encoding="utf-8")', False),   # no errors=
+    ('sys.stdout.reconfigure(encoding="utf-8", errors="strict")', False),
+    ('sys.stdout.reconfigure(encoding="cp1252", errors="backslashreplace")', False),
+    ('sys.stdout.reconfigure(errors="backslashreplace")', False),   # no encoding=
+    ('sys.stdout.reconfigure(encoding=ENC, errors="backslashreplace")', False),
+    ('sys.stdout.write(encoding="utf-8", errors="backslashreplace")', False),   # not reconfigure
+    ('reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # not a method call
+    ('sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # not stdout
+    ('log.reconfigure(encoding="utf-8", errors="backslashreplace")', False),
+    ('proc.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # a child's pipe
+])
+def test_the_utf8_stdout_rule_wants_both_arguments(source, accepted):
+    # Review 44, L1: the repo-wide rule fails only when a script breaks it, so a loosened
+    # checker went unseen; this pins each clause of `_sets_utf8_stdout` on its own.
+    assert _sets_utf8_stdout(ast.parse(source, mode="eval").body) is accepted
+
+
+def _reconfigures_stdout(tree):
+    """A direct `sys.stdout.reconfigure(...)`, or `for s in (sys.stdout, ...): s.reconfigure(...)`."""
+    for node in ast.walk(tree):
+        if _sets_utf8_stdout(node):
+            return True
+        if (isinstance(node, ast.For) and isinstance(node.target, ast.Name)
+                and isinstance(node.iter, (ast.Tuple, ast.List)) and any(_is_sys_stdout(e) for e in node.iter.elts)
+                and any(_sets_utf8_stdout(n, node.target.id) for child in node.body for n in ast.walk(child))):
+            return True
+    return False
+
+
+_UTF8 = 'encoding="utf-8", errors="backslashreplace"'
+
+
+@pytest.mark.parametrize("source, accepted", [
+    (f"sys.stdout.reconfigure({_UTF8})", True),
+    (f"for stream in (sys.stdout, sys.stderr):\n    if hasattr(stream, 'reconfigure'):\n        stream.reconfigure({_UTF8})", True),
+    (f"for s in [sys.stdout]:\n    s.reconfigure({_UTF8})", True),
+    (f"sys.stderr.reconfigure({_UTF8})", False),
+    (f"for stream in (sys.stderr,):\n    stream.reconfigure({_UTF8})", False),   # stdout left out
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nlog.reconfigure({_UTF8})", False),   # not the loop's name
+    (f"for stream in (sys.stdout, sys.stderr):\n    other.reconfigure({_UTF8})", False),
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nstream.reconfigure({_UTF8})", False),   # after the loop
+    (f"for stream in (sys.stdout, sys.stderr):\n    pass\nelse:\n    stream.reconfigure({_UTF8})", False),   # in for/else
+    (f"STREAMS = (sys.stdout, sys.stderr)\nfor s in STREAMS:\n    s.reconfigure({_UTF8})", False),   # not a literal
+    (f"for s in streams():\n    s.reconfigure({_UTF8})", False),   # a call: not looked into
+    (f"for stream in (sys.stdout, sys.stderr):\n    proc.stream.reconfigure({_UTF8})", False),   # not the bare name
+    (f"for stream in (sys.stdout, sys.stderr):\n    stream.buffer.reconfigure({_UTF8})", False),   # an attribute of it
+    (f"for stream in (sys.stdout, sys.stderr):\n    proc.stdout.reconfigure({_UTF8})", False),   # another stdout
+    (f"for s, t in (sys.stdout, sys.stderr):\n    s.reconfigure({_UTF8})", False),   # target not a name
+])
+def test_the_utf8_stdout_rule_looks_at_the_stream(source, accepted):
+    # Review 45, L2: the rule took `.reconfigure` on any object, so a script that set up only
+    # sys.stderr passed while its prints to stdout could still fail on Windows. Review 46, L1:
+    # the loop's name counts only inside the loop's body, not after it or in its `else:`. Review 47,
+    # L1: the iterable must be a literal the rule can see (a name may hold only sys.stderr), and the
+    # receiver the loop's bare name.
+    assert _reconfigures_stdout(ast.parse(source)) is accepted
 
 
 def test_only_main_exits():
@@ -130,14 +268,144 @@ def test_text_reads_handle_a_decode_error():
     assert not bad, "text read with no errors= and no UnicodeDecodeError handler:\n" + "\n".join(bad)
 
 
+def _is_json_read(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("load", "loads") and _name(node.func.value) == "json")
+
+
+def _named_handlers(tree, handled):
+    """Module-level names bound to a tuple of exception types that includes one of `handled`
+    (`BAD_RECORD = (ValueError, RecursionError)`): `except BAD_RECORD` handles it too."""
+    names = set()
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
+                and any(_name(e) in handled for e in node.value.elts)):
+            names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+@pytest.mark.parametrize("source, names", [
+    ("BAD = (ValueError, RecursionError)", {"BAD"}),
+    ("A = B = (RecursionError,)", {"A", "B"}),
+    ("BAD = (ValueError, OSError)", set()),   # no depth handler in the tuple
+    ("BAD = [ValueError, RecursionError]", set()),   # a list cannot follow except
+    ("def f():\n    BAD = (ValueError, RecursionError)", set()),   # not module level
+])
+def test_named_handlers_reads_module_level_tuples(source, names):
+    # Review 44, L1: the helper came in with the merge of main and had no self-test.
+    assert _named_handlers(ast.parse(source), DEPTH_HANDLERS) == names
+
+
+_INNER_TRY_IN_BODY = """
+import json
+def read(p):
+    try:
+        with open(p) as f:
+            try:
+                return json.load(f)
+            except INNER:
+                return None
+    except OUTER:
+        return None
+"""
+_INNER_TRY_IN_HANDLER = """
+import json
+def read(p, text):
+    try:
+        return open(p).read()
+    except OUTER:
+        try:
+            return json.loads(text)
+        except INNER:
+            return None
+"""
+_INNER_TRY_IN_FINALLY = """
+import json
+def read(p, text):
+    try:
+        return open(p).read()
+    except OUTER:
+        return None
+    finally:
+        try:
+            json.loads(text)
+        except INNER:
+            pass
+"""
+_INNER_TRY_IN_ELSE = """
+import json
+def read(p):
+    try:
+        text = open(p).read()
+    except OUTER:
+        return None
+    else:
+        try:
+            return json.loads(text)
+        except INNER:
+            return None
+"""
+
+
+@pytest.mark.parametrize("shape", [_INNER_TRY_IN_BODY, _INNER_TRY_IN_HANDLER, _INNER_TRY_IN_FINALLY,
+                                   _INNER_TRY_IN_ELSE], ids=["body", "handler", "finally", "else"])
+@pytest.mark.parametrize("inner, outer, guarded", [
+    ("ValueError", "OSError", False),   # a decode handler is not a depth handler, at any level
+    ("RecursionError", "OSError", True),
+    ("ValueError", "RecursionError", None),   # guarded only in the outer try's body
+])
+def test_walk_keeps_the_handled_set_in_nested_trys(shape, inner, outer, guarded):
+    # Review 45, L1: no script has a json read under an inner `except ValueError` inside another
+    # try, so a `_walk` that dropped `handled` in one recursion (and fell back to the decode
+    # handlers) passed every repo-wide rule. Review 46, L2: the `else:` shape, which the outer
+    # try's handlers do not cover either.
+    if guarded is None:
+        guarded = shape is _INNER_TRY_IN_BODY
+    tree = ast.parse(shape.replace("INNER", inner).replace("OUTER", outer))
+    reads = [g for node, _, g in _walk(tree, handled=DEPTH_HANDLERS) if _is_json_read(node)]
+    assert reads == [guarded]
+
+
+def test_json_reads_handle_a_recursion_error():
+    bad = []
+    for path, tree in sources():
+        relative = path.relative_to(ROOT).as_posix()
+        handled = DEPTH_HANDLERS | _named_handlers(tree, DEPTH_HANDLERS)
+        for node, function, guarded in _walk(tree, handled=handled):
+            if _is_json_read(node) and not guarded and (relative, function) not in JSON_READS_CAUGHT_BY_CALLER:
+                bad.append(f"{relative}:{node.lineno}")
+    assert not bad, "json.load/json.loads with no RecursionError handler:\n" + "\n".join(bad)
+
+
+def unchecked_json_reads(tree):
+    """Functions that call json.load/json.loads but not _check_json."""
+    bad = []
+    for function in ast.walk(tree):
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        nodes = list(ast.walk(function))
+        reads = [n for n in nodes if _is_json_read(n)]
+        if reads and not any(isinstance(n, ast.Call) and _name(n.func) == "_check_json" for n in nodes):
+            bad.append((reads[0].lineno, function.name))
+    return bad
+
+
+def test_config_json_reads_are_checked_before_any_write():
+    bad = []
+    for path in sorted((ROOT / "config").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+        bad += [f"{path.relative_to(ROOT).as_posix()}:{line} in {name}()" for line, name in unchecked_json_reads(tree)]
+    assert not bad, "json.load/json.loads in config/ without _check_json():\n" + "\n".join(bad)
+
+
 def test_scripts_that_print_set_utf8_stdout():
     bad = []
     for path, tree in sources():
-        nodes = [node for node, _, _ in _walk(tree)]
-        prints = [node for node in nodes if _prints_to_stdout(node)]
-        if prints and not any(_sets_utf8_stdout(node) for node in nodes):
+        prints = [node for node in ast.walk(tree) if _prints_to_stdout(node)]
+        if prints and not _reconfigures_stdout(tree):
             bad.append(f"{path.relative_to(ROOT)}:{prints[0].lineno}")
-    assert not bad, 'print() without sys.stdout.reconfigure(encoding="utf-8"):\n' + "\n".join(bad)
+    assert not bad, ('print() without sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")'
+                     " (directly or in a loop over sys.stdout):\n" + "\n".join(bad))
 
 
 def _glob_call(node, names):

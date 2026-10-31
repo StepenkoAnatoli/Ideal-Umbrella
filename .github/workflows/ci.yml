@@ -10,7 +10,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # The supported range is 3.10 and later (README "Quick start"). Windows runs one
+        # version to keep CI time down; the path and encoding differences are per OS, not
+        # per version.
+        include:
+          - {os: ubuntu-latest, python: "3.10"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: ubuntu-latest, python: "3.13"}
+          # 3.14: pathlib's exists() and is_*() say False on any OSError, not only "not there".
+          - {os: ubuntu-latest, python: "3.14"}
+          - {os: windows-latest, python: "3.12"}
     runs-on: ${{ matrix.os }}
     env:
       # For pytest and run_tests.py themselves. The scripts they start run with -I, which
@@ -20,13 +29,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: |
             keyline/requirements.txt
             requirements-dev.txt
       - name: Install dependencies
         run: python -m pip install -r keyline/requirements.txt -r requirements-dev.txt
+      - name: pyflakes
+        # Tracked files only, so a local venv or cache inside the tree is not linted.
+        shell: bash
+        run: python -m pyflakes $(git ls-files '*.py')
       - name: pytest
         run: python -m pytest -q
       - name: Keyline suite

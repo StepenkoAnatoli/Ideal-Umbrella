@@ -201,3 +201,13 @@ def test_missing_tiktoken_says_the_word_was_not_counted(monkeypatch):
     assert len(findings) == 1
     assert "not counted" in findings[0][1] and "tiktoken" in findings[0][1]
     assert "not one token" not in findings[0][1]
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["no-bom", "bom"])
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, bom):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    note = tmp_path / "latin.txt"
+    note.write_bytes(bom + b"caf\xe9\n")
+    with pytest.raises(OSError, match=rf"at byte {len(bom) + 3}\)"):
+        keyline_lint.read(note)

@@ -16,14 +16,17 @@ file is absent. The file is the repository's own data from then on: later runs,
 
 The hook exits at once unless CLAUDE_CODE_REMOTE is true, so local sessions keep
 only the user-level hook. Stdlib only; run with
-`python -I config/add_to_repo.py [--force] <repo>`, then commit the files it
-names in that repository.
+`python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo>`, then
+commit the files it names in that repository. --handoff-at sets the repository's
+own hand-off threshold as env.IDEAL_UMBRELLA_HANDOFF_AT (other env keys stay).
 """
 import errno
 import json
+import math
 import os
 import posixpath
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -66,6 +69,27 @@ def _replace_hook(entry, replacement):
     return changed
 
 
+def _merge_value(settings, key, value, force, changes, notices, label):
+    """Merge one template key. An object value (env) is merged key by key, so a repository's
+    own keys in it stay; any other value the repository already sets differently is kept
+    unless force is true."""
+    if isinstance(value, dict):
+        if not isinstance(settings.setdefault(key, {}), dict):
+            raise ValueError(f"settings {label} must be an object")
+        for sub, sub_value in value.items():
+            _merge_value(settings[key], sub, sub_value, force, changes, notices, f"{label}.{sub}")
+    elif key not in settings:
+        changes.append(f"{label}: added {value!r}")
+        settings[key] = value
+    elif settings[key] != value:
+        if force:
+            changes.append(f"{label}: {settings[key]!r} -> {value!r}")
+            settings[key] = value
+        else:
+            notices.append(f"{label} is {settings[key]!r}, template has {value!r}; "
+                           "left unchanged (use --force)")
+
+
 def merge(settings, template, force=False):
     """Merge template into settings in place; return (changes, notices), both human-readable.
 
@@ -77,18 +101,8 @@ def merge(settings, template, force=False):
         raise ValueError("template must be a JSON object")
     changes, notices = [], []
     for key, value in template.items():
-        if key == "hooks":
-            continue
-        if key not in settings:
-            changes.append(f"{key}: added {value!r}")
-            settings[key] = value
-        elif settings[key] != value:
-            if force:
-                changes.append(f"{key}: {settings[key]!r} -> {value!r}")
-                settings[key] = value
-            else:
-                notices.append(f"{key} is {settings[key]!r}, template has {value!r}; "
-                               "left unchanged (use --force)")
+        if key != "hooks":
+            _merge_value(settings, key, value, force, changes, notices, key)
 
     template_hooks = template.get("hooks", {})
     if not isinstance(template_hooks, dict):
@@ -117,18 +131,69 @@ def merge(settings, template, force=False):
     return changes, notices
 
 
-def _read_json(path):
-    """Read a JSON object; a file that is not UTF-8, not JSON or not an object is a ValueError
-    naming the file, which main() reports as one line before anything is written."""
+JSON_DEPTH = 100
+
+
+def _check_json(data, path):
+    """Raise ValueError when data, as json.load gave it, cannot be written back: nested more
+    than JSON_DEPTH levels (json.dumps(indent=2) can run out of stack well below what
+    json.loads reads) or holding a number json.dumps would write as Infinity or NaN. A lone
+    surrogate (valid JSON, but not valid Unicode) is refused too: this script's writer would
+    write it back as \\ud800, but install.py's cannot, and both refuse the same files.
+    The same check as config/install.py's (this script runs on its own, without it)."""
+    stack = [(data, 1)]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError(f"{path} holds text that is not valid Unicode (a lone surrogate "
+                                 "such as \\ud800); fix it first") from None
+        elif isinstance(value, float) and not math.isfinite(value):
+            # json.loads reads 1e400 as inf and NaN as nan; json.dumps would write them back as
+            # Infinity and NaN, which are not JSON, so the next reader fails on the file.
+            raise ValueError(f"{path} holds a number that is not a JSON number ({value!r}, from "
+                             f"1e400, NaN or Infinity); fix it first")
+        elif isinstance(value, (dict, list)):
+            if depth > JSON_DEPTH:
+                raise ValueError(f"{path} is nested more than {JSON_DEPTH} levels deep; fix it first")
+            items = value.items() if isinstance(value, dict) else ((None, v) for v in value)
+            for key, item in items:
+                if key is not None:
+                    stack.append((key, depth))
+                stack.append((item, depth + 1))
+
+
+def _bad_byte(path, e):
+    """Where the byte that is not UTF-8 is in the file: utf-8-sig counts from after a BOM."""
     try:
+        with open(path, "rb") as f:
+            bom = 3 if f.read(3) == b"\xef\xbb\xbf" else 0
+    except OSError:
+        bom = 0
+    return f"{e.reason} at byte {e.start + bom}"
+
+
+def _read_json(path):
+    """Read a JSON object; a file that cannot be read, is not UTF-8, not JSON, not an object or
+    not writable back is a ValueError naming the file, which main() reports as one line before
+    anything is written."""
+    try:
+        # Text mode: bare CR and CRLF line ends are line ends in a JSON error's position.
         with open(path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except UnicodeDecodeError as e:
-        raise ValueError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8 first") from None
+        raise ValueError(f"{path} is not UTF-8 ({_bad_byte(path, e)}); save it as UTF-8 first") from None
     except ValueError as e:
         raise ValueError(f"{path} is not valid JSON ({e}); fix it first") from None
+    except RecursionError:
+        raise ValueError(f"{path} is nested too deeply to be read; fix it first") from None
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object, not {type(data).__name__}")
+    _check_json(data, path)
     return data
 
 
@@ -146,6 +211,28 @@ def _new_temp(directory, prefix):
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
+
+
+def _look(path, follow=False):
+    """os.lstat of path (os.stat with follow), or None when there is nothing there. Any other
+    refusal is a ValueError naming the path: a folder only root may search is not "no file",
+    though os.path.exists() says it is."""
+    try:
+        return os.stat(path) if follow else os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return None   # a symlink loop leads nowhere, like a link to a missing target
+        raise ValueError(f"cannot look at {path} ({e.strerror or e})") from e
+
+
+def _read_bytes(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        raise ValueError(f"cannot read {path} ({e.strerror or e})") from e
 
 
 def _is_link(path):
@@ -181,7 +268,37 @@ def _write_bytes(path, data):
 
 
 def _write_json(path, data):
-    _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+    _write_bytes(path, (json.dumps(data, indent=2, allow_nan=False) + "\n").encode("utf-8"))
+
+
+USAGE = "usage: python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo folder>"
+
+
+def _take_handoff_at(argv):
+    """Return (tokens or None, the other arguments). TOKENS is a whole number above 0 in ASCII
+    digits, the values hooks/context_check.py accepts; anything else is a ValueError."""
+    rest, values = [], []
+    args = iter(argv)
+    for arg in args:
+        if arg == "--handoff-at":
+            values.append(next(args, ""))
+        elif arg.startswith("--handoff-at="):
+            values.append(arg[len("--handoff-at="):])
+        else:
+            rest.append(arg)
+    if not values:
+        return None, rest
+    if len(values) > 1:
+        raise ValueError("--handoff-at is given more than once")
+    value = values[0]
+    # Leading zeros go before int(): it refuses more than 4300 digits, zeros included.
+    digits = value.lstrip("0") if value.isascii() and value.isdigit() else None
+    if digits is not None and len(digits) > 15:
+        # No context window is near 16 digits.
+        raise ValueError(f"--handoff-at {value[:20]}... is too large; give a whole number of tokens")
+    if not digits:
+        raise ValueError(f"--handoff-at needs a whole number of tokens above 0, not {value[:40]!r}")
+    return int(digits), rest
 
 
 def _git_ignored(repo, relatives):
@@ -402,18 +519,30 @@ def main(argv=None):
                                else "backslashreplace")
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
-    if len(argv) != 1 or not os.path.isdir(argv[0]):
-        sys.exit("usage: python -I config/add_to_repo.py [--force] <repo folder>")
-    progress, commit = [], []
     try:
-        changes, notices = _add(argv[0], force, progress=progress, commit=commit)
+        handoff_at, argv = _take_handoff_at(argv)
     except ValueError as e:
-        # Raised while reading or merging, before any write.
+        sys.exit(f"{e}\n{USAGE}")
+    if len(argv) != 1:
+        sys.exit(USAGE)
+    try:
+        found = _look(argv[0], follow=True)
+    except ValueError as e:   # a folder only root may search is not "no repo"
         print(f"Error: {e}; nothing written", file=sys.stderr)
         return 1
-    except OSError as e:
+    if found is None or not stat.S_ISDIR(found.st_mode):
+        sys.exit(USAGE)
+    progress, commit = [], []
+    try:
+        changes, notices = _add(argv[0], force, progress=progress, commit=commit,
+                                handoff_at=handoff_at)
+    except (ValueError, OSError) as e:
+        # A ValueError is raised while reading or merging, before any write; an OSError means
         # e.g. <repo>/.claude is a regular file, or the folder is read-only. Every file is
         # written whole or not at all; name what was done before the error.
+        if isinstance(e, ValueError) and not progress:
+            print(f"Error: {e}; nothing written", file=sys.stderr)
+            return 1
         print(f"Error: {e}", file=sys.stderr)
         if progress:
             print("Done before the error:", file=sys.stderr)
@@ -431,7 +560,7 @@ def main(argv=None):
     return 0
 
 
-def _add(repo, force, progress=None, commit=None):
+def _add(repo, force, progress=None, commit=None, handoff_at=None):
     """Merge the template into <repo>/.claude/settings.json, copy the hook and, when the
     repository has no notes/learnings.md, the learnings template; return (changes, notices).
     The repository-relative path of each file written is appended to `progress` (when given)
@@ -443,7 +572,7 @@ def _add(repo, force, progress=None, commit=None):
     every prompt. A hook or settings file that git ignores, or that a symlink puts outside the
     repository, is written all the same (local sessions use it) and gets a notice on every run.
     The learnings file is a courtesy and comes last: a failure there (a `notes` file in the
-    way, a dangling link) is a notice, not an error, and a `notes/` that git ignores or that
+    way, a dangling link, a link it cannot look through) is a notice, not an error, and a `notes/` that git ignores or that
     leads outside the repository gets no copy (cloud sessions would never see it)."""
     if progress is None:
         progress = []
@@ -456,31 +585,45 @@ def _add(repo, force, progress=None, commit=None):
     # A dangling link, on a file or on a folder above it, would be written through: the
     # missing target would be created outside the repository. For the core files that is an
     # error; for the courtesy file it means no copy.
+    # Each is looked at first, so that the exists() checks below cannot take a file that
+    # cannot be looked at for a missing one.
     for p in (claude_dir, os.path.dirname(target), path, target):
-        if _is_link(p) and not os.path.exists(p):
-            raise ValueError(f"{p} is a symlink to a missing target; fix or remove it first")
-    dangling = next((p for p in (os.path.dirname(learnings), learnings)
-                     if _is_link(p) and not os.path.exists(p)), None)
+        if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
+            raise ValueError(f"{p} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
+    # Why the courtesy file gets no copy (a notice), looked at the same way: a target that is
+    # there but cannot be looked at is not called missing.
+    skip_learnings, has_learnings = None, False
+    try:
+        for p in (os.path.dirname(learnings), learnings):
+            if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
+                skip_learnings = f"{p} is a symlink to a missing target"
+                break
+        else:
+            has_learnings = _look(learnings, follow=True) is not None
+    except ValueError as e:
+        skip_learnings = str(e)
     settings = _read_json(path) if os.path.exists(path) else {}
     template = _read_json(TEMPLATE)
+    if handoff_at is not None:
+        # Claude Code passes `env` to the session and its hooks; its values are strings.
+        template["env"] = {"IDEAL_UMBRELLA_HANDOFF_AT": str(handoff_at)}
     try:
         changes, notices = merge(settings, template, force=force)
     except ValueError as e:
         raise ValueError(f"{path}: {e}") from None
 
-    old = b""
-    if os.path.exists(target):
-        with open(target, "rb") as f:
-            old = f.read()
-    with open(SCRIPT, "rb") as f:
-        source = f.read()
+    old = _read_bytes(target) if os.path.exists(target) else b""
+    source = _read_bytes(SCRIPT)
     # An existing notes/learnings.md is the repository's own, whatever it holds: never replaced.
-    copy_learnings = dangling is None and not os.path.exists(learnings)
+    copy_learnings = skip_learnings is None and not has_learnings
     learnings_template = b""
     if copy_learnings:
-        with open(LEARNINGS, "rb") as f:
-            learnings_template = f.read()
+        learnings_template = _read_bytes(LEARNINGS)
     hook_changed = source != old
+    # A read-only file is refused before the first write, not at its own write after the hook.
+    for p, written in ((target, hook_changed), (path, changes)):
+        if written and os.path.exists(p) and not os.access(p, os.W_OK):
+            raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", p)
     # Where each file lands and what git says of it, asked once before anything is written.
     core = {".claude/hooks/context_check.py": target, ".claude/settings.json": path}
     real_repo = os.path.realpath(repo)
@@ -589,8 +732,8 @@ def _add(repo, force, progress=None, commit=None):
             check(name, take=name in progress)
         else:
             notices.append(f"{name} is installed, but {why}")
-    if dangling is not None:
-        notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
+    if skip_learnings is not None:
+        notices.append(f"notes/learnings.md not copied: {skip_learnings}")
     elif copy_learnings:
         why = missing("notes/learnings.md")
         if why is not None:
