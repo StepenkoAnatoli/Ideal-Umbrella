@@ -12,9 +12,12 @@
    scripts run with -I, which ignores PYTHONUTF8 and PYTHONIOENCODING, so on Windows stdout is
    the ANSI code page: a user text, path, tool name or plugin name outside it (or the U+FFFD a
    replaced byte becomes) used to end the script with UnicodeEncodeError. It also passes
-   `errors="backslashreplace"`: a Linux path that is not UTF-8 holds lone surrogates, which no
-   encoding prints, and `--verify-only` ended in a traceback on one (review 3 of the graphify
-   branch, finding 4).
+   `errors="backslashreplace"`: a Linux path that is not UTF-8 holds lone surrogates, which the
+   default `errors="strict"` cannot print, and `--verify-only` ended in a traceback on one
+   (review 3 of the graphify branch, finding 4). `errors="surrogateescape"`, which prints such a
+   path as its bytes on disk, is also accepted off Windows when the choice is made by `os.name`
+   compared with `"nt"`: a Windows path can hold any lone surrogate, so Windows still gets
+   backslashreplace.
 4. A function that calls `glob.glob()` or `glob.iglob()` also calls `glob.escape()`. A user
    folder with `[`, `*` or `?` in its name (`proj[1]`) used to make `usage_breakdown.py` find
    no transcript at all. The check sees attribute calls (`glob.glob`, `glob.escape`) inside
@@ -162,12 +165,34 @@ def _sets_utf8_stdout(node):
     ('"surrogateescape" if os.name != "posix" else "backslashreplace"', False),
     ('"surrogateescape"', False),
     ('"strict" if os.name != "nt" else "backslashreplace"', False),   # POSIX could still fail to encode
+    # Review 44, L1: one refused row for each clause of the condition test.
+    ('"surrogateescape" if os.name != "nt" != x else "backslashreplace"', False),   # a chained compare
+    ('"surrogateescape" if os.name in "nt" else "backslashreplace"', False),   # not == or !=
+    ('"surrogateescape" if os.sep != "nt" else "backslashreplace"', False),   # not .name
+    ('"surrogateescape" if sys.name != "nt" else "backslashreplace"', False),   # not os.
+    ('ERRORS', False),   # a name, whose value the rule cannot see
 ])
 def test_the_encode_rule_wants_backslashreplace_on_windows(source, accepted):
     # Review 42, L1: the rule took either OS choice whatever the condition said. On Windows a
     # path can hold a lone surrogate (NTFS names are UTF-16), which surrogateescape cannot
     # encode, so a print there would end in a traceback.
     assert _never_fails_to_encode(ast.parse(source, mode="eval").body) is accepted
+
+
+@pytest.mark.parametrize("source, accepted", [
+    ('sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")', True),
+    ('sys.stdout.reconfigure(encoding="utf-8")', False),   # no errors=
+    ('sys.stdout.reconfigure(encoding="utf-8", errors="strict")', False),
+    ('sys.stdout.reconfigure(encoding="cp1252", errors="backslashreplace")', False),
+    ('sys.stdout.reconfigure(errors="backslashreplace")', False),   # no encoding=
+    ('sys.stdout.reconfigure(encoding=ENC, errors="backslashreplace")', False),
+    ('sys.stdout.write(encoding="utf-8", errors="backslashreplace")', False),   # not reconfigure
+    ('reconfigure(encoding="utf-8", errors="backslashreplace")', False),   # not a method call
+])
+def test_the_utf8_stdout_rule_wants_both_arguments(source, accepted):
+    # Review 44, L1: the repo-wide rule fails only when a script breaks it, so a loosened
+    # checker went unseen; this pins each clause of `_sets_utf8_stdout` on its own.
+    assert _sets_utf8_stdout(ast.parse(source, mode="eval").body) is accepted
 
 
 def test_only_main_exits():
@@ -202,6 +227,18 @@ def _named_handlers(tree, handled):
                 and any(_name(e) in handled for e in node.value.elts)):
             names.update(t.id for t in node.targets if isinstance(t, ast.Name))
     return names
+
+
+@pytest.mark.parametrize("source, names", [
+    ("BAD = (ValueError, RecursionError)", {"BAD"}),
+    ("A = B = (RecursionError,)", {"A", "B"}),
+    ("BAD = (ValueError, OSError)", set()),   # no depth handler in the tuple
+    ("BAD = [ValueError, RecursionError]", set()),   # a list cannot follow except
+    ("def f():\n    BAD = (ValueError, RecursionError)", set()),   # not module level
+])
+def test_named_handlers_reads_module_level_tuples(source, names):
+    # Review 44, L1: the helper came in with the merge of main and had no self-test.
+    assert _named_handlers(ast.parse(source), DEPTH_HANDLERS) == names
 
 
 def test_json_reads_handle_a_recursion_error():

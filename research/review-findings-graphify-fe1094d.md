@@ -35,8 +35,9 @@ a traceback.
 - Mutant S1 (scratchpad `fix43/mut.py`) drops the non-Windows check. It passes the rest of the suite and fails
   only the new row, so it is killed.
 
-**Other hits:** none. Each other clause of the rule has a row that fails when that clause is dropped
-(pass 42's R2 and R3).
+**Other hits:** none found then. The claim made here, that each other clause of the rule had a row that
+fails when that clause is dropped, was wrong: pass 44 found four clauses of the condition test, the
+non-`IfExp` branch and every clause of `_sets_utf8_stdout` unpinned (`-2785b94.md` L1).
 
 ## Info
 
@@ -53,4 +54,5 @@ a traceback.
 
 ## Prevention
 
-A self-test of a rule needs one refused row per clause: drop any one clause, and some row must fail.
+A self-test of a rule needs one refused row per clause: drop any one clause, and some row must fail. (Checked
+only for the clauses named above; pass 44 ran one mutant per clause and found five more.)

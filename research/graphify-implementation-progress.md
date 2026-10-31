@@ -1,4 +1,4 @@
-# Graphify-derived improvements: resume point (2026-10-31, review pass 44 next)
+# Graphify-derived improvements: resume point (2026-10-31, review pass 45 next)
 
 ## State
 - Branch `graphify-ideas` (from main b46792d, main merged in with a merge commit; never force-push). Draft PR #27, subscribed.
@@ -61,7 +61,8 @@
 - Review pass 41 (fresh agent, Fable; head 2735a08): no code defect; L1, L2 (docs and tests), I2 (docs); fixed in the commit after 379d00c; record `research/review-findings-graphify-2735a08.md`. README wording corrected; 3 new tests in `tests/test_uninstall.py` (7 cases) pinned by mutants T1, T3, T6 (scratchpad `fix41/mut.py`).
 - Review pass 42 (fresh agent, Fable; head 881e367): no defect in install/uninstall; 3 low: L1 the `errors=` source rule ignored its `os.name` condition (now checked; 8-row rule test), L2 README clause for a bare-CR text with a CRLF line on top and the blank line deleted (same bytes as the pinned CRLF-conversion reading), L3 merged `add_to_repo.py` called a `notes` link it cannot look through "missing" (now `_look`, note "cannot look at"); record `research/review-findings-graphify-881e367.md`; mutants scratchpad `fix42/mut.py` R1-R3, N1 killed, N2 equivalent, U1 not a proof (reading already pinned).
 - Review pass 43 (fresh agent, Fable; head fe1094d): no code defect; 1 low (test gap: the encode rule's self-test had no refused value on the non-Windows branch; row `"strict" if os.name != "nt" ...` added, mutant S1 in scratchpad `fix43/mut.py` killed); record `research/review-findings-graphify-fe1094d.md`. Pass-42 L3 fix verified with real permissions.
-- Next: review pass 44. Fresh agent; the brief is scratchpad `brief44.txt` / `brief44b.txt`, built from `brief44.tmpl` (from `brief43.tmpl`) with the new head (substitute NEWSHA and the review33 output paths). Next CRLF copy: `crlf-p46`.
+- Review pass 44 (fresh agent, Fable; head 2785b94): no code defect; 1 low (test gap: five clauses of `_never_fails_to_encode` and all of `_sets_utf8_stdout` unpinned; the fe1094d record claimed otherwise, now corrected); tests only: 5 refused encode rows, `_sets_utf8_stdout` and `_named_handlers` self-tests; record `research/review-findings-graphify-2785b94.md`; reviewer's 16 clause mutants (scratchpad `review44/repro/c1_clause_mutants.py`, run in `fix44/run1`) and `fix44/nh_mut.py` N1-N4 all killed.
+- Next: review pass 45. Fresh agent; the brief is scratchpad `brief45.txt` / `brief45b.txt`, built from `brief45.tmpl` (from `brief44.tmpl`) with the new head (substitute NEWSHA and the review33 output paths). Next CRLF copy: `crlf-p47`.
 ## Scope (from the user; brief and comparison on `origin/ccr-18e63515-crkba1`, read only; PR #24 not reused)
 - In: items 2, 3, 4, 1 (first half only: `add_to_repo.py` writing into a repo CLAUDE.md is OUT), 5, 7.
 - Out: item 6, any graphify-as-dependency experiment.
@@ -83,5 +84,5 @@
 Before every push: `python -m pytest -q` (also with the Python 3.10 venv), `python -I keyline/tests/run_tests.py`, `python -m pyflakes .`, `python -m json.tool` on `config/user-settings.json`, `config/repo-settings.json`, `.claude/settings.json`, and the CRLF copy (a new scratchpad folder each time, named after the pass, next `crlf-p46`; tree copied with `git ls-files -co --exclude-standard | tar` into scratchpad `crlf/`, `config/CLAUDE.md` converted to CRLF, pytest run there). Python 3.10 venv for local runs: scratchpad `py310/bin/python`; Python 3.14.6 venv: scratchpad `review24/venv314/bin/python` (run it also under `ulimit -s unlimited`); also the suite with `write_text` forced to CRLF (scratchpad `crlf_conftest.py`), once in the tree and once in a CRLF copy (both together are what Windows CI does: f62ab8d was red there only).
 
 ## Open items
-- Review pass 41 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
+- Review pass 45 and later until a clean pass, then merge PR #27 on green CI with a merge commit.
 - Not fixed (outside this PR): `keyline/keyline_lint.py:197` numbers lines with `str.splitlines()` (a U+2028 shifts reported lines).
