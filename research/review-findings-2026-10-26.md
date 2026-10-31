@@ -143,3 +143,26 @@ Checks at that head: pytest 290 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 5 fixes
 All accepted except E6 (out of scope) and E3 (moot). Hook: D2 the failure goes into the systemMessage on UserPromptSubmit only (stderr and the log always); D3 `log()` returns whether it wrote, else the message carries the error type and text. `add_to_repo.py`: D1/E2 paths go to git as file-system bytes (`os.fsencode`/`os.fsdecode`, ValueError in the handler), stdout and stderr use `errors="backslashreplace"`; D5 `_in_git_repo` dropped: exit 128 with "not a git repository" (LC_ALL=C) means no repository; E4 paths go to git as `./<path>`; D4/E1 `_links()` finds each symlink on the way to a file by its own repo path; the links are asked in the same git call; a link git ignores gives a `note:` on every run and keeps the file out of the hint (learnings not copied); otherwise the hint names the link with the file (the "commit the link too" note is gone); D6 README; D7-D9 simplified. Tests: a non-UTF-8 folder name, the `.claude` link in the hint, an ignored link (both runs), a ":" folder, `notes -> docs` hint with the link, no floor read with no usage (E5), PostToolUse quiet on failure, unwritable log. Each new guard was mutation-checked (reverting it fails a test). Checks: pytest 297 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.
+
+## Round 6 — head 3c92b83
+
+Checks at that head: pytest 297 passed 4 skipped, keyline 35/35, the three JSON files parse. Reviewers told to skip rounds 1-5.
+
+### code-review skill, high (10 findings; G1-G3, G5 confirmed by execution; details at scratchpad `review-round6-findings.json`, outside the repo)
+- G1 LOW-MEDIUM, CONFIRMED: "not a git repository" also matches a broken GIT_DIR or stale .git file ("...: '/nonexistent'"), read as no repository: a confident hint naming ignored files.
+- G2 LOW, CONFIRMED: `_links()` did not follow a link to a link; an ignored middle link (`notes -> mid -> docs`) went unnoticed and unnamed.
+- G3 LOW, CONFIRMED: a link with an absolute target was hinted as safe to commit; it dangles in a clone at another path.
+- G4 LOW: `main()`'s unexpected-error path still said "details in <log>" when the log was not written.
+- G5 VERY LOW, CONFIRMED: a link shared by both `.claude` files gave the same "could not say" note twice.
+- G6 VERY LOW: the learnings note blamed `learnings.md` when the ignored thing was the `notes` link.
+- G7 VERY LOW: backslashreplace printed a non-UTF-8 folder as `\udcff`, not a path `git add` takes.
+- G8-G10 simplification: the unsure-note expression twice, a no-op stderr reconfigure, paths resolved twice before writing.
+
+### breaker agent (no high or medium; the agent's report in its reply)
+- F1 LOW = G3, plus a relative link that leaves the repository and comes back.
+- F2 LOW: a submodule on the path (`notes` a submodule) makes the batch `check-ignore` exit 128: "could not say" for every file, and a hint `git add` refuses.
+- F3 VERY LOW = G5.
+- Test gaps: `if own is not None` in `_links()` (covered by the F1 test), the not-written core-file unsure notes (covered by the G5 test, second run).
+
+### Round 6 fixes
+All accepted. G1 only git's discovery text ("not a git repository (or any") means no repository; G2/G3/F1 `_links()` follows chains and marks a link whose target is absolute or climbs out lexically as not portable; a file behind such a link, or behind an ignored link, gets a `note:` naming the link and stays out of the hint (learnings not copied); G4 one `logged()` helper for both handlers; G5/G8 one `check()` helper with a set of noted paths; G6 the note names the link; G7 stdout uses surrogateescape on POSIX (backslashreplace on Windows); G9 stderr reconfigure dropped; G10 writes take the plain paths (`_write_bytes` resolves); F2 `_repo_path()` treats a folder on the way with its own `.git` (submodule, nested repository) as outside. Tests for each (broken GIT_DIR, chain, absolute and out-and-back targets, shared-link note once on both runs, unexpected error with an unwritable log, submodule, the non-UTF-8 name printed as its bytes); every new guard mutation-checked. Checks: pytest 303 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.

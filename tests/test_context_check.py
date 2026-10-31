@@ -578,3 +578,12 @@ def test_no_floor_read_when_the_transcript_has_no_usage(context_check, tmp_path,
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin), encoding="utf-8"))
     context_check.run()
     assert calls == []
+
+
+def test_unexpected_error_names_itself_when_the_log_cannot_be_written(tmp_path):
+    # main()'s handler, like the hand-off one, pointed at a log that was never written.
+    (tmp_path / "context_check.log").mkdir()
+    result = run_hook(tmp_path, None, stdin="not json")
+    assert result.returncode == 0
+    assert "unexpected error (JSONDecodeError" in result.stderr
+    assert "details in" not in result.stderr

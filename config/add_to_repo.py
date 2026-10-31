@@ -22,6 +22,7 @@ names in that repository.
 import errno
 import json
 import os
+import posixpath
 import subprocess
 import sys
 import tempfile
@@ -209,36 +210,60 @@ def _git_ignored(repo, relatives):
     except (OSError, ValueError, subprocess.SubprocessError):
         return dict.fromkeys(relatives, None)
     if result.returncode not in (0, 1):
-        no_repo = result.returncode == 128 and b"not a git repository" in errors
+        # Only discovery's own message: a broken GIT_DIR or a stale .git file says
+        # "not a git repository: '<path>'", and git cannot answer then.
+        no_repo = result.returncode == 128 and b"not a git repository (or any" in errors
         return dict.fromkeys(relatives, False if no_repo else None)
     return {r: "./" + r in listed for r in relatives}
 
 
 def _repo_path(real_repo, real_full):
     """`real_full` (symlinks resolved) relative to `real_repo` with "/" separators: the path
-    git knows the file by; None when it is outside the repository."""
+    git knows the file by; None when it is outside the repository, or inside a submodule or
+    nested repository (a folder on the way with its own .git), which git add refuses."""
     try:
         rel = os.path.relpath(real_full, real_repo)
     except ValueError:   # another drive on Windows
         return None
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
+    folder = os.path.dirname(rel)
+    while folder:
+        if os.path.lexists(os.path.join(real_repo, folder, ".git")):
+            return None
+        folder = os.path.dirname(folder)
     return rel.replace(os.sep, "/")
 
 
 def _links(repo, real_repo, name):
-    """The symlinks on the way to `name` (a "/" path under `repo`), each by the path git knows
-    the link itself by: its folder resolved, the link not. Links outside the repository are
+    """The symlinks on the way to `name` (a "/" path under `repo`), links to links included,
+    as {path git knows the link itself by (its folder resolved, the link not): True when a
+    clone keeps it working}. A link whose target is absolute, or climbs out of the
+    repository, points nowhere in a clone at another path. Links outside the repository are
     left out (the file then lands outside too, which has its own note)."""
-    links, part = [], ""
+    links, part = {}, ""
     for piece in name.split("/"):
         part = f"{part}/{piece}" if part else piece
         full = os.path.join(repo, *part.split("/"))
-        if _is_link(full):
-            own = _repo_path(real_repo, os.path.join(os.path.realpath(os.path.dirname(full)),
-                                                     piece))
-            if own is not None:
-                links.append(own)
+        seen = set()
+        while _is_link(full) and full not in seen:
+            seen.add(full)
+            folder = os.path.realpath(os.path.dirname(full))
+            own = _repo_path(real_repo, os.path.join(folder, os.path.basename(full)))
+            if own is None:
+                break
+            try:
+                to = os.readlink(full)
+            except OSError:   # a junction on older Pythons: realpath still resolves it
+                links[own] = True
+                break
+            if to.startswith("\\\\?\\"):
+                to = to[4:]
+            lexical = posixpath.normpath(posixpath.join(posixpath.dirname(own),
+                                                        to.replace(os.sep, "/")))
+            links[own] = not (os.path.isabs(to) or os.path.splitdrive(to)[0]
+                              or lexical == ".." or lexical.startswith("../"))
+            full = os.path.join(folder, to)
     return links
 
 
@@ -249,10 +274,10 @@ def _unsure(relative):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        # The repo path may not fit the ANSI code page, or may not be UTF-8 at all.
-        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(errors="backslashreplace")
+        # The repo path may not fit the ANSI code page. A folder name that is not UTF-8
+        # (POSIX) is printed as its bytes on disk, so it can be pasted into `git add`.
+        sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape" if os.name != "nt"
+                               else "backslashreplace")
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
@@ -345,18 +370,28 @@ def _add(repo, force, progress=None, commit=None):
     asked = {r for r in real.values() if r is not None}
     asked.update(link for found in links.values() for link in found)
     ignored = _git_ignored(repo, sorted(asked))
-    hidden = {name: next((link for link in found if ignored[link]), None)
-              for name, found in links.items()}
+    # Why a clone would not have the file: a link it would not get, or one that breaks there.
+    blocked = {}
+    for name, found in links.items():
+        link = next((k for k in found if ignored[k]), None)
+        if link is not None:
+            blocked[name] = f"the symlink {link}, which git ignores"
+        link = next((k for k, portable in found.items() if not portable), None)
+        if link is not None and name not in blocked:
+            blocked[name] = (f"the symlink {link}, whose target is an absolute path or lies "
+                             "outside the repository")
+    unsure = set()
 
-    def take(name):
-        for path in (real[name], *links[name]):
-            if path not in commit:
-                commit.append(path)
-            if ignored[path] is None:
-                notices.append(_unsure(path))
+    def check(name, take):
+        for p in (real[name], *links[name]):
+            if take and p not in commit:
+                commit.append(p)
+            if ignored[p] is None and p not in unsure:
+                unsure.add(p)
+                notices.append(_unsure(p))
 
     if hook_changed:
-        _write_bytes(resolved[".claude/hooks/context_check.py"], source)
+        _write_bytes(target, source)
         progress.append(".claude/hooks/context_check.py")
     if changes:
         _write_json(path, settings)
@@ -365,39 +400,40 @@ def _add(repo, force, progress=None, commit=None):
         changes.append(".claude/hooks/context_check.py written")
     for name in core:
         if real[name] is None:
-            notices.append(f"{name} lands outside the repository through a symlink "
-                           f"({resolved[name]}), so cloud sessions will not see it")
+            notices.append(f"{name} lands outside the repository ({resolved[name]}, through a "
+                           "symlink or in a submodule), so cloud sessions will not see it")
         elif ignored[real[name]]:
             notices.append(f"{name} is ignored by git, so cloud sessions will not see it; "
                            "unignore it or commit it with git add -f")
-        elif hidden[name] is not None:
-            notices.append(f"{name} is reached through the symlink {hidden[name]}, which git "
-                           "ignores, so cloud sessions will not see it; unignore the link or "
-                           "commit it with git add -f")
-        elif name in progress:
-            take(name)
+        elif name in blocked:
+            notices.append(f"{name} is reached through {blocked[name]}, so cloud sessions "
+                           "will not see it")
         else:
-            notices.extend(_unsure(p) for p in (real[name], *links[name]) if ignored[p] is None)
+            check(name, take=name in progress)
     if dangling is not None:
         notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
     elif copy_learnings and real["notes/learnings.md"] is None:
         copy_learnings = False
-        notices.append("notes/learnings.md not copied: a symlink puts it outside the repository "
-                       f"({resolved['notes/learnings.md']}), so cloud sessions would not see it")
-    elif copy_learnings and (ignored[real["notes/learnings.md"]]
-                             or hidden["notes/learnings.md"] is not None):
+        notices.append("notes/learnings.md not copied: it lands outside the repository "
+                       f"({resolved['notes/learnings.md']}, through a symlink or in a "
+                       "submodule), so cloud sessions would not see it")
+    elif copy_learnings and ignored[real["notes/learnings.md"]]:
         copy_learnings = False
         notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
                        "would not see it")
+    elif copy_learnings and "notes/learnings.md" in blocked:
+        copy_learnings = False
+        notices.append("notes/learnings.md not copied: it is reached through "
+                       f"{blocked['notes/learnings.md']}, so cloud sessions would not see it")
     if copy_learnings:
         try:
-            _write_bytes(resolved["notes/learnings.md"], learnings_template)
+            _write_bytes(learnings, learnings_template)
         except OSError as e:
             notices.append(f"notes/learnings.md not written ({e}); the hook and settings are "
                            "installed")
         else:
             progress.append("notes/learnings.md")
-            take("notes/learnings.md")
+            check("notes/learnings.md", take=True)
             changes.append("notes/learnings.md written (the learnings template; it is yours "
                            "now, later runs leave it)")
     return changes, notices

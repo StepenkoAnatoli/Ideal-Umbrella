@@ -29,6 +29,7 @@ def run(repo, env=None):
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="surrogateescape",   # a folder name that is not UTF-8 is printed as its bytes
     )
 
 
@@ -451,7 +452,8 @@ def test_an_ignored_link_gets_a_note_and_no_hint(tmp_path):
         assert ("note: .claude/hooks/context_check.py is reached through the symlink .claude"
                 in result.stdout)
         assert "Commit" not in result.stdout
-        assert "notes/learnings.md not copied: git ignores it" in result.stdout
+        assert ("notes/learnings.md not copied: it is reached through the symlink notes, "
+                "which git ignores") in result.stdout
     assert not (repo / "docs" / "n" / "learnings.md").exists()
 
 
@@ -484,7 +486,7 @@ def test_files_a_symlink_puts_outside_the_repository_are_noted_not_hinted(tmp_pa
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "note: .claude/hooks/context_check.py lands outside the repository" in result.stdout
-    assert "note: notes/learnings.md not copied: a symlink puts it outside the repository" in result.stdout
+    assert "note: notes/learnings.md not copied: it lands outside the repository" in result.stdout
     assert not (outside / "notes" / "learnings.md").exists()
     assert "Commit .claude/settings.json in that repository." in result.stdout
 
@@ -528,9 +530,99 @@ def test_folder_name_that_is_not_utf8_does_not_abort_the_install(tmp_path):
     _git_init(repo)
     odd = os.path.join(os.fsencode(str(repo)), b"d\xff")
     os.mkdir(odd)
-    os.symlink(odd, os.path.join(os.fsencode(str(repo)), b"notes"))
+    os.symlink(b"d\xff", os.path.join(os.fsencode(str(repo)), b"notes"))
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
     assert os.path.isfile(os.path.join(odd, b"learnings.md"))
     assert "could not say" not in result.stdout
+    # The hint names the folder by its bytes on disk, a path `git add` takes.
+    assert os.fsdecode(b"d\xff/learnings.md") in result.stdout
+
+
+def test_a_broken_git_dir_is_a_note_not_no_repository(tmp_path):
+    # "fatal: not a git repository: '/nonexistent'" was read as "no repository": a confident
+    # hint naming files git ignores.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".gitignore").write_text(".claude/\n", encoding="utf-8")
+    result = run(repo, env=git_env(GIT_DIR=str(tmp_path / "nowhere")))
+    assert result.returncode == 0, result.stderr
+    assert "note: git could not say whether .claude/settings.json is ignored" in result.stdout
+
+
+def _symlink_or_skip(link, to):
+    try:
+        os.symlink(to, link, target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+
+def test_an_ignored_link_in_the_middle_of_a_chain_is_noted(tmp_path):
+    # notes -> mid -> docs with mid ignored: the clone had a notes link to nothing.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    _symlink_or_skip(repo / "mid", "docs")
+    _symlink_or_skip(repo / "notes", "mid")
+    (repo / ".gitignore").write_text("/mid\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink mid, which git "
+            "ignores") in result.stdout
+    assert not (repo / "docs" / "learnings.md").exists()
+    # Not ignored: both links are named in the hint.
+    (repo / ".gitignore").unlink()
+    result = run(repo)
+    assert "docs/learnings.md, notes and mid in that repository." in result.stdout
+
+
+def test_a_link_with_an_absolute_target_is_noted_not_hinted(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs").mkdir()
+    _symlink_or_skip(repo / "notes", str(repo / "docs"))
+    (repo / "c").mkdir()
+    _symlink_or_skip(repo / ".claude", os.path.join("..", "repo", "c"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("notes/learnings.md not copied: it is reached through the symlink notes, whose "
+            "target is an absolute path or lies outside the repository") in result.stdout
+    assert ("note: .claude/settings.json is reached through the symlink .claude, whose target"
+            in result.stdout)
+    assert "Commit" not in result.stdout
+    assert (repo / "c" / "settings.json").is_file()   # local sessions still get it
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a fake git needs a POSIX shell")
+def test_a_shared_link_gets_one_could_not_say_note(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "sub").mkdir()
+    _symlink_or_skip(repo / ".claude", "sub")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "git"
+    fake.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    fake.chmod(0o755)
+    env = git_env(PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
+    for _ in range(2):
+        result = run(repo, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.count("git could not say whether .claude is ignored") == 1
+
+
+def test_a_submodule_on_the_way_is_outside_the_repository(tmp_path):
+    # `notes` a submodule: git check-ignore exited 128 for the whole batch ("could not say"
+    # for every file) and the hint named a path git add refuses.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    _git_init(repo / "notes")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "could not say" not in result.stdout
+    assert "note: notes/learnings.md not copied: it lands outside the repository" in result.stdout
+    assert ("Commit .claude/hooks/context_check.py and .claude/settings.json in that "
+            "repository.") in result.stdout
+    assert not (repo / "notes" / "learnings.md").exists()

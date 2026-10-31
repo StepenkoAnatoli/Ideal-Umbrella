@@ -80,6 +80,14 @@ NOTE = (
 )
 
 
+def logged(prefix, error):
+    """Log the traceback being handled; "; details in <log>" when that worked, else the
+    error itself (the log's folder may be the very thing that failed)."""
+    if log(prefix + traceback.format_exc().strip()):
+        return "; details in " + log_path()
+    return f" ({type(error).__name__}: {error})"
+
+
 def log(message):
     """Append one line to the hook log; True when it was written. Logging must never break
     the prompt."""
@@ -314,10 +322,7 @@ def run():
         # in verbose mode, so on UserPromptSubmit the systemMessage carries it too (not on
         # PostToolUse, where it would repeat after every tool call). When the log cannot be
         # written either (the same unwritable folder), the message carries the error itself.
-        if log("hand-off check: " + traceback.format_exc().strip()):
-            failed = "the hand-off check failed; details in " + log_path()
-        else:
-            failed = f"the hand-off check failed ({type(e).__name__}: {e})"
+        failed = "the hand-off check failed" + logged("hand-off check: ", e)
         print("Ideal-Umbrella hook: " + failed, file=sys.stderr)
         if event == "UserPromptSubmit":
             status = f"{status}; {failed}" if status else "Ideal-Umbrella: " + failed
@@ -353,11 +358,8 @@ def main():
         run()
     except Exception:
         # Never block the user's prompt. Leave a trace so a broken install is visible.
-        log(traceback.format_exc().strip())
-        print(
-            "Ideal-Umbrella hook: unexpected error; details in " + log_path(),
-            file=sys.stderr,
-        )
+        print("Ideal-Umbrella hook: unexpected error" + logged("", sys.exc_info()[1]),
+              file=sys.stderr)
     return 0
 
 
