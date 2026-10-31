@@ -264,3 +264,6 @@ Run 41235257361 (job 124637568608) failed three tests on Windows. Two, `..` in a
 
 ### Second Windows CI fix (d9cbe21)
 Run 41235731230 (job 124638997364) failed `test_a_folder_a_link_passes_through_must_reach_a_clone` (all three layouts) on Windows: the normpath from the fix above folded `build/../docs` to `docs`, so `build` was never recorded as passed. Windows itself never needs `build`, but a POSIX clone of the same link walks it, so the note stays: before normpath, a relative target's text is walked from the link's folder and every folder its `..` leaves is recorded as passed. Checks: pytest 323 passed 5 skipped, keyline 35/35, the three JSON files parse.
+
+## Loop stopped (2026-10-31)
+The user stopped the loop after round 10 and had PR #26 merged at its green head 5fb472c (merge b199638). Round 10's P1, P3-P10, N1, N2 and the test gaps were not fixed and stay open as follow-ups; no round 11 ran.
