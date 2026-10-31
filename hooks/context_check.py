@@ -81,7 +81,8 @@ NOTE = (
 
 
 def log(message):
-    """Append one line to the hook log. Logging must never break the prompt."""
+    """Append one line to the hook log; True when it was written. Logging must never break
+    the prompt."""
     try:
         path = log_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -94,8 +95,9 @@ def log(message):
                 f.write(tail)
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"{stamp} {message}\n")
+        return True
     except Exception:
-        pass
+        return False
 
 
 def prune_state(folder):
@@ -307,13 +309,18 @@ def run():
             log("savings line: " + traceback.format_exc().strip())
     try:
         due = record_handoff(n, threshold, step, session)
-    except Exception:
-        # Not cosmetic: say so where the user sees it (stderr of a hook that exits 0 shows only
-        # in verbose mode, so the systemMessage carries it too).
-        log("hand-off check: " + traceback.format_exc().strip())
-        failed = "the hand-off check failed; details in " + log_path()
+    except Exception as e:
+        # Not cosmetic: say so where the user sees it. stderr of a hook that exits 0 shows only
+        # in verbose mode, so on UserPromptSubmit the systemMessage carries it too (not on
+        # PostToolUse, where it would repeat after every tool call). When the log cannot be
+        # written either (the same unwritable folder), the message carries the error itself.
+        if log("hand-off check: " + traceback.format_exc().strip()):
+            failed = "the hand-off check failed; details in " + log_path()
+        else:
+            failed = f"the hand-off check failed ({type(e).__name__}: {e})"
         print("Ideal-Umbrella hook: " + failed, file=sys.stderr)
-        status = f"{status}; {failed}" if status else "Ideal-Umbrella: " + failed
+        if event == "UserPromptSubmit":
+            status = f"{status}; {failed}" if status else "Ideal-Umbrella: " + failed
         due = False
     # A hook prints one JSON object, so the savings line and the hand-off note share it.
     if not due:

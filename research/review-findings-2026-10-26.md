@@ -119,3 +119,27 @@ Checks at that head: pytest 284 passed 4 skipped, keyline 35/35, the three JSON 
 
 ### Round 4 fixes
 All 15 accepted (14 unique). Hook: C2/C8 one `BAD_RECORD` tuple (RecursionError added) and one `_count()` helper for every usage number; B5 the oversize branch dropped, the docstring says such a record is read in `limit`-sized pieces that do not parse; C9 0 turns an off-by-default setting off without a warning; C5 a hand-off failure is also appended to the systemMessage. `add_to_repo.py`: C1/B1 `_repo_path()` resolves where each file really lands: outside the repository -> a `note:` and out of the hint (the learnings file not copied); inside -> git is asked by that real path and the hint names it; C10 one `git check-ignore -z --stdin` call before any write, input and output through temp files (no pipes, R13 kept); B2 both core files are checked on every run, not only when written; C4 the "could not say" note no longer claims a write and is given for the learnings file only after it is written; C7 `_in_git_repo` honours GIT_DIR and GIT_CEILING_DIRECTORIES. Tests: C3 `git_env()` strips GIT_* and the global and system config and excludes file, used by `run()` and every `git init`; B3 inf in the floor scan, negative output, negative postTokens (each mutation now fails a test); B4 a worktree (`exists` -> `isdir` now fails); deep nesting; symlinked `notes -> docs`; files outside through symlinks; GIT_DIR; the second-run note; the contradiction case. C6 the resume point is replaced in full. Checks: pytest 290 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.
+
+## Round 5 — head a6550dd
+
+Checks at that head: pytest 290 passed 4 skipped, keyline 35/35, the three JSON files parse. Reviewers told to skip rounds 1-4.
+
+### code-review skill, high (9 findings; D1 confirmed by execution; details at scratchpad `review-round5-findings.json`, outside the repo)
+- D1 LOW-MEDIUM, CONFIRMED: `_git_ignored` encoded paths as strict UTF-8; a `notes` link to a folder whose name is not UTF-8 aborted the whole install ("nothing written").
+- D2 LOW: the hand-off failure was appended to the systemMessage on PostToolUse too, so it repeated after every tool call.
+- D3 LOW: the failure message pointed at a log that `log()` could not write either.
+- D4 LOW: for a file reached through an in-repo symlink the hint never named the link.
+- D5 LOW: `_in_git_repo()` re-implemented git's discovery (GIT_DIR, ceilings) and could disagree with it.
+- D6 VERY LOW: README still described the dropped oversize skip.
+- D7-D9 LOW, simplification: a `files` alias, an over-built `asked` filter, realpath computed twice.
+
+### breaker agent (no high or medium; 6 findings, the agent's report in its reply)
+- E1 LOW-MEDIUM = D4, wider: a link on `.claude`, `.claude/hooks` or `notes` was neither named in the hint nor asked of git, so an ignored `.claude` link gave a confident, wrong hint.
+- E2 VERY LOW = D1, plus a second case: a surrogate-escaped path in a note crashed the print after the writes (strict UTF-8 stdout), losing the hint, exit 1.
+- E3 LOW, test gap: the GIT_CEILING_DIRECTORIES branch of `_in_git_repo` survived mutation. Moot: D5 removed the function.
+- E4 VERY LOW: a path starting with ":" is read by `check-ignore --stdin` as pathspec magic (wrong answer, or exit 128 for all paths).
+- E5 VERY LOW, test gap: the `n and` guard before the floor read survived mutation.
+- E6 VERY LOW, rejected as out of scope: running the script on a subfolder of a repository installs where cloud sessions do not look. Behaviour already on main, not in this diff.
+
+### Round 5 fixes
+All accepted except E6 (out of scope) and E3 (moot). Hook: D2 the failure goes into the systemMessage on UserPromptSubmit only (stderr and the log always); D3 `log()` returns whether it wrote, else the message carries the error type and text. `add_to_repo.py`: D1/E2 paths go to git as file-system bytes (`os.fsencode`/`os.fsdecode`, ValueError in the handler), stdout and stderr use `errors="backslashreplace"`; D5 `_in_git_repo` dropped: exit 128 with "not a git repository" (LC_ALL=C) means no repository; E4 paths go to git as `./<path>`; D4/E1 `_links()` finds each symlink on the way to a file by its own repo path; the links are asked in the same git call; a link git ignores gives a `note:` on every run and keeps the file out of the hint (learnings not copied); otherwise the hint names the link with the file (the "commit the link too" note is gone); D6 README; D7-D9 simplified. Tests: a non-UTF-8 folder name, the `.claude` link in the hint, an ignored link (both runs), a ":" folder, `notes -> docs` hint with the link, no floor read with no usage (E5), PostToolUse quiet on failure, unwritable log. Each new guard was mutation-checked (reverting it fails a test). Checks: pytest 297 passed 4 skipped (also with `IDEAL_UMBRELLA_BASELINE=500 IDEAL_UMBRELLA_TAIL_BYTES=abc GIT_DIR=/nonexistent`), keyline 35/35, the three JSON files parse.

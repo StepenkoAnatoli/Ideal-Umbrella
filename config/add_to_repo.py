@@ -182,59 +182,64 @@ def _write_json(path, data):
     _write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
 
 
-def _in_git_repo(repo):
-    """True when git would look for a repository here: GIT_DIR is set, or `repo` or a folder
-    above it, short of a GIT_CEILING_DIRECTORIES entry, holds a .git entry (a folder, or the
-    file of a worktree or submodule)."""
-    if os.environ.get("GIT_DIR"):
-        return True
-    ceilings = {os.path.realpath(c) for c in
-                os.environ.get("GIT_CEILING_DIRECTORIES", "").split(os.pathsep) if c}
-    folder = os.path.realpath(repo)
-    while True:
-        if os.path.exists(os.path.join(folder, ".git")):
-            return True
-        parent = os.path.dirname(folder)
-        if parent == folder or parent in ceilings:
-            return False
-        folder = parent
-
-
 def _git_ignored(repo, relatives):
-    """{path: True when git ignores it, False when it does not or `repo` is in no repository,
-    None when git cannot say (git missing, a timeout, an exit other than 0 or 1)}, from one
-    `git check-ignore` call. Its input and output are files, not pipes, so a timed-out git
-    child cannot hold the run on Windows."""
+    """{path: True when git ignores it, False when it does not or `repo` is in no repository
+    (git says so), None when git cannot say (git missing, a timeout, any other failure:
+    dubious ownership, a broken GIT_DIR)}, from one `git check-ignore` call; git itself finds
+    the repository. Input, output and errors are files, not pipes, so a timed-out git child
+    cannot hold the run on Windows. Paths go over as file-system bytes, so a folder name that
+    is not UTF-8 reaches git as it is on disk."""
     if not relatives:
         return {}
-    if not _in_git_repo(repo):
-        return dict.fromkeys(relatives, False)
+    # Untranslated messages: "not a git repository" is read from stderr.
+    env = dict(os.environ, LC_ALL="C", LANGUAGE="C")
     try:
-        with tempfile.TemporaryFile() as given, tempfile.TemporaryFile() as out:
-            given.write("\0".join(relatives).encode("utf-8") + b"\0")
+        with tempfile.TemporaryFile() as given, tempfile.TemporaryFile() as out, \
+                tempfile.TemporaryFile() as err:
+            # "./" keeps a name that starts with ":" from being read as pathspec magic; git
+            # echoes each path as given.
+            given.write(b"".join(os.fsencode("./" + r) + b"\0" for r in relatives))
             given.seek(0)
             result = subprocess.run(["git", "-C", repo, "check-ignore", "-z", "--stdin"],
-                                    stdin=given, stdout=out, stderr=subprocess.DEVNULL,
-                                    timeout=10)
+                                    stdin=given, stdout=out, stderr=err, env=env, timeout=10)
             out.seek(0)
-            listed = set(out.read().decode("utf-8", "surrogateescape").split("\0"))
-    except (OSError, subprocess.SubprocessError):
+            err.seek(0)
+            listed = {os.fsdecode(p) for p in out.read().split(b"\0")}
+            errors = err.read()
+    except (OSError, ValueError, subprocess.SubprocessError):
         return dict.fromkeys(relatives, None)
     if result.returncode not in (0, 1):
-        return dict.fromkeys(relatives, None)
-    return {r: r in listed for r in relatives}
+        no_repo = result.returncode == 128 and b"not a git repository" in errors
+        return dict.fromkeys(relatives, False if no_repo else None)
+    return {r: "./" + r in listed for r in relatives}
 
 
-def _repo_path(repo, full):
-    """Where `full` really lands, symlinks resolved, relative to the real `repo` with "/"
-    separators (the path git knows it by); None when that is outside the repository."""
+def _repo_path(real_repo, real_full):
+    """`real_full` (symlinks resolved) relative to `real_repo` with "/" separators: the path
+    git knows the file by; None when it is outside the repository."""
     try:
-        rel = os.path.relpath(os.path.realpath(full), os.path.realpath(repo))
+        rel = os.path.relpath(real_full, real_repo)
     except ValueError:   # another drive on Windows
         return None
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
     return rel.replace(os.sep, "/")
+
+
+def _links(repo, real_repo, name):
+    """The symlinks on the way to `name` (a "/" path under `repo`), each by the path git knows
+    the link itself by: its folder resolved, the link not. Links outside the repository are
+    left out (the file then lands outside too, which has its own note)."""
+    links, part = [], ""
+    for piece in name.split("/"):
+        part = f"{part}/{piece}" if part else piece
+        full = os.path.join(repo, *part.split("/"))
+        if _is_link(full):
+            own = _repo_path(real_repo, os.path.join(os.path.realpath(os.path.dirname(full)),
+                                                     piece))
+            if own is not None:
+                links.append(own)
+    return links
 
 
 def _unsure(relative):
@@ -244,7 +249,10 @@ def _unsure(relative):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # the repo path may not fit the ANSI code page
+        # The repo path may not fit the ANSI code page, or may not be UTF-8 at all.
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="backslashreplace")
     force = "--force" in argv
     argv = [a for a in argv if a != "--force"]
     if len(argv) != 1 or not os.path.isdir(argv[0]):
@@ -270,9 +278,8 @@ def main(argv=None):
         print(f"note: {notice}")
     # Name only the files written this run that git can take: an untouched one has nothing to
     # commit, an ignored one or one outside the repository has its own note.
-    files = commit
-    if files:
-        names = files[0] if len(files) == 1 else ", ".join(files[:-1]) + " and " + files[-1]
+    if commit:
+        names = commit[0] if len(commit) == 1 else ", ".join(commit[:-1]) + " and " + commit[-1]
         print(f"Commit {names} in that repository.")
     return 0
 
@@ -327,53 +334,70 @@ def _add(repo, force, progress=None, commit=None):
     hook_changed = source != old
     # Where each file lands and what git says of it, asked once before anything is written.
     core = {".claude/hooks/context_check.py": target, ".claude/settings.json": path}
-    real = {name: _repo_path(repo, full) for name, full in core.items()}
-    real["notes/learnings.md"] = _repo_path(repo, learnings) if copy_learnings else None
-    asked = [r for name, r in real.items() if r is not None and
-             (name != "notes/learnings.md" or copy_learnings)]
-    ignored = _git_ignored(repo, asked)
+    real_repo = os.path.realpath(repo)
+    resolved = {name: os.path.realpath(full) for name, full in core.items()}
+    resolved["notes/learnings.md"] = os.path.realpath(learnings)
+    real = {name: _repo_path(real_repo, full) for name, full in resolved.items()}
+    if not copy_learnings:
+        real["notes/learnings.md"] = None
+    # A symlink on the way is what a clone goes through: it is committed, and checked, too.
+    links = {name: _links(repo, real_repo, name) for name in real if real[name] is not None}
+    asked = {r for r in real.values() if r is not None}
+    asked.update(link for found in links.values() for link in found)
+    ignored = _git_ignored(repo, sorted(asked))
+    hidden = {name: next((link for link in found if ignored[link]), None)
+              for name, found in links.items()}
+
+    def take(name):
+        for path in (real[name], *links[name]):
+            if path not in commit:
+                commit.append(path)
+            if ignored[path] is None:
+                notices.append(_unsure(path))
 
     if hook_changed:
-        _write_bytes(target, source)
+        _write_bytes(resolved[".claude/hooks/context_check.py"], source)
         progress.append(".claude/hooks/context_check.py")
     if changes:
         _write_json(path, settings)
         progress.append(".claude/settings.json")
     if hook_changed:
         changes.append(".claude/hooks/context_check.py written")
-    for name, full in core.items():
+    for name in core:
         if real[name] is None:
             notices.append(f"{name} lands outside the repository through a symlink "
-                           f"({os.path.realpath(full)}), so cloud sessions will not see it")
+                           f"({resolved[name]}), so cloud sessions will not see it")
         elif ignored[real[name]]:
             notices.append(f"{name} is ignored by git, so cloud sessions will not see it; "
                            "unignore it or commit it with git add -f")
+        elif hidden[name] is not None:
+            notices.append(f"{name} is reached through the symlink {hidden[name]}, which git "
+                           "ignores, so cloud sessions will not see it; unignore the link or "
+                           "commit it with git add -f")
+        elif name in progress:
+            take(name)
         else:
-            if ignored[real[name]] is None:
-                notices.append(_unsure(real[name]))
-            if name in progress:
-                commit.append(real[name])
+            notices.extend(_unsure(p) for p in (real[name], *links[name]) if ignored[p] is None)
     if dangling is not None:
         notices.append(f"notes/learnings.md not copied: {dangling} is a symlink to a missing target")
     elif copy_learnings and real["notes/learnings.md"] is None:
         copy_learnings = False
         notices.append("notes/learnings.md not copied: a symlink puts it outside the repository "
-                       f"({os.path.realpath(learnings)}), so cloud sessions would not see it")
-    elif copy_learnings and ignored[real["notes/learnings.md"]]:
+                       f"({resolved['notes/learnings.md']}), so cloud sessions would not see it")
+    elif copy_learnings and (ignored[real["notes/learnings.md"]]
+                             or hidden["notes/learnings.md"] is not None):
         copy_learnings = False
         notices.append("notes/learnings.md not copied: git ignores it, so cloud sessions "
                        "would not see it")
     if copy_learnings:
         try:
-            _write_bytes(learnings, learnings_template)
+            _write_bytes(resolved["notes/learnings.md"], learnings_template)
         except OSError as e:
             notices.append(f"notes/learnings.md not written ({e}); the hook and settings are "
                            "installed")
         else:
             progress.append("notes/learnings.md")
-            commit.append(real["notes/learnings.md"])
-            if ignored[real["notes/learnings.md"]] is None:
-                notices.append(_unsure(real["notes/learnings.md"]))
+            take("notes/learnings.md")
             changes.append("notes/learnings.md written (the learnings template; it is yours "
                            "now, later runs leave it)")
     return changes, notices

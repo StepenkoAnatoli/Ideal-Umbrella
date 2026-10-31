@@ -411,9 +411,62 @@ def test_notes_symlinked_inside_the_repository_is_named_by_its_real_path(tmp_pat
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert "could not say" not in result.stdout
-    assert ("Commit .claude/hooks/context_check.py, .claude/settings.json and docs/learnings.md "
-            "in that repository.") in result.stdout
+    # The hint names the real path and the link itself, which the cloud clone goes through.
+    assert ("Commit .claude/hooks/context_check.py, .claude/settings.json, docs/learnings.md "
+            "and notes in that repository.") in result.stdout
     assert (repo / "docs" / "learnings.md").is_file()
+
+
+def test_a_claude_folder_link_is_named_in_the_hint(tmp_path):
+    # `.claude -> docs/claude`: the hint named only docs/claude/..., so the clone had no .claude.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs" / "claude").mkdir(parents=True)
+    try:
+        (repo / ".claude").symlink_to(os.path.join("docs", "claude"), target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert ("Commit docs/claude/hooks/context_check.py, .claude, docs/claude/settings.json "
+            "and notes/learnings.md in that repository.") in result.stdout
+
+
+def test_an_ignored_link_gets_a_note_and_no_hint(tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "docs" / "claude").mkdir(parents=True)
+    (repo / "docs" / "n").mkdir()
+    try:
+        (repo / ".claude").symlink_to(os.path.join("docs", "claude"), target_is_directory=True)
+        (repo / "notes").symlink_to(os.path.join("docs", "n"), target_is_directory=True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    (repo / ".gitignore").write_text("/.claude\n/notes\n", encoding="utf-8")
+    for _ in range(2):
+        result = run(repo)
+        assert result.returncode == 0, result.stderr
+        assert ("note: .claude/settings.json is reached through the symlink .claude, which git "
+                "ignores") in result.stdout
+        assert ("note: .claude/hooks/context_check.py is reached through the symlink .claude"
+                in result.stdout)
+        assert "Commit" not in result.stdout
+        assert "notes/learnings.md not copied: git ignores it" in result.stdout
+    assert not (repo / "docs" / "n" / "learnings.md").exists()
+
+
+def test_a_folder_whose_name_starts_with_a_colon_is_not_pathspec_magic(tmp_path):
+    if os.name == "nt":
+        pytest.skip("':' is not allowed in a Windows file name")
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ":x").mkdir()
+    (repo / "notes").symlink_to(":x", target_is_directory=True)
+    (repo / ".gitignore").write_text("/:x/\n", encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert "notes/learnings.md not copied: git ignores it" in result.stdout
+    assert not (repo / ":x" / "learnings.md").exists()
 
 
 def test_files_a_symlink_puts_outside_the_repository_are_noted_not_hinted(tmp_path):
@@ -465,3 +518,19 @@ def test_git_dir_in_the_environment_is_a_repository(tmp_path):
     result = run(repo, env=git_env(GIT_DIR=str(store / ".git"), GIT_WORK_TREE=str(repo)))
     assert result.returncode == 0, result.stderr
     assert "note: notes/learnings.md not copied: git ignores it" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt" or sys.platform == "darwin",
+                    reason="a folder name that is not UTF-8 needs a byte-name file system")
+def test_folder_name_that_is_not_utf8_does_not_abort_the_install(tmp_path):
+    # The paths were encoded as strict UTF-8 for git: UnicodeEncodeError, exit 1, no hook.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    odd = os.path.join(os.fsencode(str(repo)), b"d\xff")
+    os.mkdir(odd)
+    os.symlink(odd, os.path.join(os.fsencode(str(repo)), b"notes"))
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert (repo / ".claude" / "hooks" / "context_check.py").is_file()
+    assert os.path.isfile(os.path.join(odd, b"learnings.md"))
+    assert "could not say" not in result.stdout

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -542,3 +543,38 @@ def test_bad_numbers_outside_the_input_terms_are_guarded(tmp_path):
     result = run_hook(tmp_path, event(negative_post))
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_hand_off_failure_is_not_repeated_on_post_tool_use(tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 160_000})
+    (tmp_path / "state").write_text("in the way", encoding="utf-8")
+    result = run_hook(tmp_path, event(path, name="PostToolUse"))
+    assert result.returncode == 0
+    assert result.stdout == ""   # the line would show after every tool call
+    assert "the hand-off check failed" in result.stderr
+
+
+def test_hand_off_failure_names_the_error_when_the_log_cannot_be_written(tmp_path):
+    # The message pointed at a log that the same unwritable folder kept from being written.
+    path = transcript(tmp_path, {"input_tokens": 160_000})
+    (tmp_path / "state").write_text("in the way", encoding="utf-8")
+    (tmp_path / "context_check.log").mkdir()
+    result = run_hook(tmp_path, event(path))
+    message = json.loads(result.stdout)["systemMessage"]
+    assert "the hand-off check failed (" in message and "details in" not in message
+
+
+def test_no_floor_read_when_the_transcript_has_no_usage(context_check, tmp_path, monkeypatch):
+    # With nothing to show (no usage yet) the floor scan is skipped: it reads up to 4 times
+    # TAIL_BYTES on every prompt.
+    path = tmp_path / "t.jsonl"
+    path.write_text(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n",
+                    encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(context_check, "floor_tokens", lambda *a, **k: calls.append(a) or 0)
+    monkeypatch.setenv("IDEAL_UMBRELLA_STATE_DIR", str(tmp_path / "state"))
+    stdin = json.dumps({"transcript_path": str(path), "session_id": "s",
+                        "hook_event_name": "UserPromptSubmit"}).encode()
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin), encoding="utf-8"))
+    context_check.run()
+    assert calls == []
