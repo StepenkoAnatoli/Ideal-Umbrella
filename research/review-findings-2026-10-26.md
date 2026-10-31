@@ -261,3 +261,6 @@ Checks at that head: pytest 323 passed 5 skipped locally, keyline 35/35, the thr
 
 ### Windows CI fix after round 10 (P2 fixed; the rest still open)
 Run 41235257361 (job 124637568608) failed three tests on Windows. Two, `..` in a link target: Windows folds `..` in a target as text before following any link in it, so `_links()` now normpaths a target on Windows, and the two POSIX-semantics tests (`climbs_out_and_back`, `only_looks_outside`) skip there. The third is P2: `_ls_files()` now sends `:(literal,icase)` pathspecs where FOLDS (Windows, macOS) and `:(literal)` elsewhere; checked against git with a gitlink "Notes" asked for as "notes". Checks: pytest 323 passed 5 skipped, keyline 35/35, the three JSON files parse.
+
+### Second Windows CI fix (d9cbe21)
+Run 41235731230 (job 124638997364) failed `test_a_folder_a_link_passes_through_must_reach_a_clone` (all three layouts) on Windows: the normpath from the fix above folded `build/../docs` to `docs`, so `build` was never recorded as passed. Windows itself never needs `build`, but a POSIX clone of the same link walks it, so the note stays: before normpath, a relative target's text is walked from the link's folder and every folder its `..` leaves is recorded as passed. Checks: pytest 323 passed 5 skipped, keyline 35/35, the three JSON files parse.

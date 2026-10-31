@@ -353,7 +353,18 @@ def _links(real_repo, name, gitlinks=frozenset()):
             to = to[4:]
         drive, rest = os.path.splitdrive(to)
         if os.name == "nt" and rest:
-            # Windows folds ".." in a link target as text before following any link in it.
+            # Windows folds ".." in a link target as text before following any link in it,
+            # but a clone on POSIX walks it: the folders it passes there must exist too.
+            if not drive and not SEPARATORS.match(to):
+                at = current
+                for p in SEPARATORS.split(rest):
+                    if p == "..":
+                        left = _relative(real_repo, at)
+                        if left is not None and left != "." and left not in passed:
+                            passed.append(left)
+                        at = os.path.dirname(at)
+                    elif p not in ("", "."):
+                        at = os.path.join(at, p)
             rest = os.path.normpath(rest)
         # Rooted ("\\Users\\u" on Windows, which 3.13's isabs no longer calls absolute) or with a
         # drive: either way it names a place outside any clone.
