@@ -75,7 +75,8 @@ def main(argv=None):
     parser.add_argument("files", nargs="*", help="files to analyze (default: keyline test fixtures)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+        # -I ignores PYTHONUTF8: set UTF-8 output here
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     if not anthropic:
         print("Error: anthropic package not installed. Install with: pip install anthropic", file=sys.stderr)
@@ -111,14 +112,19 @@ def main(argv=None):
     ratios_cl100k = []
 
     for path in files:
-        if not path.exists():
-            print(f"Warning: {path} not found, skipping", file=sys.stderr)
-            continue
-
         try:
             text = path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeDecodeError) as e:
+        except FileNotFoundError:
+            # Not exists(): on Python 3.14 that says False for a file it cannot look at.
+            print(f"Warning: {path} not found, skipping", file=sys.stderr)
+            continue
+        except OSError as e:
             print(f"Error reading {path}: {e}", file=sys.stderr)
+            continue
+        except UnicodeDecodeError as e:
+            # utf-8-sig counts from after a BOM; the offset names the byte in the file.
+            bom = 3 if path.read_bytes().startswith(b"\xef\xbb\xbf") else 0
+            print(f"Error reading {path}: not UTF-8 ({e.reason} at byte {e.start + bom})", file=sys.stderr)
             continue
         try:
             o200k, cl100k = count_tiktoken(text)

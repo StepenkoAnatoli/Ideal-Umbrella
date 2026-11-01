@@ -22,6 +22,7 @@ import fnmatch
 import io
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -136,7 +137,7 @@ def main():
     patterns = parse_watch(sys.argv[1:])
     for s in (sys.stdout, sys.stderr):
         if hasattr(s, "reconfigure"):
-            s.reconfigure(encoding="utf-8")
+            s.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         event = json.load(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8"))
         path = Path(event["tool_input"]["file_path"])
@@ -149,7 +150,12 @@ def main():
     if not path.is_absolute():
         path = Path(cwd) / path
     try:
-        if not path.is_file() or not watched(path, root, patterns):
+        # os.stat, not is_file(): on Python 3.14 is_file() says False for a file it cannot look at.
+        try:
+            regular = stat.S_ISREG(os.stat(path).st_mode)
+        except (FileNotFoundError, NotADirectoryError, ValueError):   # ValueError: a NUL in the name
+            regular = False
+        if not regular or not watched(path, root, patterns):
             return 0
     except OSError as e:
         # A file in a folder that cannot be searched: the stat itself fails.

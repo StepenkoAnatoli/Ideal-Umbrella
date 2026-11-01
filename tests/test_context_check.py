@@ -70,6 +70,13 @@ def test_tail_bytes_bounds_how_far_back_the_hook_reads(context_check, tmp_path, 
     assert context_check.context_tokens(str(path)) == 0
 
 
+def test_a_transcript_line_nested_too_deep_is_skipped(context_check, tmp_path):
+    path = transcript(tmp_path, {"input_tokens": 200_000})
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("[" * 100000 + "\n")
+    assert context_check.context_tokens(str(path)) == 200_000
+
+
 def test_context_tokens_uses_compaction_boundary(context_check, tmp_path):
     path = transcript(
         tmp_path,
@@ -201,8 +208,8 @@ def test_compaction_above_threshold_starts_the_bands_again(tmp_path):
 
 def test_state_dir_follows_claude_config_dir(context_check, monkeypatch, tmp_path):
     # Claude Code keeps its files in CLAUDE_CONFIG_DIR when it is set; the hook used ~/.claude.
-    # The value is read as install.py reads it (~ expanded, made absolute), so a quoted
-    # "~/cfg" does not put the state under a folder named "~" in every project.
+    # A quoted "~/cfg" (install refuses it; Claude Code does not expand it) is expanded, so the
+    # state does not land under a folder named "~" in every project.
     monkeypatch.delenv("IDEAL_UMBRELLA_STATE_DIR", raising=False)
     monkeypatch.delenv("IDEAL_UMBRELLA_LOG", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
