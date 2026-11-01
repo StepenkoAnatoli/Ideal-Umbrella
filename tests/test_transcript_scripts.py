@@ -46,6 +46,21 @@ def transcript(tmp_path):
     ])
 
 
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_a_line_cut_off_mid_write_is_skipped_and_nothing_is_counted_twice(script, tmp_path):
+    # Review 35, T1: a live transcript can end in half a line. It is skipped, as the first line
+    # and after a good one, and the report is the one for the good lines alone.
+    good = transcript(tmp_path)
+    lines = good.read_text(encoding="utf-8").splitlines(keepends=True)
+    cut = '{"message": {"role": "us\n'
+    bad = tmp_path / "cut.jsonl"
+    bad.write_text(cut + "".join(line + cut for line in lines), encoding="utf-8")
+    expected = run(script, str(good))
+    result = run(script, str(bad))
+    assert result.returncode == 0 and "Traceback" not in result.stderr, result.stderr
+    assert result.stdout == expected.stdout
+
+
 def test_toolresult_share_reports_by_tool(tmp_path):
     result = run("toolresult_share.py", str(transcript(tmp_path)))
     assert result.returncode == 0, result.stderr
@@ -75,3 +90,11 @@ def test_non_utf8_transcript_does_not_crash(script, tmp_path):
     odd.write_bytes(b'{"message": {"role": "user", "content": "caf\xe9 please"}}\n')
     result = run(script, str(odd))
     assert "Traceback" not in result.stderr, result.stderr
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_a_missing_transcript_is_one_line_not_a_traceback(script, tmp_path):
+    result = run(script, str(tmp_path / "missing.jsonl"))
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr, result.stderr
+    assert "error:" in result.stderr and "missing.jsonl" in result.stderr

@@ -52,7 +52,7 @@ INVARIANT = re.compile(
     | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
     | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
     | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})
-    | (?P<number>\d+(?:[.,]\d+)*(?:%|[A-Za-z]+)?)
+    | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
     | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
 )"""
     + R,
@@ -169,8 +169,8 @@ def invariants(text):
         tok = m.group(kind)
         if kind == "path" and not _is_path(tok):
             continue
-        if kind == "upper" and len(re.findall(r"[A-Z]", tok)) < 2:
-            continue          # "A", "I", "A1": not identifiers
+        if kind == "upper" and re.fullmatch(r"[A-Z]s?", tok):
+            continue          # "A", "I", "As": a letter, not an identifier ("S3", "A1" are)
         if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
             continue
         if kind == "proper":
@@ -274,7 +274,10 @@ def read(path):
         with open(path, encoding="utf-8-sig") as f:
             return f.read()
     except UnicodeDecodeError as e:
-        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start}); save it as UTF-8") from None
+        # utf-8-sig counts from after a BOM; the offset names the byte in the file.
+        with open(path, "rb") as f:
+            bom = 3 if f.read(3) == b"\xef\xbb\xbf" else 0
+        raise OSError(f"{path} is not UTF-8 ({e.reason} at byte {e.start + bom}); save it as UTF-8") from None
 
 
 def report(src_path, out_path, source, rendering):
@@ -308,7 +311,7 @@ def report(src_path, out_path, source, rendering):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if len(argv) == 2 and argv[0] == "--list":
         try:
             src = read(argv[1])

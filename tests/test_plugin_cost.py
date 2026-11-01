@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from conftest import load_module
+from conftest import load_module, python_314_pathlib, refuse_looks_inside
 
 
 @pytest.fixture
@@ -59,3 +59,42 @@ def test_counts_skills_commands_mcp_and_hooks(plugin_cost, tmp_path, capsys):
     assert tokens > 0
     assert rows["beta"][1:3] == [0, 0]
     assert "2 plugins, 3 skills/commands" in capsys.readouterr().out
+
+
+def test_a_description_with_a_special_token_or_a_bom_is_counted(plugin_cost, tmp_path, capsys):
+    # tiktoken refuses "<|endoftext|>" unless told otherwise, so one plugin description holding
+    # it stopped the whole run; and a SKILL.md saved with a BOM had no front matter to the
+    # regex, so its description was counted as empty.
+    pytest.importorskip("tiktoken")
+    plugin = make_plugin(tmp_path, "odd", skills=["special", "bom"])
+    (plugin / "skills" / "special" / "SKILL.md").write_text(
+        "---\nname: special\ndescription: Stops at <|endoftext|> markers\n---\n", encoding="utf-8")
+    (plugin / "skills" / "bom" / "SKILL.md").write_text(
+        "---\nname: bom\ndescription: Reads files with a byte order mark\n---\n", encoding="utf-8-sig")
+    assert plugin_cost.desc_of(plugin / "skills" / "bom" / "SKILL.md") == "Reads files with a byte order mark"
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path)]) == 0
+    assert "1 plugins, 2 skills/commands" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_an_app_folder_that_cannot_be_looked_at_says_cannot_read(plugin_cost, tmp_path, capsys, monkeypatch,
+                                                                 pathlib_kind):
+    # Review 24, F1 other hits: on 3.13 is_dir() raised PermissionError (a traceback); on 3.14
+    # it says False, and the folder was "not a folder".
+    app = tmp_path / "blocked" / "app"
+    app.mkdir(parents=True)
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(tmp_path / "blocked", monkeypatch)
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(app)]) == 1
+    err = capsys.readouterr().err
+    assert f"cannot read {app}" in err and "not a folder" not in err, err
+
+
+def test_an_app_folder_through_a_file_is_not_a_folder(plugin_cost, tmp_path, capsys):
+    # Review 26, C3: nothing failed when NotADirectoryError ("a_file/x") read as "cannot read".
+    (tmp_path / "a_file").write_text("", encoding="utf-8")
+    assert plugin_cost.main([str(tmp_path / "out.json"), str(tmp_path / "a_file" / "x")]) == 1
+    err = capsys.readouterr().err
+    assert "not a folder" in err and "cannot read" not in err, err
+    assert not (tmp_path / "out.json").exists()

@@ -1,4 +1,6 @@
-from conftest import ROOT, load_module
+import pytest
+
+from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 
 def test_fixture_path_points_at_keyline_tests():
@@ -77,3 +79,51 @@ def test_no_api_count_at_all_is_exit_1(tmp_path, capsys, monkeypatch):
     assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
     out = capsys.readouterr()
     assert "ERROR" in out.out and "no file was counted" in out.err
+
+
+def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, capsys, monkeypatch):
+    # Review 22, I1: utf-8-sig counts from after a BOM, so the offset was 3 bytes too low.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    for bom in (b"", b"\xef\xbb\xbf"):
+        bad = tmp_path / "latin.txt"
+        bad.write_bytes(bom + b"caf\xe9\n")
+        module.main(["--api-key", "k", "--model", "m", str(bad)])
+        assert f"not UTF-8 (invalid continuation byte at byte {len(bom) + 3})" in capsys.readouterr().err
+
+
+def test_a_missing_file_is_a_warning_and_the_rest_are_counted(tmp_path, capsys, monkeypatch):
+    # Review 32, L3 (mutant V265): no test had a missing file, so its warning could go (the run
+    # went silent) or turn into "Error reading" with the FileNotFoundError branch deleted.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))
+    missing = tmp_path / "missing.txt"
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    assert module.main(["--api-key", "k", "--model", "m", str(missing), str(good)]) == 0
+    out = capsys.readouterr()
+    assert out.err == f"Warning: {missing} not found, skipping\n", out.err
+    assert "good.txt" in out.out and "missing.txt" not in out.out
+
+
+@pytest.mark.parametrize("pathlib_kind", ["3.13", "3.14"])
+def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys, monkeypatch, pathlib_kind):
+    # Review 24, F1 other hits: on 3.14 exists() says False for a file in a folder that cannot
+    # be searched, which was reported as "not found".
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    hidden = tmp_path / "blocked" / "hidden.txt"
+    hidden.parent.mkdir()
+    hidden.write_text("hello\n", encoding="utf-8")
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    if pathlib_kind == "3.14":
+        python_314_pathlib(monkeypatch)
+    refuse_looks_inside(hidden.parent, monkeypatch)
+    module.main(["--api-key", "k", "--model", "m", str(hidden), str(good)])
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err and "not found" not in out.err, out.err
+    assert "Error reading" in out.err and "hidden.txt" in out.err and "good.txt" in out.out

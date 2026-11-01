@@ -13,6 +13,7 @@ cat > ~/.claude/CLAUDE.md <<'EOF'
 - At a step boundary, if the context is over 150k tokens: write a resume point (state, decisions and why, open items, file paths) to the task's progress file, then offer a fresh session whose brief points to that file.
 - At the end of each task that changed something, update the task's resume point (replace it, don't append), so a restart or a fresh chat loses at most the task in progress.
 - Keep decisions in files, not only in the chat.
+- Save what the code cannot tell the next session in notes/learnings.md when the repo has it: a choice and why under decided; an approach dropped and why under tried and ruled out; a bug's cause found after failed attempts, or the user correcting how something is done here, under watch out.
 - In a cloud session the machine is discarded when the session ends: commit and push the progress file before offering the fresh session.
 EOF
 exit 0

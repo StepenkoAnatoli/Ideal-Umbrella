@@ -5,7 +5,8 @@ Usage: python -I scripts/toolresult_share.py TRANSCRIPT.jsonl [TRANSCRIPT.jsonl 
 import collections, json, sys
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")   # -I ignores PYTHONUTF8: set UTF-8 output here
+    # -I ignores PYTHONUTF8: set UTF-8 output here
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 if len(sys.argv) < 2:
     sys.exit("usage: python -I scripts/toolresult_share.py <transcript.jsonl> [more transcripts]")
@@ -33,11 +34,15 @@ def short(name):
 names, res, cnt, other = {}, collections.Counter(), collections.Counter(), collections.Counter()
 big = collections.Counter()
 for path in sys.argv[1:]:
-    with open(path, encoding="utf-8", errors="replace") as f:
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError as e:
+        sys.exit(f"error: {e}")
+    with f:
         for line in f:
             try:
                 e = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
                 continue
             if not isinstance(e, dict) or e.get("isSidechain"):
                 continue

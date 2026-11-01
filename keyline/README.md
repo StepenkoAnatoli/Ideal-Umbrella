@@ -14,13 +14,13 @@ when a note is rendered to Hebrew or prose. Design and measurements:
 | `measure.py` | o200k_base and cl100k_base token counts per file or per folder, with a before/after change line for two files. |
 | `keyline_hook.py` | Claude Code PostToolUse hook for notes under `notes/` or `plans/` of the project: runs the lint, and the check when a sibling `.he.txt` exists. `--print-config` prints a ready-to-paste hook entry for this install. |
 | `hooks-example.json` | Template hook entry. Replace `__PYTHON__` and `__KEYLINE_DIR__`, or use `keyline_hook.py --print-config` instead. |
-| `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (98 tokens o200k, header included). |
+| `CLAUDE-snippet.md` | The standing rule for a repo's CLAUDE.md (153 tokens o200k, header included; the last sentence says when to save a learning in `notes/learnings.md`). |
 | `tests/` | The panel's worked examples and `run_tests.py`, which reproduces their results. |
 | `cache/` | Built on first use: tiktoken encodings and the single-token word list. |
 
 ## Setup
 
-The scripts need Python 3 (CI runs 3.12) and tiktoken (pinned in `requirements.txt`). Install it
+The scripts need Python 3.10 or later (CI runs 3.10, 3.12 and 3.13) and tiktoken (pinned in `requirements.txt`). Install it
 into the interpreter you will run them with, for example a venv in this folder:
 
 ```bash
@@ -119,7 +119,8 @@ Files are counted as stored: a trailing newline or CRLF line endings add tokens.
    (a `notes/` folder outside the project too), and only acts on `.txt`, `.md`, `.keyline` or
    extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
-   absolute pattern matches the absolute path, a relative one the path from the project dir).
+   absolute pattern matches the absolute path, a relative one the path from the project dir;
+   the suffix rule still applies, so a watched `.py` file is passed over).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt`. The hook then checks it whenever
@@ -184,7 +185,8 @@ Two panel claims do not reproduce exactly:
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
   words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,
-  `b07b3b6`, `__init__` and `v2` are.
+  `b07b3b6`, `__init__`, `v2`, `S3`, `1e10` and `0x1f` are. A sign is not part of a number
+  (`-5` is the number `5`), so a rendering that drops it passes.
 - The abbreviation lint only catches inventions that split into several tokens. The o200k
   vocabulary is multilingual, so short shorthands that are already one token pass: rb, cfg, err,
   conn, svc, msg, idx and others. Those are allowed by the spec. k8s, mgmt, dflt and similar are

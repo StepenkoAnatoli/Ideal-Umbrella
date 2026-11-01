@@ -2,12 +2,13 @@
 
 Usage:
   python measure.py FILE_OR_FOLDER [FILE_OR_FOLDER ...]
-A folder is walked recursively (hidden folders, cache/ and __pycache__/ skipped). With exactly two
-files, a change line is printed. Files are counted exactly as stored (a UTF-8 BOM is dropped;
-line endings and a trailing newline are counted). These are OpenAI tokenizers: a proxy for
-Claude's tokenizer, which is not public.
+A folder is walked recursively (hidden folders, cache/, __pycache__/ and node_modules/ skipped).
+With exactly two files, a change line is printed. Files are counted exactly as stored (a UTF-8
+BOM is dropped; line endings and a trailing newline are counted). These are OpenAI tokenizers:
+a proxy for Claude's tokenizer, which is not public.
 """
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -21,13 +22,21 @@ except ImportError:
 SKIP_DIRS = {"cache", "__pycache__", "node_modules"}
 
 
+def _unlisted(e):
+    """os.walk's onerror: a folder the walk cannot list is named, as a file it cannot read is."""
+    print(f"skip (cannot read: {e.strerror or e}): {e.filename}", file=sys.stderr)
+
+
 def files_in(arg):
+    # os.stat, not is_file()/is_dir(): on Python 3.14 those say False for a path that cannot be
+    # looked at (in a folder that cannot be searched), which read as "no such file or folder".
     p = Path(arg)
-    if p.is_file():
+    mode = os.stat(p).st_mode
+    if stat.S_ISREG(mode):
         return [p]
-    if p.is_dir():
+    if stat.S_ISDIR(mode):
         out = []
-        for root, dirs, names in os.walk(p):
+        for root, dirs, names in os.walk(p, onerror=_unlisted):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
             out += [Path(root) / n for n in sorted(names)]
         return out
@@ -40,7 +49,7 @@ def count(text, encs):
 
 def main(argv):
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     if not argv or argv[0].startswith("-"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -49,10 +58,29 @@ def main(argv):
     for arg in argv:
         try:
             paths = files_in(arg)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
+        except OSError as e:
+            # The argument itself cannot be stat'ed (a file in a folder that cannot be searched).
+            print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
+            return 2
         for p in paths:
+            try:
+                # A named pipe or socket in a walked folder would block the read; a symlink to
+                # a missing target would fail it. The stat itself fails in a folder that lists
+                # its names but cannot be searched (mode 0444); os.stat, as in files_in.
+                why = None if stat.S_ISREG(os.stat(p).st_mode) else "not a regular file"
+            except OSError as e:
+                # Not "no longer there" for a name the walk has just listed: on Windows a path
+                # past MAX_PATH says "not found" while it is there.
+                if isinstance(e, (FileNotFoundError, NotADirectoryError)) and os.path.islink(p):
+                    why = "symlink to a missing target"
+                else:
+                    why = f"cannot read: {e.strerror or e}"
+            if why:
+                print(f"skip ({why}): {p}", file=sys.stderr)
+                continue
             try:
                 text = p.read_bytes().decode("utf-8-sig")
             except UnicodeDecodeError:
