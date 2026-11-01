@@ -26,6 +26,7 @@ import math
 import os
 import posixpath
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -349,25 +350,31 @@ def _relative(real_repo, full):
 
 def _ls_files(repo, paths):
     """[(mode, path)] git records at or under `paths` (one `git ls-files -s -z` limited to
-    them, literal pathspecs, case-insensitive where FOLDS), or None when git cannot say. Output goes to a file, as in
-    _git_ignored."""
+    them, literal pathspecs, case-insensitive where FOLDS; [] when `repo` is in no repository),
+    or None when git cannot say. Output goes to a file, as in _git_ignored. A pathspec always
+    takes in a folder's contents too: git has no exact-entry match for the index, and the
+    listing stays far below the timeout even for a large subtree."""
     if not paths:
         return []
+    env = dict(os.environ, LC_ALL="C", LANGUAGE="C")
     try:
-        with tempfile.TemporaryFile() as out:
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             # git matches pathspecs case-sensitively whatever core.ignorecase says: on a
             # case-insensitive file system "notes" must find a submodule recorded as "Notes".
             magic = ":(literal,icase)" if FOLDS else ":(literal)"
             result = subprocess.run(["git", "-C", repo, "ls-files", "-s", "-z", "--",
                                      *(magic + p for p in sorted(paths))],
-                                    stdin=subprocess.DEVNULL, stdout=out,
-                                    stderr=subprocess.DEVNULL, timeout=10)
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                                    env=env, timeout=10)
             out.seek(0)
+            err.seek(0)
             listing = out.read()
+            errors = err.read()
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:
-        return None
+        return [] if result.returncode == 128 and b"not a git repository (or any" in errors \
+            else None
     entries = []
     for entry in listing.split(b"\0"):
         if b"\t" in entry:
@@ -495,14 +502,23 @@ def _links(real_repo, name, gitlinks=frozenset()):
 
 
 def _arg(path):
-    """`path` as one argument to paste into a shell (cmd or PowerShell on Windows)."""
+    """`path` as one argument to paste into a shell: shlex.quote on POSIX; on Windows bare
+    when plain, else in double quotes, which cmd, PowerShell and bash all take (as
+    config/install.py's quote(), copied: the script runs with -I). A leading "-" gets "./"."""
     if path.startswith("-"):
         path = "./" + path
-    if re.fullmatch(r"[\w@%+=:,./-]+", path):
-        return path
-    if os.name == "nt":
-        return '"' + path + '"'
-    return "'" + path.replace("'", "'\\''") + "'"
+    if os.name != "nt":
+        return shlex.quote(path)
+    # "@" splats and "%" expands in cmd even bare.
+    return path if re.fullmatch(r"[\w+=:,./-]+", path) else '"' + path + '"'
+
+
+def _risk(paths):
+    """A warning for a Windows path that double quotes do not protect: PowerShell expands
+    $name and `, cmd expands %name%. "" elsewhere or when none is there."""
+    found = [c for c in "$`%" if os.name == "nt" and any(c in p for p in paths)]
+    return (f" (the path holds {' '.join(found)}, which PowerShell or cmd may expand even in "
+            "quotes: escape it there)") if found else ""
 
 
 def _unsure(relative):
@@ -649,15 +665,29 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
         for p in (*links[name], *passed[name]):
             on_way.update(_ancestors(p))
     recorded = _ls_files(repo, on_way)
+    if recorded is None:
+        notices.append("git could not list what it records on the way, so submodules that are "
+                       "not checked out and folders git does not track went unchecked")
     gitlinks = frozenset(FOLD(p) for mode, p in recorded or () if mode == "160000")
     if gitlinks:
         real, links, passed = walk(gitlinks)
+
+    def lacks(folder):
+        """True when a folder passed with ".." lies in a submodule, a nested repository or
+        .git. A submodule's own folder is no such thing: a clone has it, empty or not."""
+        return FOLD(folder) not in gitlinks and _nested(real_repo, folder + "/", gitlinks)
+
     asked = {r for r in real.values() if r is not None}
     asked.update(k for found in links.values() for k, state in found.items() if state != "nested")
-    asked.update(f for found in passed.values() for f in found
-                 if not _nested(real_repo, f + "/", gitlinks))
+    asked.update(f for found in passed.values() for f in found if not lacks(f))
     ignored = _git_ignored(repo, sorted(asked))
     unsure = set()
+    # What a clone will have: what git records, the files written and the links the hint
+    # names or a note says to force-add, with every folder above each.
+    tracked = set()
+    for p in ([p for _, p in recorded or ()] + [r for r in real.values() if r is not None]
+              + [k for found in links.values() for k, state in found.items() if state == "ok"]):
+        tracked.update(FOLD(a) for a in _ancestors(p))
 
     def missing(name):
         """Why a clone would not have `name`, as a clause ending in what to do about it, or
@@ -666,11 +696,11 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
         see = "will" if written else "would"
         tail = f", so cloud sessions {see} not see it"
 
-        def unignore(what, path):
-            if what == "it":
-                path = _arg(path)
-            them = "them" if what == "them" else "it"
-            return (f"; unignore {what} or commit {them} with git add -f {path}" if written
+        def unignore(paths, what=None):
+            them = "it" if len(paths) == 1 else "them"
+            what = what or them
+            return (f"; unignore {what} or commit {them} with git add -f "
+                    + " ".join(_arg(p) for p in paths) + _risk(paths) if written
                     else f"; unignore {what} and run this again")
 
         if real[name] is None:
@@ -687,27 +717,24 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
                         "repository" + tail)
         for folder in passed[name]:
             through = f"a symlink on its way passes through the folder {folder}, which "
-            if _nested(real_repo, folder + "/", gitlinks):
+            if lacks(folder):
                 return through + "lies in a submodule, a nested repository or .git" + tail
             if ignored.get(folder):
                 return through + "git ignores" + tail
-            if recorded is not None and not any(
-                    p == folder or p.startswith(folder + "/") for p in
-                    [p for _, p in recorded] + [r for r in real.values() if r is not None]):
+            if recorded is not None and FOLD(folder) not in tracked:
                 return through + "git does not track (a clone lacks it)" + tail
         blocked = [link for link in links[name] if ignored[link]]
         if ignored[real[name]]:
             if not blocked:
-                return "git ignores it" + tail + unignore("it", real[name])
+                return "git ignores it" + tail + unignore([real[name]])
             what = "it and the symlink" + ("s " if len(blocked) > 1 else " ") + ", ".join(blocked)
-            return ("git ignores " + what + tail
-                    + unignore("them", " ".join(_arg(p) for p in (real[name], *blocked))))
+            return "git ignores " + what + tail + unignore([real[name], *blocked])
         if len(blocked) == 1:
             return (f"it is reached through the symlink {blocked[0]}, which git ignores" + tail
-                    + unignore(blocked[0], _arg(blocked[0])))
+                    + unignore(blocked, blocked[0]))
         if blocked:
             return (f"it is reached through the symlinks {', '.join(blocked)}, which git ignores"
-                    + tail + unignore("them", " ".join(_arg(p) for p in blocked)))
+                    + tail + unignore(blocked))
         return None
 
     def check(name, take):
@@ -717,6 +744,10 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
             if ignored[p] is None and p not in unsure:
                 unsure.add(p)
                 notices.append(_unsure(p))
+        for f in passed[name]:
+            if f in asked and ignored.get(f) is None and f not in unsure:
+                unsure.add(f)
+                notices.append(_unsure(f))
 
     if hook_changed:
         _write_bytes(target, source)
