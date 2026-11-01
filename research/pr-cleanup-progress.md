@@ -23,6 +23,10 @@ Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is done and r
 
 ## Open items
 
-- **User decision:** whether to fix review 9's findings. Suggested order is in the report (B1-B3 first, then A2, A3, A1, A4, the lows, the mutation tests).
+- **User decision (2026-11-01):** "yes, fix all of them then check your work and merge". In progress on branch `ccr-review9-7adc485` (PR #33):
+  - fixer A: keyline/ and scripts/ findings (A1-A10, the old #4, #10 and #15 neighbours);
+  - fixer B: config/, hooks/, README and tests (B1-B7, I-1 to I-3).
+  - Next steps: commit, update CHANGELOG, run a fresh-context self-review of the diff with two reviewers, fix what it finds, get CI green, then merge with a merge commit.
+- If restarting: `git diff` on the branch shows the uncommitted fix work. Re-run `python -m pytest -q`, `python -I keyline/tests/run_tests.py` and pyflakes before committing.
 - **Recurring classes:** every medium this round is a *neighbour of a previous fix*; mutation runs found *fixes without tests* (6 in keyline_check.py, 8 in install/uninstall). Other classes to watch: absent is not empty (B3, A8), halfway state (B2, A7), stale record field (B1).
 - **Routine:** after any fix, run a fresh-context self-review of the diff before merging, and a mutation pass over the changed guards.
