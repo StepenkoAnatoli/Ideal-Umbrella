@@ -56,11 +56,14 @@ and `_`) except Hebrew letters: `5` does not count as present because `503` is, 
 and a combining mark NFC cannot fold into its letter (`a` with U+0331) is part of the word; a
 Hebrew point is not, nor is a variation selector or a keycap mark (`✔️v2.1` holds `v2.1`, `5️⃣`
 holds `5`). Emphasis marks (`**v2.1**`, `_API_`, `*ab.txt*`), also across the lines of one
-paragraph, are dropped before the scan, so they neither hide nor extend a token; an `_` or `*`
-that is not emphasis stays part of the token: inside a URL, path or identifier
-(`https://x.io/_api_/v1`, `/srv/_data_/x.txt`), around one word that holds an `_` itself
-(`_private_var_`), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold), or a lone edge
-mark (`_private_name`, `snake_case_`).
+paragraph, are dropped before the scan, so they neither hide nor extend a token. A pair does not
+span a blank line or a line that starts a list item, heading or quote (`- `, `1. `, `# `, `>`).
+An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
+(`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
+are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
+or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks), glued to a word that
+holds an `_` itself (`_private_var_`, `_private_key is ... api_key_`), a dunder (`__init__`,
+`__init_subclass__`; `__12__` is bold), or a lone edge mark (`_private_name`, `snake_case_`).
 A token the source writes on its own is not present where a rendering only extends it, on either
 side: `ab.txt` in `ab.txt.bak`, `ab.txt~`, `ab.txt=1` or `old/ab.txt`, `report.pdf` in `old-report.pdf`,
 `Jean-Luc` in `Jean-Luc-Picard` or `Marie-Jean-Luc`, `14:30` in `14:30:15`, `notes/a` in
@@ -68,7 +71,8 @@ side: `ab.txt` in `ab.txt.bak`, `ab.txt~`, `ab.txt=1` or `old/ab.txt`, `report.p
 share one set of joiners; markup and plain punctuation (`(API)`, `API,` before a space) do not
 extend. A token the source itself writes only glued by a joiner (`v2.1,v2.2`, `MODE=fast`,
 `API(x)`) is present on its own or glued by the same joiner on the same side, not extended any
-other way (`v2.1-rc,v2.2`, `MODE-X=fast` fail). A date stays present inside an ISO timestamp (`2026-10-25T10:00Z`), but not inside a bad
+other way (`v2.1-rc,v2.2`, `MODE-X=fast` fail); a `*` (or another joiner that extends even
+before a space) at the end of the token and one glued onward differ (`v2.1*` and `v2.1*-rc`). A date stays present inside an ISO timestamp (`2026-10-25T10:00Z`), but not inside a bad
 or extended one (`2026-10-25T99`, `2026-10-25T10:00.bak`). A URL holds the characters RFC 3986
 allows plus letters (`https://x.io/Zürich`); markup, quotes and dashes glued after it (`**`, `”`,
 `—`, `…`) are not part of it. A URL is looked up as the rendering's whole URL, so
@@ -243,7 +247,9 @@ Two panel claims do not reproduce exactly:
   only after a word on the same line (`Ticket No. 5`); anywhere else (`Up? No. 5 are down.`,
   `A: No. 5 fail`, `(no. 3 ...)`, a line that starts `No.`) it is the negation. A lowercase
   `no.` is a number sign only after a digit (`Item 3 no. 5`); after a word it is the answer
-  (`I'd say no. 3 fail`), so `ticket no. 5` counts as a negation (fails closed). The number must
+  (`I'd say no. 3 fail`), so `ticket no. 5` counts as a negation (fails closed). In the
+  rendering it counts only as often as the source has one, so it cannot stand in for a dropped
+  negation (`Do not deploy. Ticket No. 5.` to `Deploy. ticket no. 5.` fails). The number must
   follow on the same line. `Ticket No 5` without the period counts as a negation (fails closed).
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase

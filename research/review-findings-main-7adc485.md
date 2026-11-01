@@ -195,3 +195,14 @@ The mediums were reproduced in the main session with `python -I`.
 - **SB2 (fix without test):** mutants that remove the hook check (:212), the value check (:217) or the `bool(added)` guard (:222) pass every test.
 - **SB3 (info):** the installer's own file, emptied by the user of everything it wrote, is left as `{}` with a backup and no note. Add a note.
 - **SB4 (info):** a user file holding an installer value (`{"autoCompactWindow":250000}`) after the created one was deleted counts as created. A check based on content cannot tell these cases apart; document it.
+
+## Second self-review (fresh reviewer, diff f36767d..da4f87e)
+
+SA1-SA9 and SB1-SB4 fixed (0ea6811 config, da4f87e keyline). A fresh reviewer then found 0 high, 3 medium, 1 low, 3 info; all mediums reproduced with `python -I` and fixed with tests in the next commit:
+- **M1 (medium, fix did not fully cover SA2):** emphasis marks inside a URL after `? & # , + ( ; ! $ %` were still stripped (`https://x.io/a?_k_=1` against `?k=1` passed). Fix: `_plain` skips marks inside a URL token.
+- **M2 (medium, regression from SA8):** "Do not deploy. Ticket No. 5." against "Deploy. ticket no. 5." passed, the lowercased "no." standing in for the lost "not". Fix: the rendering's "word no. N" counts as a negation only as often as the source has one.
+- **M3 (medium, regression from SA4):** emphasis paired across list items, so a glob `*` or trailing `_` vanished. Fix: pairing resets at a list item, heading or quote; an `_` pair whose first or last word holds an `_` is kept.
+- **L1 (low, halfway state of SA1):** `v2.1*` against `v2.1*-rc` passed. Fixed: they are different extensions.
+- **I1 (info, pre-existing):** `**/*.py and docs/**` was stripped as bold. Fixed: emphasis does not close after `/` or `\`.
+- **Still passing, accepted:** a bare `v2.1` for a source `v2.1*` (a standalone token counts as present; `_unextended` decision).
+- Checks: pytest 1801 passed, 14 skipped; keyline 35/35; pyflakes clean; self-pass fuzz 0 failures; 23 of 23 mutants killed.

@@ -1104,3 +1104,100 @@ def test_a_mark_run_on_one_side_of_a_path_changes_the_token(keyline_check):
 
 def test_emphasis_after_a_hebrew_prefix_and_dash_is_dropped(keyline_check):
     assert keyline_check._plain("ל-_Paris_ ו-*API*") == "ל-Paris ו-API"
+
+
+# --- SA2 review: M1-M3, L1, I1 ---------------------------------------------------------------
+
+@pytest.mark.parametrize("marked, bare", [
+    ("https://x.io/a?_k_=1", "https://x.io/a?k=1"),
+    ("https://x.io/a?q=1&_b_=2", "https://x.io/a?q=1&b=2"),
+    ("https://x.io/a#_frag_", "https://x.io/a#frag"),
+    ("https://x.io/a?x=1&*b*=2", "https://x.io/a?x=1&b=2"),
+    ("https://x.io/a,_b_", "https://x.io/a,b"),
+    ("https://x.io/a+_b_", "https://x.io/a+b"),
+    ("https://x.io/a(_b_)", "https://x.io/a(b)"),
+    ("https://x.io/a;_b_", "https://x.io/a;b"),
+    ("https://x.io/a!_b_", "https://x.io/a!b"),
+    ("https://x.io/a$_b_", "https://x.io/a$b"),
+    ("https://x.io/a%_b_", "https://x.io/a%b"),
+    ("https://x.io/a?q=*b*", "https://x.io/a?q=b"),
+])
+def test_marks_inside_a_url_are_part_of_it(keyline_check, marked, bare):
+    # M1: a URL is masked before emphasis is paired, in both directions.
+    for source, rendering in ((f"see {marked}", f"see {bare}"), (f"see {bare}", f"see {marked}")):
+        result = keyline_check.check(source, rendering)
+        assert not result.ok and result.missing, (source, rendering, result)
+        assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("See **https://x.io/a** now", "See https://x.io/a now"),
+    ("See _https://x.io/a_ now", "See https://x.io/a now"),
+    ("See __https://x.io/a__, now", "See https://x.io/a, now"),
+    ("See *https://x.io/a?q=1*. Now", "See https://x.io/a?q=1. Now"),
+    ("_see https://x.io/a_", "see https://x.io/a"),
+])
+def test_emphasis_around_a_url_is_still_dropped(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Do not deploy. Ticket No. 5.", "Deploy. ticket no. 5."),
+    ("Servers are not affected. See ticket No. 5.", "Servers are affected. See ticket no. 5."),
+])
+def test_an_ambiguous_no_in_the_rendering_does_not_stand_in_for_a_negation(keyline_check, source, rendering):
+    # M2: a lowercase "no. N" after a word counts in the rendering only as often as the source has one.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.neg_rendering < result.neg_source, result
+
+
+@pytest.mark.parametrize("text", [
+    "See ticket no. 5.", "Do not deploy. See ticket no. 5 and no. 6.", "I'd say no. 3 fail",
+])
+def test_an_ambiguous_no_present_on_both_sides_passes(keyline_check, text):
+    assert keyline_check.check(text, text).ok
+    assert keyline_check.check(text, text.replace("ticket", "Ticket")).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("- run all tests\n- remove ab.txt", "- run *all tests\n- remove ab.txt*"),
+    ("- run all tests\n- remove ab.txt", "- run _all tests\n- remove ab.txt_"),
+    ("1. run all tests\n2. remove ab.txt", "1. run *all tests\n2. remove ab.txt*"),
+    ("Run all tests\n# remove ab.txt", "Run *all tests\n# remove ab.txt*"),
+    ("Run all tests\n> remove ab.txt", "Run *all tests\n> remove ab.txt*"),
+    ("_private_key is set\nrotate api_key_", "private_key is set\nrotate api_key"),
+    ("_private_key is api_key_", "private_key is api_key"),
+    ("_private_key is set now_", "private_key is set now"),    # the first word alone
+    ("_rotate the api_key_", "rotate the api_key"),            # the last word alone
+])
+def test_emphasis_does_not_pair_across_a_block_or_an_identifier(keyline_check, source, rendering):
+    # M3: pairing resets where a list item, heading or quote starts, and an "_" glued to a word
+    # that holds a "_" is part of that identifier.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    self_check = keyline_check.check(rendering, rendering)   # "ab.txt_" holds no token
+    assert self_check.ok or self_check.inconclusive and not self_check.missing
+
+
+@pytest.mark.parametrize("text", [
+    "- a\n- b *c*\n- d", "- *a\n  b*", "Run *all\ntests* now", "_see this\nnow_",
+])
+def test_emphasis_within_one_block_is_still_dropped(keyline_check, text):
+    assert "*" not in keyline_check._plain(text).replace("- ", "") and "_" not in keyline_check._plain(text)
+
+
+def test_a_joiner_glued_onward_is_another_extension(keyline_check):
+    # L1: "v2.1*" and "v2.1*-rc" are extended differently.
+    assert not keyline_check.check("ship at v2.1* now", "ship at v2.1*-rc now").ok
+    assert not keyline_check.check("ship at v2.1* now", "ship at v2.1*rc now").ok
+    assert keyline_check.check("ship at v2.1* now", "ship at v2.1*. now").ok
+    assert keyline_check.check("ship at v2.1*-rc now", "ship at v2.1*-rc now").ok
+
+
+@pytest.mark.parametrize("text", ["match **/*.py and docs/**", "a __/x and y/__ b", "a *\\x and y\\* b"])
+def test_a_mark_run_after_a_slash_closes_nothing(keyline_check, text):
+    # I1: a close does not follow "/" or "\\", as an open does not.
+    assert keyline_check._plain(text) == text
+    # check() still passes "match /*.py and docs/": a bare token is present for a source that
+    # writes it extended ("docs/**"), by design (see EXT_RIGHT).

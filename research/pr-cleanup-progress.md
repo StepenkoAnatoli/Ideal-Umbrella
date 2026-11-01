@@ -1,6 +1,6 @@
 # Ideal-Umbrella review follow-up: resume point
 
-Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is done and reported in `research/review-findings-main-7adc485.md`, on branch `ccr-review9-7adc485` (draft PR). No code was changed: the user decides whether to fix.
+Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is done and reported in `research/review-findings-main-7adc485.md`, on branch `ccr-review9-7adc485` (draft PR). The user then asked to fix everything and merge; fixes are on the same branch.
 
 ## Request (user)
 
@@ -26,8 +26,8 @@ Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is done and r
 - **User decision (2026-11-01):** "yes, fix all of them then check your work and merge". In progress on branch `ccr-review9-7adc485` (PR #33):
   - fixer A: keyline/ and scripts/ findings (A1-A10, the old #4, #10 and #15 neighbours);
   - fixer B: config/, hooks/, README and tests (B1-B7, I-1 to I-3).
-  - Done: fixes committed (18025a0 config, ae22a1c keyline and CHANGELOG), CI green, and the self-review ran. It found 3 medium regressions (SA1, SA2, SB1) plus lows. The report's "Self-review of the PR diff" section has the details.
-  - Next: fix SA1-SA9 and SB1-SB4, with a test for each. Run the suite, fuzz and mutation checks. Get CI green. Then merge with a merge commit.
+  - Done: fixes committed (18025a0, ae22a1c); first self-review found SA1-SA9 and SB1-SB4, fixed (0ea6811, da4f87e); second self-review found M1-M3 (all mediums), L1, I1, fixed in the commit after da4f87e. Report sections "Self-review of the PR diff" and "Second self-review".
+  - Next: CI green on PR #33, then mark ready and merge with a merge commit.
 - If restarting: `git diff` on the branch shows the uncommitted fix work. Re-run `python -m pytest -q`, `python -I keyline/tests/run_tests.py` and pyflakes before committing.
 - **Recurring classes:** every medium this round is a *neighbour of a previous fix*; mutation runs found *fixes without tests* (6 in keyline_check.py, 8 in install/uninstall). Other classes to watch: absent is not empty (B3, A8), halfway state (B2, A7), stale record field (B1).
 - **Routine:** after any fix, run a fresh-context self-review of the diff before merging, and a mutation pass over the changed guards.
