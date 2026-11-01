@@ -292,3 +292,17 @@ def test_a_token_count_of_infinity_counts_zero_not_a_traceback(usage_breakdown, 
                     '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
     totals, _chars, turns = usage_breakdown.summarize([path])
     assert totals["input_tokens"] == 0 and totals["output_tokens"] == 7 and turns == 1
+
+
+@pytest.mark.parametrize("raw, counted", [
+    ('"12"', 0), ('" 12 "', 0), ('"1_000"', 0), ("true", 0), ("null", 0), ('{"n":1}', 0),
+    ("12", 12), ("12.0", 12),
+])
+def test_only_a_json_number_is_a_token_count(usage_breakdown, tmp_path, raw, counted):
+    # Review 9, A10: int("12") made the text "12" a count, though _int's docstring says text
+    # counts 0; int(True) made true a 1.
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":%s,'
+                    '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
+    totals, _chars, turns = usage_breakdown.summarize([path])
+    assert totals["input_tokens"] == counted and totals["output_tokens"] == 7 and turns == 1

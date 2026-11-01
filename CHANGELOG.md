@@ -19,6 +19,21 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- Review 9 of main 7adc485 (`research/review-findings-main-7adc485.md`): all 4 medium and 12 low findings are fixed, and most informational notes.
+  - keyline_check:
+    - a URL no longer takes in markup, quotes, dashes or bidi marks glued after it;
+    - "No." before a number is a number sign only after a word on the same line, so a dropped "No. 5" fails;
+    - `_underscore_` emphasis no longer hides invariants;
+    - the dash-joined run check is linear again;
+    - a list marker needs content after it (also in keyline_lint);
+    - one joiner set decides extensions on both sides;
+    - "Monday-Friday" in the source is two calendar names;
+    - "May," as a sentence subject is the month;
+    - combining marks are part of a word.
+  - `keyline/measure.py` exits 2 for a folder it cannot list, as documented. `scripts/usage_breakdown.py` counts only JSON numbers as tokens.
+  - install/uninstall: a settings.json counts as created by the install only while it still holds something the install wrote. A settings.json the user wrote, or their own `{}`, is no longer deleted. A created file that is gone drops its record part also after a `--force` install.
+  - `hooks/context_check.py` takes ASCII digits only. `config/verify-tokens.py` prints n/a instead of dividing by 0. The install record's `uninstalled` field is type-checked.
+  - Tests kill the 14 mutations that survived the review. `tests/test_verify_tokens.py` passes without tiktoken.
 - Review 8 of main bcc441c (`research/review-findings-main-bcc441c.md`): all 4 medium and 42 low findings are fixed, except a Windows-only junction note.
   - keyline_check:
     - a date and time written with a space now matches the ISO form, and `:00` seconds are optional;

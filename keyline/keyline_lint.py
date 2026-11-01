@@ -38,8 +38,10 @@ WORDS_CACHE = CACHE_DIR / "o200k_single_token_words.txt"
 ALLOW_NAME = "keyline-allow.txt"
 
 FURNITURE = [
-    (re.compile(r"^\s*[-*+]\s"), "bullet"),
-    (re.compile(r"^\s*\d{1,2}[.)]\s"), "numbered item"),   # "2024. ..." is a year, not a list
+    # A marker needs content after it, as in keyline_check's LIST_MARKER: "12.  " (a hard break)
+    # is a number, and "2024. ..." is a year, not a list.
+    (re.compile(r"^[ \t]*[-*+][ \t]+(?=\S)"), "bullet"),
+    (re.compile(r"^[ \t]*\d{1,2}[.)][ \t]+(?=\S)"), "numbered item"),
     (re.compile(r"^\s*#{1,6}\s"), "header"),
     (re.compile(r"\*\*"), "bold '**'"),
     (re.compile(r"`"), "backtick"),

@@ -36,6 +36,12 @@ class NotRegular(OSError):
     """An argument that exists but is neither a regular file nor a folder (a FIFO, a socket)."""
 
 
+class Unlistable(OSError):
+    """A folder argument that cannot be listed: an argument that cannot be read, exit 2. Not
+    "no such file or folder" when the listing says "not found": the stat has just found it (on
+    Windows a path past MAX_PATH says "not found" while it is there)."""
+
+
 def files_in(arg):
     # os.stat, not is_file()/is_dir(): on Python 3.14 those say False for a path that cannot be
     # looked at (in a folder that cannot be searched), which read as "no such file or folder".
@@ -44,6 +50,13 @@ def files_in(arg):
     if stat.S_ISREG(mode):
         return [p]
     if stat.S_ISDIR(mode):
+        # The walk's onerror names a folder it cannot list and goes on, which is right below the
+        # argument; the argument itself is listed here first, so it is an error, not a skip.
+        try:
+            with os.scandir(p):
+                pass
+        except OSError as e:
+            raise Unlistable(e.errno, e.strerror, e.filename) from e
         out = []
         for root, dirs, names in os.walk(p, onerror=_unlisted):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
@@ -74,6 +87,9 @@ def main(argv):
     for arg in argv:
         try:
             paths = files_in(arg)
+        except Unlistable as e:
+            print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
+            return 2
         except (FileNotFoundError, NotADirectoryError):
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2

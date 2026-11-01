@@ -3,8 +3,10 @@ import pytest
 from conftest import load_module
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def keyline_check():
+    # One load per module: the module builds its word classes from Unicode on import (~0.2 s),
+    # and no test changes it.
     return load_module("keyline_check", "keyline/keyline_check.py")
 
 
@@ -673,3 +675,289 @@ def test_nfd_text_is_read_as_nfc(keyline_check, tmp_path):
     note = tmp_path / "n.txt"
     note.write_text(nfd, encoding="utf-8")
     assert keyline_check.read(note) == nfc
+
+
+# ---- review 9 (main 7adc485) ----
+
+URL_A1 = "https://x.io/a"
+
+
+@pytest.mark.parametrize("rendering", [
+    f"ראו **{URL_A1}** עכשיו",
+    f"See *{URL_A1}* now",
+    f"See “{URL_A1}” now",
+    f"See ‘{URL_A1}’ now",
+    f"See {URL_A1}—now",
+    f"See {URL_A1}… now",
+    f"| {URL_A1}| now |",
+    f"|{URL_A1}|now|",
+    f"ראו {URL_A1}‏ עכשיו",
+    f"ראו {URL_A1}‎ עכשיו",
+    f"See {URL_A1}​ now",
+    f"See ‪{URL_A1}‬ now",
+    f"See ⁦{URL_A1}⁩ now",
+    f"See «{URL_A1}» now",
+    f"See _{URL_A1}_ now",
+    f"See __{URL_A1}__ now",
+])
+def test_markup_or_a_mark_glued_after_a_url_is_not_part_of_it(keyline_check, rendering):
+    # Review 9, A1: the URL body refused a short list of characters, so "**", "”", "—", "…",
+    # "|", RLM and the like became part of the rendering's URL. Both directions, and each
+    # text against itself.
+    source = f"See {URL_A1} now"
+    assert keyline_check.check(source, rendering).ok, keyline_check.invariants(rendering)
+    assert keyline_check.check(rendering, source).ok, keyline_check.invariants(rendering)
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("url", [
+    "https://x.io/a?b=1&c=2#f", "https://x.io/a(b)", "https://x.io/~u/a_b-c.d", "https://x.io/a%20b",
+    "https://x.io/a;p=1", "https://user@x.io/a", "https://x.io/a*b", "https://x.io/a,b", "https://x.io/a!b",
+    "https://x.io/a+b$c", "https://x.io/[x]", "https://x.io/Zürich", "https://x.io/a_",
+])
+def test_a_url_keeps_every_character_a_url_may_hold(keyline_check, url):
+    assert keyline_check.invariants(f"See {url} now") == {url: "url"}
+
+
+def test_a_url_with_a_glued_change_still_fails(keyline_check):
+    # The allow-list must not let a rendering cut the URL short at a character a URL holds.
+    assert not keyline_check.check(f"See {URL_A1} now", f"See {URL_A1}*b now").ok
+    assert not keyline_check.check(f"See {URL_A1}b now", f"See **{URL_A1}** now").ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Q: Fixed? A: No. 5 tests still fail.", "Q: Fixed? A: 5 tests still fail."),
+    ("**Fixed?** No. 5 tests fail.", "**Fixed?** 5 tests fail."),
+    ("Fixed? — No. 5 tests fail.", "Fixed? — 5 tests fail."),
+    ('He asked "fixed?" No. 5 tests fail.', 'He asked "fixed?" 5 tests fail.'),
+    ("Status (no. 3 tables remain).", "Status (3 tables remain)."),
+    ("- No. 5 servers are down", "- 5 servers are down"),
+    ("## No. 5 is down", "## 5 is down"),
+    ("Done? Not yet, no. 3 tables remain.", "Done? Not yet, 3 tables remain."),
+    ("Up?\n> No. 5 are down", "Up?\n> 5 are down"),
+    ("Up? _No._ 5 are down", "Up? 5 are down"),
+])
+def test_a_dropped_no_before_a_number_fails_after_any_non_word(keyline_check, source, rendering):
+    # Review 9, A2: "No." was a number sign everywhere but after a listed sentence boundary.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.neg_source == result.neg_rendering + 1, result
+
+
+@pytest.mark.parametrize("text, count", [
+    ("Ticket No. 5", 0), ("See ticket no. 7", 0), ("Item 3 No. 5", 0), ("Ticket No.\n5", 1),
+    ("Ticket\nNo. 5", 1), ("Ticket No.  5", 0), ("Ticket: No. 5", 1),
+])
+def test_no_is_a_number_sign_only_after_a_word_on_the_same_line(keyline_check, text, count):
+    # Review 9, A2 and A9 (4): "[ \t]*", not "\s*", between "No." and its number.
+    assert keyline_check.negations(text) == count
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Deploy to _Paris_ at _14:30_ with _v2.1_ and _5_ hosts, ticket API-7",
+     "Deploy to _Berlin_ at _16:00_ with _v9.9_ and _7_ hosts, ticket API-7"),
+    ("Deploy to __Paris__ at __14:30__", "Deploy to __Berlin__ at __16:00__"),
+    ("Deploy to _Paris_ at _14:30_", "Deploy to Berlin at 16:00"),
+    ("Deploy to Paris at 14:30", "Deploy to _Berlin_ at _16:00_"),
+    ("See _https://x.io/a_ now", "See _http://x.io/a_ now"),
+    ("Edit _notes/a.txt_ now", "Edit _notes/b.txt_ now"),
+    ("Ship _v2.1_ to _API_", "שלחו את _v2.2_ ל-_API_"),
+])
+def test_underscore_emphasis_does_not_hide_an_invariant(keyline_check, source, rendering):
+    # Review 9, A3 and the old #10 neighbour: "_" is a word character, so "_Paris_" hid "Paris".
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Deploy to _Paris_ at _14:30_ with _v2.1_", "Deploy to Paris at 14:30 with v2.1"),
+    ("Deploy to Paris at 14:30 with v2.1", "פריסה ל-_Paris_ ב-_14:30_ עם _v2.1_"),
+    ("See _https://x.io/a_ now", "See https://x.io/a now"),
+    ("Call __init__ and _private_name now", "Call __init__ and _private_name now"),
+])
+def test_underscore_emphasis_around_an_invariant_keeps_it_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call __init__ now", "Call init now"),               # a dunder is not emphasis
+    ("Call _private_name now", "Call private_name now"),  # a lone edge "_" is part of the name
+    ("Call snake_case_ now", "Call snake_case now"),
+])
+def test_an_underscore_that_is_not_emphasis_stays_part_of_the_token(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+def test_a_long_dash_joined_run_is_checked_in_linear_time(keyline_check):
+    # Review 9, A4: _token_at matched the whole rest of the run from every token in it.
+    import time
+    start = time.perf_counter()
+    result = keyline_check.check("Meet Ab today.", "Meet " + "Ab-" * 20000 + "Ab today.")
+    assert time.perf_counter() - start < 3, "quadratic"
+    assert not result.ok
+    fn = lambda n: keyline_check.check("Meet Ab today.", "Meet " + "Ab-" * n + "Ab today.")  # noqa: E731
+    assert _ratio(fn, 2000, 16000) < 25
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Errors last week:\n12.  \nAll in API.", "Errors last week:\n13.  \nAll in API."),
+    ("Errors last week:\n12.\t\nAll in API.", "Errors last week:\n13.\t\nAll in API."),
+    ("Errors last week:\n12)  \nAll in API.", "Errors last week:\n13)  \nAll in API."),
+])
+def test_a_list_marker_with_only_trailing_space_is_a_number(keyline_check, source, rendering):
+    # Review 9, A5: a markdown hard break leaves spaces after "12." and the marker was stripped.
+    assert keyline_check.check(source, rendering).missing == ["12"]
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Open ab.txt now", "Open ab.txt=1 now"),
+    ("Open ab.txt now", "Open ab.txt&x now"),
+    ("Call API now", "Call API(x) now"),
+    ("Open ab.txt now", "Open ab.txt,v now"),
+    ("Call API now", "Call API$x now"),
+    ("Call API now", "Call API*x now"),
+    ("Open ab.txt now", "Open x@ab.txt now"),
+    ("Call API now", "Call #API now"),
+    ("Call API now", "Call x#API now"),
+    ("Ship v2.1 now", "Ship +v2.1 now"),
+    ("Call API now", "Call $API now"),
+    ("Open notes/a.txt now", "Open C:notes/a.txt now"),
+    ("Call API now", "Call x=API now"),
+    ("Call API now", "Call x&API now"),
+    ("Call API now", "Call x,API now"),
+    ("Call API now", "Call x*API now"),
+    ("Call API now", "Call %API now"),
+])
+def test_a_joiner_extends_a_token_on_both_sides_alike(keyline_check, source, rendering):
+    # Review 9, A6: the two sides refused different sets, so "API#x" failed and "#API" passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call API now", "Call **API** now"),
+    ("Call API now", "Call *API*, now"),
+    ("Call API now", "Call (API) now"),
+    ("Call API now", "Call API: now"),
+    ("Call API now", "Call API, then SDK"),
+    ("Call API now", "Call `API` now"),
+    ("Call API now", "Call [API](https://x.io) now"),
+    ("Call API now", "קראו ל-API עכשיו"),
+    ("Call API now", "Call API's client now"),
+])
+def test_markup_or_punctuation_beside_a_token_does_not_extend_it(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Mon open Monday-Friday", "Mon open Monday to Friday"),
+    ("Mon open Monday-Friday", "Mon open יום שני עד יום שישי"),
+    ("Mon open Monday-Wednesday-Friday", "Mon open Monday, Wednesday and Friday"),
+    ("Mon open Monday-Friday", "Mon open Monday-Friday"),
+])
+def test_a_pair_of_calendar_names_in_the_source_is_two_tokens(keyline_check, source, rendering):
+    # Review 9, A7: the calendar pair rule was applied on the rendering side only.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Mon open Monday-Friday", "Mon open Monday to Thursday"),
+    ("Mon open Monday-Paris", "Mon open Monday to Paris"),
+])
+def test_a_calendar_pair_still_needs_both_names(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T99 today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00.bak today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00/x today."),
+])
+def test_a_date_inside_a_bad_or_extended_iso_timestamp_is_not_present(keyline_check, source, rendering):
+    # Review 9, A9 (2) and A10: the ISO "T" pass skipped the extension check.
+    assert keyline_check.check(source, rendering).missing == ["2026-10-25"]
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00Z today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00:00+02:00 today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00Z-2026-10-26T10:00Z today."),
+])
+def test_a_date_inside_an_iso_timestamp_is_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Open Monday now", "Open Monday-Paris now"),     # A9 (3): both names must be calendar names
+    ("Open Paris now", "Open Monday-Paris now"),
+    ("Open Monday now", "Open Paris-Monday now"),
+])
+def test_a_hyphen_pair_needs_two_calendar_names(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Use sha256 now", "Use sha256/sha512 now"),       # A9 (5): an identifier pairs
+    ("Use sha512 now", "Use sha256/sha512 now"),
+    ("Use foo_bar now", "Use foo_bar/baz_qux now"),    # A9 (6): a snake_case token pairs
+    ("Use baz_qux now", "Use foo_bar/baz_qux now"),
+])
+def test_identifiers_and_snake_case_tokens_pair(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("text", [
+    "May, June and July are busy.", "May and June are busy.", "May or June works.",
+    "May was busy.", "May is busy.", "May has 31 days.", "May.", "MAY, JUNE AND JULY ARE BUSY.",
+    "May to July is busy.",
+])
+def test_may_as_a_sentence_start_subject_is_the_month(keyline_check, text):
+    # Review 9, old #15 neighbour.
+    assert keyline_check.hedges(text) == {}, text
+
+
+@pytest.mark.parametrize("text", ["May I help?", "May we ship?", "May, I ask, we ship?",
+                                  "May the tests pass.", "May and should are modals."])
+def test_may_as_a_modal_stays_a_hedge(keyline_check, text):
+    assert "possibility" in keyline_check.hedges(text), text
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Meet Ra̱ndi today", "Meet Ra̱ndo today"),
+    ("Meet Ra̱ndi today", "Meet Ra today"),
+    ("Ask Q\u0331uinn today", "Ask Q\u0331uinne today"),
+    ("Edit fa̱.txt today", "Edit fa̱b.txt today"),
+])
+def test_a_combining_mark_is_part_of_its_word(keyline_check, source, rendering):
+    # Review 9, old #4 residue: a combining mark NFC cannot compose ended the token.
+    assert not keyline_check.check(source, rendering).ok
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_hebrew_point_is_still_not_a_word_character(keyline_check):
+    assert keyline_check.check("Ship v2.1 today", "שִׁלחו v2.1 הַיום").ok
+    assert keyline_check.check("Ship v2.1 today", "בְּv2.1").ok
+
+
+def test_the_word_classes_match_unicode(keyline_check):
+    # The classes are built from part of Unicode only (see _word_classes). A letter, a digit or
+    # "_" as re reads them, plus every combining mark that is no word character to re, and no
+    # Hebrew letter or point: exactly these, over all assigned characters of Unicode.
+    import re
+    import unicodedata
+    classes = {name: re.compile(getattr(keyline_check, name)) for name in ("LETTER", "ALNUM", "WORD")}
+    mark = re.compile(f"[{keyline_check.MARK}]")
+    letter, alnum, word = re.compile(r"[^\W\d_]"), re.compile(r"[^\W_]"), re.compile(r"\w")
+    for cp in range(0x110000):
+        c = chr(cp)
+        if cp > 0xFFFF and unicodedata.category(c) == "Cn":
+            # An unassigned gap above the BMP may be joined into a range (it keeps the class
+            # short); it is no character yet, so it is never a mark.
+            assert not mark.match(c), hex(cp)
+            continue
+        hebrew = "\u0590" <= c <= "\u05ff" or "\ufb1d" <= c <= "\ufb4f"
+        is_mark = unicodedata.category(c)[0] == "M" and not c.isalnum() and not hebrew
+        want = {"LETTER": bool(letter.match(c)), "ALNUM": bool(alnum.match(c)), "WORD": bool(word.match(c))}
+        for name, pattern in classes.items():
+            assert bool(pattern.match(c)) == ((want[name] and not hebrew) or is_mark), (name, hex(cp))
+        assert bool(mark.match(c)) == is_mark, hex(cp)

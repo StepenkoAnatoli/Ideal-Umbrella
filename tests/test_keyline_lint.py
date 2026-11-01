@@ -253,3 +253,23 @@ def test_an_encoding_that_cannot_load_while_building_the_cache_is_a_read_error(t
     monkeypatch.setattr(keyline_lint, "_tiktoken", lambda: types.SimpleNamespace(get_encoding=broken))
     with pytest.raises(OSError, match="tiktoken could not load o200k_base: hash mismatch"):
         keyline_lint.load_words()
+
+
+# ---- review 9 (main 7adc485) ----
+
+@pytest.mark.parametrize("line, what, furniture", [
+    ("12.  \n", "numbered item", False),
+    ("12.\t\n", "numbered item", False),
+    ("12. step\n", "numbered item", True),
+    ("-  \n", "bullet", False),
+    ("*\t\n", "bullet", False),
+    ("- step\n", "bullet", True),
+    ("  + step\n", "bullet", True),
+])
+def test_a_list_marker_needs_content_after_it(line, what, furniture):
+    # Review 9, A5: a marker followed only by trailing whitespace (a markdown hard break after
+    # "12.") is no list item, as keyline_check reads it.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    words = set(line.replace(".", " ").split()) - {"-", "*", "+"}
+    findings = [f for _, f in keyline_lint.lint_text(line, words, set())]
+    assert any(what in f for f in findings) == furniture

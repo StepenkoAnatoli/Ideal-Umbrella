@@ -124,11 +124,33 @@ def test_a_folder_that_cannot_be_listed_is_named_not_passed_over(tmp_path, capsy
     (sub / "hidden.txt").write_text("hello\n", encoding="utf-8")
     refused = tmp_path if which == "top" else sub
     refuse_listing(refused, monkeypatch)
-    # Review 8, low 16: a folder argument that produced no row exits 1.
-    assert measure.main([str(tmp_path)]) == (1 if which == "top" else 0)
+    # Review 9, A8: a folder argument that cannot be listed is an argument that cannot be read,
+    # exit 2 as the docstring says, not "skip", exit 1; a sub-folder is still a skip.
+    assert measure.main([str(tmp_path)]) == (2 if which == "top" else 0)
     captured = capsys.readouterr()
-    assert f"skip (cannot read: Permission denied): {refused}" in captured.err, captured
+    if which == "top":
+        assert f"error: cannot read {refused}: Permission denied" in captured.err, captured
+        assert "skip" not in captured.err, captured
+    else:
+        assert f"skip (cannot read: Permission denied): {refused}" in captured.err, captured
     assert ("good.txt" in captured.out) == (which == "sub"), captured
+
+
+def test_a_folder_argument_not_found_when_listed_is_exit_2(tmp_path, capsys, monkeypatch):
+    # Review 9, A8: the walk's onerror turned a folder argument it could not list into a skip.
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    (tmp_path / "good.txt").write_text("hello\n", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def scandir(path=".", *args, **kwargs):
+        if os.path.normcase(os.path.normpath(os.fspath(path))) == os.path.normcase(str(tmp_path)):
+            raise FileNotFoundError(2, "No such file or directory", os.fspath(path))
+        return real_scandir(path, *args, **kwargs)
+    monkeypatch.setattr(os, "scandir", scandir)
+    assert measure.main([str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert f"error: cannot read {tmp_path}: No such file or directory" in err, err
 
 
 def test_an_argument_through_a_file_is_no_such_file(tmp_path, capsys):

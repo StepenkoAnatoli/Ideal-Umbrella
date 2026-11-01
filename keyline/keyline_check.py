@@ -14,6 +14,7 @@ Usage:
 Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage or read error.
 """
 import bisect
+import os
 import re
 import sys
 import unicodedata
@@ -35,13 +36,77 @@ def _char_class(pred):
     return "".join(out)
 
 
+def _word_classes():
+    """(letter, alnum, mark): the insides of [...] classes for a letter, a letter or digit, and
+    a combining mark, of any script but Hebrew. A mark NFC cannot fold into its letter (U+0331
+    after the "a" of a name) is part of the word, as the letter is; a Hebrew point is not (a
+    Hebrew letter is no word character here). A mark is no word character to re ("\\W"), so the
+    classes are spelled out: a group "(?:[^\\W...]|[marks])" in a repeat is not linear in sre on
+    a 100 kB run, and Python 3.10 has no possessive repeat. No letter, digit or mark lies in
+    planes 4 to 13, 15 or 16, and no mark in the surrogates, the private use area or planes 2
+    and 3 (test_the_word_classes_match_unicode). Above the BMP an unassigned gap between two
+    ranges is joined into one range, so the classes stay short and quick to compile; a gap is
+    never joined across a digit (for the letter class) or an assigned non-word character."""
+    top = 0x40000                                     # planes 0 to 3, then plane 14 after a " "
+    text = "".join(map(chr, range(top))) + " " + "".join(map(chr, range(0xE0000, 0xF0000)))
+    text = re.sub("[\u0590-\u05ff\ufb1d-\ufb4f]", " ", text)
+
+    def spans(pattern):
+        """The [first, last] code points of each run of pattern."""
+        return [[i if i < top else i - top - 1 + 0xE0000 for i in (m.start(), m.end() - 1)]
+                for m in re.finditer(pattern, text)]
+
+    nonword = re.compile(r"[^\w\s\ud800-\uf8ff]+")
+    marks, walls = [], []           # walls: the assigned characters above the BMP that are no part
+    for m in [*nonword.finditer(text, 0, 0x20000), *nonword.finditer(text, top + 1)]:  # of a word
+        for c in m.group():
+            category = unicodedata.category(c)
+            if category[0] == "M":
+                marks.append(ord(c))
+            elif category != "Cn" and c > "\uffff":
+                walls.append(ord(c))
+    mark_spans = []
+    for cp in marks:
+        if mark_spans and mark_spans[-1][1] == cp - 1:
+            mark_spans[-1][1] = cp
+        else:
+            mark_spans.append([cp, cp])
+
+    def merged(pattern, walls):
+        """The runs of pattern and of marks, adjacent runs joined, as the inside of [...]."""
+        out = []
+        for a, b in sorted(spans(pattern) + mark_spans):
+            # Above the BMP, where re tests each range of a class in turn, a gap of unassigned
+            # code points only is closed: half the ranges, so a character that is no part of a
+            # word is refused about twice as fast.
+            if out and (a <= out[-1][1] + 1 or a > 0xFFFF and out[-1][1] > 0xFFFF and
+                        bisect.bisect(walls, out[-1][1]) == bisect.bisect(walls, a)):
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return _ranges(out)
+
+    digits = [cp for a, b in spans(r"\d+") if b > 0xFFFF for cp in range(max(a, 0x10000), b + 1)]
+    return (merged(r"[^\W\d_]+", sorted(walls + digits)), merged(r"[^\W_]+", walls),
+            _ranges(mark_spans))
+
+
+def _ranges(spans):
+    out = []
+    for a, b in spans:
+        ea, eb = re.escape(chr(a)), re.escape(chr(b))
+        out.append(ea if a == b else f"{ea}-{eb}")
+    return "".join(out)
+
+
 UPPER = _char_class(str.isupper)
 LOWER = _char_class(str.islower)
 HEB_RANGE = "֐-׿יִ-ﭏ"
+_LETTERS, _ALNUMS, MARK = _word_classes()
 UP, LO = f"[{UPPER}]", f"[{LOWER}]"
-LETTER = rf"[^\W\d_{HEB_RANGE}]"          # a letter of any script but Hebrew
-ALNUM = rf"[^\W_{HEB_RANGE}]"             # a letter or a digit, Hebrew letters excepted
-WORD = rf"[^\W{HEB_RANGE}]"               # ALNUM or "_"
+LETTER = f"[{_LETTERS}]"          # a letter of any script but Hebrew, or a combining mark
+ALNUM = f"[{_ALNUMS}]"            # a letter, a digit or a mark, Hebrew excepted
+WORD = f"[_{_ALNUMS}]"            # ALNUM or "_"
 
 # A token boundary on word characters other than Hebrew letters, so a Hebrew prefix glued to an
 # identifier ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5"
@@ -50,10 +115,13 @@ L = rf"(?<!{WORD})"
 R = rf"(?!{WORD}|\.\d)"
 # A token the source writes on its own is not present where a rendering only extends it, on
 # either side: "notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/", "a.txt~",
-# "API#x", "14:30:15" for "14:30" (EXT_RIGHT), and "old/notes/a.txt", "old-report.pdf",
-# "Marie-Jean-Luc", "/notes/a.txt" (EXT_LEFT: a "/" or "\\", or ".", "-", "~" after a word
-# character). A Hebrew letter is not a word character, so "ב-v2.1" and "בv2.14.0" are not
-# extensions. The one exception is a pair or a range of two tokens of one family joined by
+# "API#x", "14:30:15" for "14:30", "a.txt=1", "API(x)" (EXT_RIGHT), and "old/notes/a.txt",
+# "old-report.pdf", "Marie-Jean-Luc", "/notes/a.txt", "#API", "x@a.txt" (the left side). Both
+# sides share one set of joiners (JOIN): a joiner glued between the token and a word character
+# extends it, and a few (EXT_ALWAYS_RIGHT, EXT_ALWAYS_LEFT) extend it on their own ("a.txt~",
+# "C#", "50%", "a.txt*", "+v2.1", "$PATH"). A Hebrew letter is not a word character, so "ב-v2.1"
+# and "בv2.14.0" are not extensions. Markup is not a joiner: "(API)", and emphasis ("**API**",
+# "_API_"), whose marks are dropped before the scan (see EMPHASIS). The one exception is a pair or a range of two tokens of one family joined by
 # "-" or "/" (PAIR_FAMILY): "14:30-15:00", "2026-10-25-2026-10-27", "v2.1/v2.3",
 # "Postgres/MySQL", "API/SDK". A hyphen joins the parts of a name ("Jean-Luc-Picard", "S3-IA",
 # "Paris-Nord"), so between names it is a pair only when both are month or weekday names
@@ -62,7 +130,9 @@ R = rf"(?!{WORD}|\.\d)"
 # extends at every occurrence ("API-v2") is looked up with R only, and every source occurrence
 # is judged by the same function as the rendering's, so a rendering holding the source verbatim
 # always passes.
-EXT_RIGHT = re.compile(rf"[.\-/\\:]{WORD}|[/\\~@#+%]")
+JOIN = ".-/\\:~@#+%=&*$,"
+EXT_ALWAYS_RIGHT, EXT_ALWAYS_LEFT = "/\\~@#+%*", "/\\@#+$%"
+EXT_RIGHT = re.compile(rf"[{re.escape(JOIN)}(]{WORD}|[{re.escape(EXT_ALWAYS_RIGHT)}]")
 WORD_CHAR = re.compile(WORD)
 PAIR_FAMILY = {"proper": "name", "camel": "name", "upper": "name", "ident": "name", "snake": "name",
                "time": "when", "date": "when", "datetime": "when", "version": "version"}
@@ -89,16 +159,16 @@ L_TIME = rf"(?:(?<=\d{{4}}-\d{{2}}-\d{{2}}T)|{L}(?<!\d:))"
 INVARIANT = re.compile(
     L
     + rf"""(?:
-      (?P<url>[A-Za-z][A-Za-z0-9+.-]{{0,30}}://[^\s<>"'`{HEB_RANGE}]+)
+      (?P<url>[A-Za-z][A-Za-z0-9+.-]{{0,30}}://(?:{WORD}|[-.~:/?\#\[\]@!$&()*+,;=%])+)
     | (?P<datetime>\d{{4}}-\d{{2}}-\d{{2}}T\d{{1,2}}:\d{{2}}(?::\d{{2}})?(?:\.\d+)?(?:Z|[+-]\d{{2}}:?\d{{2}})?)
     | (?P<date>\d{{4}}-\d{{2}}-\d{{2}})
     | (?P<time>(?<!\d:)\d{{1,2}}:\d{{2}}(?::\d{{2}})?Z?)
     | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
-    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{{0,200}}[/\\][\w.~/\\-]*)
-    | (?P<file>[\w-]{{2,200}}(?:\.[A-Za-z][A-Za-z0-9]*)+)
-    | (?P<upper>{UP}[{UPPER}0-9]*(?:_[{UPPER}0-9]+)*s?)
+    | (?P<path>(?:[A-Za-z]:)?[\w{MARK}.~-]{{0,200}}[/\\][\w{MARK}.~/\\-]*)
+    | (?P<file>[\w{MARK}-]{{2,200}}(?:\.[A-Za-z][A-Za-z0-9]*)+)
+    | (?P<upper>{UP}[{UPPER}{MARK}0-9]*(?:_[{UPPER}{MARK}0-9]+)*s?)
     | (?P<camel>(?={LETTER}*{LO}{UP})(?=(?P<_camel_run>{ALNUM}+))(?P=_camel_run))
-    | (?P<proper>{UP}{LO}{ALNUM}*(?:-{ALNUM}+|'(?!s(?!{ALNUM})){ALNUM}+)*)
+    | (?P<proper>{UP}[{MARK}]*{LO}{ALNUM}*(?:-{ALNUM}+|'(?!s(?!{ALNUM})){ALNUM}+)*)
     | (?P<snake>_*{ALNUM}+(?:_+{ALNUM}+)+_*|__[a-z0-9]+__)
     | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{{7,128}})
     | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
@@ -129,7 +199,8 @@ PROPER_STOP = {
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
 # The marker's item follows on the same line: "10." alone on a line is the number 10, not a marker.
 # A marker has one or two digits: "2024. Migration done" and "503. Gateway" start with a fact.
-LIST_MARKER = re.compile(r"^[ \t]*(?:\d{1,2}[.)]|[-*+])[ \t]+", re.M)
+# Spaces alone after it are no item: "12.  " (a markdown hard break) is the number 12.
+LIST_MARKER = re.compile(r"^[ \t]*(?:\d{1,2}[.)]|[-*+])[ \t]+(?=\S)", re.M)
 
 # A month or weekday name is an invariant like any proper noun, and a Hebrew rendering may write
 # it in Hebrew: either the English token or one of these forms counts as present.
@@ -155,8 +226,9 @@ CALENDAR_FULL = {"january", "february", "march", "april", "may", "june", "july",
 
 # English: the specified list (no, not, never, without, none) plus "cannot" and n't contractions,
 # so a prose rendering that writes "doesn't" for "does not" is not reported as a lost negation.
-# "No. 5" is a number sign, not a negation, except at a sentence start ("Up? No. 5 are down.",
-# see negations()); the number follows on the same line. The word edges are letters and digits,
+# "No. 5" is a number sign, not a negation, only right after a word on the same line ("Ticket
+# No. 5", see negations()); after anything else ("A: No. 5", "**Fixed?** No. 5", "(no. 3",
+# "- No. 5", "yet, no. 3") it is the answer "no". The number follows on the same line. The word edges are letters and digits,
 # not "\b": "\b" counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
 EN_L, EN_R = r"(?<![^\W_])", r"(?![^\W_])"
 NEG_EN = re.compile(EN_L + r"(?:no|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
@@ -240,15 +312,23 @@ def _trim_url(tok):
     return tok[:end]
 
 
+# The token beside a joiner is matched within this many characters on either side: a long
+# dash-joined run ("Ab-Ab-Ab-...") is not matched to its end again from every token in it. A
+# longer token is judged by its first (or last) TOKEN_REACH characters.
+TOKEN_REACH = 64
+
+
 def _token_at(text, pos):
-    """(kind, token) of the token that starts at pos, or None."""
-    m = INVARIANT.match(text, pos)
+    """(kind, token) of the token that starts at pos (one of at most TOKEN_REACH characters), or
+    None."""
+    m = INVARIANT.match(text, pos, pos + TOKEN_REACH)
     return (m.lastgroup, m.group(m.lastgroup)) if m else None
 
 
 def _token_before(text, end):
-    """(kind, token) of a token that ends at end (one of at most 64 characters), or None."""
-    for p in range(max(0, end - 64), end):
+    """(kind, token) of a token that ends at end (one of at most TOKEN_REACH characters), or
+    None."""
+    for p in range(max(0, end - TOKEN_REACH), end):
         m = INVARIANT.match(text, p, end)
         if m and m.end() == end:
             return m.lastgroup, m.group(m.lastgroup)
@@ -256,37 +336,90 @@ def _token_before(text, end):
 
 
 def _pairs(kind, tok, joiner, other):
-    """Whether tok and the token other on the far side of joiner are a pair (see EXT_RIGHT)."""
-    if other is None or PAIR_FAMILY.get(kind) is None:
+    """Whether tok and the token on the far side of joiner are a pair (see EXT_RIGHT). other is a
+    function that finds that token, called only when tok can pair at all."""
+    family = PAIR_FAMILY.get(kind)
+    if joiner not in "-/" or family is None:
         return False
-    family = PAIR_FAMILY[kind]
-    if family != PAIR_FAMILY.get(other[0]):
+    hyphen_names = joiner == "-" and family == "name"
+    if hyphen_names and tok.lower() not in CALENDAR:
         return False
-    if joiner == "/" or family != "name":
-        return True
-    return tok.lower() in CALENDAR and other[1].lower() in CALENDAR
+    other = other()
+    if other is None or family != PAIR_FAMILY.get(other[0]):
+        return False
+    return not hyphen_names or other[1].lower() in CALENDAR
+
+
+# The time of an ISO date and time after a date ("2026-10-25" in "2026-10-25T14:30Z"), as the
+# datetime token writes it; "T99" is no time, so "2026-10-25T99" does not hold the date.
+ISO_TIME = re.compile(r"T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
 
 
 def _unextended(text, s, e, kind, tok):
     """Whether the occurrence text[s:e] of tok is not extended on either side (see EXT_RIGHT)."""
-    if kind == "date" and re.match(r"T\d", text[e:e + 2]):
-        pass                                # the date of an ISO date and time
-    elif EXT_RIGHT.match(text, e):
+    if kind == "date":
+        t = ISO_TIME.match(text, e)
+        if t:                               # the date of an ISO date and time: what follows
+            if WORD_CHAR.match(text, t.end()):    # the time is checked as if it followed the date
+                return False
+            e = t.end()
+    if EXT_RIGHT.match(text, e):
         joiner = text[e]
-        if joiner not in "-/" or not _pairs(kind, tok, joiner, _token_at(text, e + 1)):
+        if not _pairs(kind, tok, joiner, lambda: _token_at(text, e + 1)):
             return False
     if s:
         c = text[s - 1]
         glued = s > 1 and WORD_CHAR.match(text, s - 2) is not None
-        if c in "/\\" or (c in ".-~" and glued):
-            if not (glued and c in "-/" and _pairs(kind, tok, c, _token_before(text, s - 1))):
+        # A token of tok's family that ends right before a "/" ends in a word character, so
+        # the pair test needs no glued check of its own.
+        if c in EXT_ALWAYS_LEFT or (c in JOIN and glued):
+            if not _pairs(kind, tok, c, lambda: _token_before(text, s - 1)):
                 return False
     return True
 
 
+# Emphasis marks ("_Paris_", "__14:30__", "*API*", "**https://x.io/a**"): "_" is a word
+# character, so it would hide the token inside it, and a "*" glued after a token is a joiner
+# ("a.txt*", see JOIN). An opening run of one or two "_" or one to three "*" (after no word
+# character, before a non-space) is paired with the next closing run of the same marks on the
+# line (after a non-space, before no word character), and both are dropped from source and
+# rendering alike. A lone edge mark ("_private", "snake_case_", "a.txt*") has no partner and
+# stays, and a dunder ("__init__") is a name, not emphasis.
+EMPHASIS = re.compile(r"(?P<open>(?<![\w*])\*{1,3}(?=[^\s*])|(?<!\w)_{1,2}(?=[^\s_]))"
+                      r"|(?P<close>(?<=[^\s*])\*{1,3}(?![\w*])|(?<=[^\s_])_{1,2}(?!\w))|\n")
+DUNDER_BODY = re.compile(r"[a-z0-9]+")
+
+
+def _plain(text):
+    """text without the marks of emphasis (see EMPHASIS). Linear: each run is pushed and popped
+    at most once."""
+    drop, opened = [], {}
+    for m in EMPHASIS.finditer(text):
+        if m.lastgroup == "open":
+            opened.setdefault(m.group(), []).append(m)
+        elif m.lastgroup == "close":
+            stack = opened.get(m.group())
+            if stack:
+                o = stack.pop()
+                if not (m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start())):
+                    drop += [o.span(), m.span()]
+        else:
+            opened = {}                       # emphasis does not run past a line end
+    if not drop:
+        return text
+    drop.sort()
+    out, pos = [], 0
+    for a, b in drop:
+        out.append(text[pos:a])
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _scan(text):
     """Return ({token: kind}, alone): the fact-bearing tokens of text in order of appearance, and
-    the set of those the text writes on their own at least once (see EXT_RIGHT)."""
+    the set of those the text writes on their own at least once (see EXT_RIGHT). text has been
+    through _plain()."""
     text = LIST_MARKER.sub("", text)
     found, alone = {}, set()
     for m in INVARIANT.finditer(text):
@@ -300,19 +433,29 @@ def _scan(text):
             continue
         if kind == "upper" and LONE_LETTER.fullmatch(tok):
             continue          # "A", "I", "As": a letter, not an identifier ("S3", "A1" are)
+        parts = [(m.start(kind), tok)]
         if kind == "proper":
             if tok.lower() in PROPER_STOP or _is_sentence_start(text, m.start()):
                 continue
-        if kind not in ("url", "number") and _unextended(text, m.start(kind), m.start(kind) + len(tok), kind, tok):
-            alone.add(tok)
-        if tok not in found:
-            found[tok] = kind
+            names = tok.split("-")
+            if len(names) > 1 and all(n.lower() in CALENDAR for n in names):
+                # "Monday-Friday", "Mon-Fri": a range of two calendar names, each a token of
+                # its own, as a rendering's "Monday-Friday" is (see _pairs).
+                parts, at = [], m.start(kind)
+                for n in names:
+                    parts.append((at, n))
+                    at += len(n) + 1
+        for start, part in parts:
+            if kind not in ("url", "number") and _unextended(text, start, start + len(part), kind, part):
+                alone.add(part)
+            if part not in found:
+                found[part] = kind
     return found, alone
 
 
 def invariants(text):
     """Return {token: kind} for every fact-bearing token in text, in order of appearance."""
-    return _scan(text)[0]
+    return _scan(_plain(text))[0]
 
 
 class _Lines:
@@ -344,7 +487,15 @@ class _Lines:
 
 # "May 2026", "May: ship", "**May**: 3", "**May** 5", "**May**" or "May" at a line end. A
 # header line is no exception of its own: "## May" ends the line, "## May we ship?" is a modal.
-MONTH_AFTER = re.compile(r"\s+\d|[ \t]*:|\*\*[ \t]*(?::|\d|\n|$)|[ \t]*(?:\n|$)")
+# A sentence-start subject is the month too: "May, June and July", "May and June", "May to
+# July", "May was busy", "May." ("May, I ask, ..." and "May the tests pass" stay modals).
+MONTHS = ("january|february|march|april|may|june|july|august|september|october|november|december"
+          "|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec")
+MONTH_AFTER = re.compile(
+    r"\s+\d|[ \t]*:|\*\*[ \t]*(?::|\d|\n|$)|[ \t]*(?:\n|$)|[ \t]*\.(?![^\W_])"
+    rf"|[ \t]*(?:,|&|[ \t](?:and|or|to|through|until|till))[ \t]+(?:{MONTHS})(?![^\W_])"
+    r"|[ \t]+(?:is|was|has|had|will)(?![^\W_])",
+    re.I)
 # An all-caps word between letter-or-digit edges, so "_MAY_" (emphasis) is one.
 CAPS_WORD = re.compile(r"(?<![^\W_])[A-Z]{2,}(?![^\W_])")
 
@@ -380,11 +531,20 @@ TIME_PARTS = re.compile(r"(\d{1,2}:\d{2})(:\d{2})?(\.\d+)?(.*)", re.S)
 
 
 def _clock(rest):
-    """The pattern of "HH:MM[:SS][.f][zone]": seconds ":00" may be written or left out."""
+    """The forms of "HH:MM[:SS][.f]", longest first, and the zone: seconds ":00" may be written
+    or left out."""
     hm, sec, frac, zone = TIME_PARTS.fullmatch(rest).groups()
     if sec in (None, ":00") and not frac:
-        return re.escape(hm) + r"(?::00)?", zone
-    return re.escape(hm + (sec or "") + (frac or "")), zone
+        return [hm + ":00", hm], zone
+    return [hm + (sec or "") + (frac or "")], zone
+
+
+# The boundaries of a token, matched at a position (a look-behind sees the text before it).
+# present() looks a token up as plain text between these, not through a pattern of its own:
+# the word classes are thousands of characters long, and compiling them once per token cost
+# more than the whole check.
+LEFT_AT, LEFT_TIME_AT, RIGHT_AT = re.compile(L), re.compile(L_TIME), re.compile(R)
+RIGHT_DATE_AT = re.compile(rf"(?=T\d{{1,2}}:\d{{2}})|{R}")   # the date of an ISO date and time
 
 
 # The runs of word characters of a rendering, by text, so present() tries a token only where
@@ -401,7 +561,7 @@ def word_index(text):
 
 
 def present(tok, kind, text, tokens=None, alone=True, index=None):
-    """Whether the source token tok of kind is in the rendering text. tokens is
+    """Whether the source token tok of kind is in the rendering text (through _plain()). tokens is
     invariants(text) and index is word_index(text) when the caller already has them. alone:
     the source writes tok on its own, so a rendering that only extends it ("a.txt" as
     "a.txt.bak", "old/a.txt") does not count (see EXT_RIGHT)."""
@@ -409,23 +569,32 @@ def present(tok, kind, text, tokens=None, alone=True, index=None):
         # A URL is looked up by extraction too: whatever a rendering glues to it ("@evil.io",
         # "&debug=1", "#frag") is part of the rendering's URL, so the source's is not there.
         return tok in (invariants(text) if tokens is None else tokens)
-    left, right = L, R
+    # The forms of the token in the order a pattern would try them (an optional part present
+    # first), so the first that fits at a position is the match there.
+    left, right = LEFT_AT, RIGHT_AT
     if kind == "time":
-        clock, zone = _clock(tok)
-        body = clock + ("Z" if zone else "Z?")
-        left = L_TIME
+        clocks, zone = _clock(tok)
+        forms = [c + z for c in clocks for z in (["Z"] if zone else ["Z", ""])]
+        left = LEFT_TIME_AT
     elif kind == "datetime":
         # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
-        clock, zone = _clock(tok[11:])
-        body = re.escape(tok[:10]) + r"[T ]" + clock + re.escape(zone)
+        clocks, zone = _clock(tok[11:])
+        forms = [tok[:10] + sep + c + zone for sep in "T " for c in clocks]
     else:
-        body = re.escape(tok)
+        forms = [tok]
     if kind == "date":
-        right = rf"(?:(?=T\d)|{right})"     # the date of an ISO date and time
-    pattern = re.compile(left + body + right)
+        right = RIGHT_DATE_AT
+
+    def match(pos):
+        """(start, end) of the token at pos, or None."""
+        if left.match(text, pos):
+            for form in forms:
+                if text.startswith(form, pos) and right.match(text, pos + len(form)):
+                    return pos, pos + len(form)
+        return None
 
     def found(m):
-        return m is not None and (not alone or _unextended(text, m.start(), m.end(), kind, tok))
+        return m is not None and (not alone or _unextended(text, m[0], m[1], kind, tok))
 
     first = WORD_RUN.match(tok)
     if kind != "time" and first:
@@ -434,17 +603,17 @@ def present(tok, kind, text, tokens=None, alone=True, index=None):
         # and R refuses a word character after it).
         if index is None:
             index = word_index(text)
-        if any(found(pattern.match(text, pos)) for pos in index.get(first.group(), ())):
+        if any(found(match(pos)) for pos in index.get(first.group(), ())):
             return True
     else:
-        pos = 0
+        prefix, pos = os.path.commonprefix(forms), 0
         while True:                         # every match, overlapping ones too
-            m = pattern.search(text, pos)
-            if m is None:
+            pos = text.find(prefix, pos)
+            if pos < 0:
                 break
-            if found(m):
+            if found(match(pos)):
                 return True
-            pos = m.start() + 1
+            pos += 1
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
     # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
     # a capitalised name or a full name in capitals is a month or weekday: "DEC" and "SAT" are
@@ -457,20 +626,20 @@ def present(tok, kind, text, tokens=None, alone=True, index=None):
     return False
 
 
-def _after_sentence_end(text, start):
-    """True when only spaces or tabs separate start from the text start, a line start or a
-    sentence end (".", "?", "!")."""
+def _after_word(text, start):
+    """True when the last character before start on its line, spaces and tabs aside, is a
+    letter or a digit."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
-    return i < 0 or text[i] in BOUNDARY
+    return i >= 0 and text[i].isalnum()
 
 
 def negations(text):
     n = len(NEG_HE.findall(text))
     for m in NEG_EN.finditer(text):
         if (m.group().lower() == "no" and NUMBER_SIGN.match(text, m.end())
-                and not _after_sentence_end(text, m.start())):
+                and _after_word(text, m.start())):
             continue                        # "Ticket No. 5": a number sign
         n += 1
     return n
@@ -491,9 +660,10 @@ def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
     # NFC: "Zürich" with a combining diaeresis (NFD, as some editors save it) is "Zürich".
     source, rendering = unicodedata.normalize("NFC", source), unicodedata.normalize("NFC", rendering)
-    inv, alone = _scan(source)
-    rendered, index = invariants(rendering), word_index(rendering)
-    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered, t in alone, index)]
+    inv, alone = _scan(_plain(source))
+    plain = _plain(rendering)
+    rendered, index = _scan(plain)[0], word_index(plain)
+    missing = [t for t, k in inv.items() if not present(t, k, plain, rendered, t in alone, index)]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)
