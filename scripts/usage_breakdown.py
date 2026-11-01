@@ -57,6 +57,11 @@ def _cache_writes(usage):
     return five, one
 
 
+def _len(value):
+    """Characters of a text field; a hand-edited or malformed one (null, a number) counts 0."""
+    return len(value) if isinstance(value, str) else 0
+
+
 def summarize(files):
     """Return (totals, output_characters, api_responses) for the given files."""
     tot = collections.Counter()
@@ -64,7 +69,8 @@ def summarize(files):
     seen = set()
     turns = 0
     for path in files:
-        with open(path, encoding="utf-8", errors="ignore") as f:
+        # utf-8-sig: a BOM would otherwise make the first line unreadable JSON.
+        with open(path, encoding="utf-8-sig", errors="ignore") as f:
             for line in f:
                 try:
                     event = json.loads(line)
@@ -76,8 +82,10 @@ def summarize(files):
                 if not isinstance(message, dict):
                     continue
                 message_id = message.get("id")
-                usage = message.get("usage") or {}
-                if message_id and message_id not in seen and usage:
+                usage = message.get("usage")
+                if not isinstance(usage, dict):
+                    usage = {}
+                if isinstance(message_id, str) and message_id and message_id not in seen and usage:
                     seen.add(message_id)
                     turns += 1
                     five, one = _cache_writes(usage)
@@ -86,18 +94,19 @@ def summarize(files):
                     tot["cache_creation_input_tokens"] += five + one
                     for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"):
                         tot[key] += _int(usage.get(key))
-                for block in message.get("content") or []:
+                content = message.get("content")
+                for block in content if isinstance(content, list) else []:
                     if not isinstance(block, dict):
                         continue
                     kind = block.get("type")
                     if kind == "text":
-                        out_chars["visible text"] += len(block.get("text", ""))
+                        out_chars["visible text"] += _len(block.get("text"))
                     elif kind == "tool_use":
                         out_chars["tool calls (incl. file contents written)"] += len(
                             json.dumps(block.get("input", {}))
                         )
                     elif kind == "thinking":
-                        out_chars["thinking (visible part)"] += len(block.get("thinking", ""))
+                        out_chars["thinking (visible part)"] += _len(block.get("thinking"))
     return tot, out_chars, turns
 
 

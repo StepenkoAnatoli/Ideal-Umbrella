@@ -13,14 +13,46 @@ Usage:
   python keyline_check.py --list SOURCE          print what would be checked
 Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage or read error.
 """
+import bisect
 import re
 import sys
 from dataclasses import dataclass
 
-# A token boundary on ASCII word characters only, so a Hebrew prefix glued to an identifier
-# ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5".
-L = r"(?<![A-Za-z0-9_])"
-R = r"(?![A-Za-z0-9_]|\.\d)"
+# Letters by case, from the Basic Multilingual Plane (the planes above it hold no cased letter a
+# note would use). Hebrew has no case, so a Hebrew letter is neither: a name rule never takes one.
+def _char_class(pred):
+    """The characters of the BMP for which pred holds, as the inside of a [...] class."""
+    out, start = [], None
+    for cp in range(0x10001):
+        if cp < 0x10000 and pred(chr(cp)):
+            if start is None:
+                start = cp
+        elif start is not None:
+            a, b = re.escape(chr(start)), re.escape(chr(cp - 1))
+            out.append(a if start == cp - 1 else f"{a}-{b}")
+            start = None
+    return "".join(out)
+
+
+UPPER = _char_class(str.isupper)
+LOWER = _char_class(str.islower)
+HEB_RANGE = "֐-׿יִ-ﭏ"
+UP, LO = f"[{UPPER}]", f"[{LOWER}]"
+LETTER = rf"[^\W\d_{HEB_RANGE}]"          # a letter of any script but Hebrew
+ALNUM = rf"[^\W_{HEB_RANGE}]"             # a letter or a digit, Hebrew letters excepted
+WORD = rf"[^\W{HEB_RANGE}]"               # ALNUM or "_"
+
+# A token boundary on word characters other than Hebrew letters, so a Hebrew prefix glued to an
+# identifier ("בv2.14.0") still counts as present, while "5" never matches inside "503" or "2.5"
+# and "COLE" is not a token inside "ÉCOLE".
+L = rf"(?<!{WORD})"
+R = rf"(?!{WORD}|\.\d)"
+# The right boundary of a token the source writes on its own: it is not present where a
+# rendering only extends it ("notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/",
+# "14:30:15" for "14:30"). A token the source itself glues to more text ("API-v2") keeps R, so a
+# rendering holding the source verbatim always passes.
+R_ALONE = rf"(?!{WORD}|[.\-/\\:]{WORD}|[/\\])"
+ALONE = re.compile(R_ALONE)
 # A number is looked up by extraction, not by a boundary: "10" is present when the rendering's
 # own invariants hold "10" as a token, so it is not found inside "10:00", "2,500", "10%",
 # "10/25" or the date "2026-10-25" (each one token to the extractor), while both ends of the
@@ -28,8 +60,9 @@ R = r"(?![A-Za-z0-9_]|\.\d)"
 # Whatever the extractor takes from a source line it takes from the same line in a rendering,
 # so a rendering holding the source verbatim always passes. A number glued to a path
 # separator ("10/", "/10", "10\\") is a path, as "notes/" is: the source's "10" is not in it.
-# For a time: "00:30" is not present at the end of "10:00:30".
-L_TIME = L + r"(?<!\d:)"
+# For a time: "00:30" is not present at the end of "10:00:30"; a time is present inside an ISO
+# date and time ("14:30" in "2026-10-25T14:30Z", the same instant written with a space).
+L_TIME = rf"(?:(?<=\d{{4}}-\d{{2}}-\d{{2}}T)|{L}(?<!\d:))"
 
 
 # The path and file alternatives look ahead for a "/" or "." through the dash-joined words that
@@ -37,27 +70,32 @@ L_TIME = L + r"(?<!\d:)"
 # from costing a rescan of the whole rest of the run from every word in it. A path component or
 # file name longer than that is not extracted as one token. A time does not start after "N:",
 # so "3:1:30" is the numbers 3, 1 and 30, not the time "1:30" (which the lookup, bounded the
-# same way, would never find).
+# same way, would never find). The URL scheme is bounded the same way. A CamelCase name is taken
+# whole or not at all: the look-ahead and back-reference stand in for an atomic group (Python
+# 3.10 has none), so a long run that is not a name is given up in one pass, not rescanned.
 INVARIANT = re.compile(
     L
-    + r"""(?:
-      (?P<datetime>\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)
-    | (?P<date>\d{4}-\d{2}-\d{2})
-    | (?P<time>(?<!\d:)\d{1,2}:\d{2}(?::\d{2})?Z?)
+    + rf"""(?:
+      (?P<url>[A-Za-z][A-Za-z0-9+.-]{{0,30}}://[^\s<>"'`{HEB_RANGE}]+)
+    | (?P<datetime>\d{{4}}-\d{{2}}-\d{{2}}T\d{{1,2}}:\d{{2}}(?::\d{{2}})?(?:\.\d+)?(?:Z|[+-]\d{{2}}:?\d{{2}})?)
+    | (?P<date>\d{{4}}-\d{{2}}-\d{{2}})
+    | (?P<time>(?<!\d:)\d{{1,2}}:\d{{2}}(?::\d{{2}})?Z?)
     | (?P<version>v\d+(?:\.\d+)*|\d+\.\d+\.\d+(?:\.\d+)*)
-    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{0,200}[/\\][\w.~/\\-]*)
-    | (?P<file>[\w-]{2,200}(?:\.[A-Za-z][A-Za-z0-9]*)+)
-    | (?P<upper>[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*s?)
-    | (?P<camel>[A-Za-z]*[a-z][A-Z][A-Za-z0-9]*)
-    | (?P<proper>[A-Z][a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+|'(?!s(?![A-Za-z0-9]))[A-Za-z0-9]+)*)
-    | (?P<snake>_*[A-Za-z0-9]+(?:_+[A-Za-z0-9]+)+_*|__[a-z0-9]+__)
-    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40})
+    | (?P<path>(?:[A-Za-z]:)?[\w.~-]{{0,200}}[/\\][\w.~/\\-]*)
+    | (?P<file>[\w-]{{2,200}}(?:\.[A-Za-z][A-Za-z0-9]*)+)
+    | (?P<upper>{UP}[{UPPER}0-9]*(?:_[{UPPER}0-9]+)*s?)
+    | (?P<camel>(?={LETTER}*{LO}{UP})(?=(?P<_camel_run>{ALNUM}+))(?P=_camel_run))
+    | (?P<proper>{UP}{LO}{ALNUM}*(?:-{ALNUM}+|'(?!s(?!{ALNUM})){ALNUM}+)*)
+    | (?P<snake>_*{ALNUM}+(?:_+{ALNUM}+)+_*|__[a-z0-9]+__)
+    | (?P<hash>(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{{7,128}})
     | (?P<number>0[xX][0-9a-fA-F]+|\d+(?:[.,]\d+)*(?:[eE][-+]?\d+)?(?:%|[A-Za-z]+)?)
-    | (?P<ident>[a-z]+\d[A-Za-z0-9]*)
+    | (?P<ident>{LO}+\d{ALNUM}*)
 )"""
     + R,
     re.X,
 )
+LONE_LETTER = re.compile(rf"{UP}s?")
+
 
 # Capitalized words that are sentence furniture or ordinary prose, not names. The proper-noun
 # rule deliberately skips the first word of a line/sentence and these words everywhere else.
@@ -77,7 +115,8 @@ PROPER_STOP = {
 
 # Markdown list markers carry no fact; "1. Add ..." must not make "1" an invariant.
 # The marker's item follows on the same line: "10." alone on a line is the number 10, not a marker.
-LIST_MARKER = re.compile(r"^[ \t]*(?:\d+[.)]|[-*+])[ \t]+", re.M)
+# A marker has one or two digits: "2024. Migration done" and "503. Gateway" start with a fact.
+LIST_MARKER = re.compile(r"^[ \t]*(?:\d{1,2}[.)]|[-*+])[ \t]+", re.M)
 
 # A month or weekday name is an invariant like any proper noun, and a Hebrew rendering may write
 # it in Hebrew: either the English token or one of these forms counts as present.
@@ -95,10 +134,18 @@ for _abbr, _full in (("jan", "january"), ("feb", "february"), ("mar", "march"), 
                      ("wed", "wednesday"), ("thu", "thursday"), ("thur", "thursday"), ("thurs", "thursday"),
                      ("fri", "friday"), ("sat", "saturday")):
     CALENDAR[_abbr] = CALENDAR[_full]
+# A full name in capitals ("OCTOBER", "MONDAY") is the month or the day too; an abbreviation in
+# capitals ("DEC", "SAT", "MAR") is an acronym ("MAY" is both, see hedges()).
+CALENDAR_FULL = {"january", "february", "march", "april", "may", "june", "july", "august",
+                 "september", "october", "november", "december", "sunday", "monday", "tuesday",
+                 "wednesday", "thursday", "friday", "saturday"}
 
 # English: the specified list (no, not, never, without, none) plus "cannot" and n't contractions,
 # so a prose rendering that writes "doesn't" for "does not" is not reported as a lost negation.
-NEG_EN = re.compile(r"\b(?:no|not|never|without|none|cannot)\b|\b[A-Za-z]+n't\b", re.I)
+# "No. 5" is a number sign, not a negation. The word edges are letters and digits, not "\b": "\b"
+# counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
+EN_L, EN_R = r"(?<![^\W_])", r"(?![^\W_])"
+NEG_EN = re.compile(EN_L + r"(?:no(?![^\W_])(?!\.\s*\d)|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
 # לא/אין/ללא and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו).
 HEB = "א-ת"
@@ -126,7 +173,7 @@ HEDGE_GROUPS_HE = {
                    "אמור", "אמורה", "אמורים", "אמורות", "מוכרח"),
     "ability": ("יכול", "יכולה", "יכולים", "יכולות", "ניתן", "אפשר", "מסוגל", "מסוגלת"),
 }
-HEDGE = re.compile(r"\b(?:" + "|".join(w for words in HEDGE_GROUPS.values() for w in words) + r")\b", re.I)
+HEDGE = re.compile(EN_L + "(?:" + "|".join(w for words in HEDGE_GROUPS.values() for w in words) + ")" + EN_R, re.I)
 HEDGE_HE = {
     group: re.compile(rf"(?<![{HEB}])(?:ו|ש|וש|כש)?(?P<word>" + "|".join(map(re.escape, words)) + rf")(?![{HEB}])")
     for group, words in HEDGE_GROUPS_HE.items()
@@ -138,17 +185,17 @@ BOUNDARY = ".?!\n"
 def _is_sentence_start(text, start):
     """True when only whitespace, a sentence end or a line-leading marker ("## ", "> ", "**")
     separates this token from a line or sentence edge. A dash or ">" mid-line is a separator
-    ("Postgres - Prisma"), not a marker: the word after it is checked."""
+    ("Postgres - Prisma"), not a marker: the word after it is checked. The look-back stops at
+    the first character that settles it, so a long line costs no rescan per token."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
-    if i < 0:
-        return True
-    if text[i] in BOUNDARY:
+    if i < 0 or text[i] in BOUNDARY:
         return True
     if text[i] in "-*+#>":
-        line_start = text.rfind("\n", 0, i) + 1
-        return all(c in "-*+#> \t" for c in text[line_start:i])
+        while i >= 0 and text[i] in "-*+#> \t":
+            i -= 1
+        return i < 0 or text[i] == "\n"
     return False
 
 
@@ -160,53 +207,93 @@ def _is_path(tok):
     return True
 
 
-def invariants(text):
-    """Return {token: kind} for every fact-bearing token in text, in order of appearance."""
+def _trim_url(tok):
+    """A URL without the sentence punctuation after it; a ")" stays when the URL opened one."""
+    while tok and (tok[-1] in ".,;:!?" or (tok[-1] in ")]}" and tok.count(tok[-1]) > tok.count("([{"[")]}".index(tok[-1])]))):
+        tok = tok[:-1]
+    return tok
+
+
+def _scan(text):
+    """Return ({token: kind}, alone): the fact-bearing tokens of text in order of appearance, and
+    the set of those the text writes on their own at least once (see R_ALONE)."""
     text = LIST_MARKER.sub("", text)
-    found = {}
+    found, alone = {}, set()
     for m in INVARIANT.finditer(text):
         kind = m.lastgroup
         tok = m.group(kind)
+        # The period is a sentence end, so it goes before the shape checks: "yes/no." is prose.
+        tok = _trim_url(tok) if kind == "url" else tok.rstrip(".")
+        if kind == "url" and tok.endswith("://"):
+            continue
         if kind == "path" and not _is_path(tok):
             continue
-        if kind == "upper" and re.fullmatch(r"[A-Z]s?", tok):
+        if kind == "upper" and LONE_LETTER.fullmatch(tok):
             continue          # "A", "I", "As": a letter, not an identifier ("S3", "A1" are)
-        if kind == "snake" and "_" not in tok.strip("_") and not re.fullmatch(r"__[a-z0-9]+__", tok):
-            continue
         if kind == "proper":
             if tok.lower() in PROPER_STOP or _is_sentence_start(text, m.start()):
                 continue
-        tok = tok.rstrip(".")
-        if tok in found:
-            continue
-        found[tok] = kind
-    return found
+        if ALONE.match(text, m.start(kind) + len(tok)):
+            alone.add(tok)
+        if tok not in found:
+            found[tok] = kind
+    return found, alone
 
 
-def _all_caps_line(text, start, end):
-    """True when the rest of the line has no lowercase letter and holds another all-caps word
-    of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line."""
-    line_start = text.rfind("\n", 0, start) + 1
-    line_end = text.find("\n", end)
-    line = text[line_start:start] + " " + text[end:line_end if line_end >= 0 else len(text)]
-    return re.search(r"[a-z]", line) is None and re.search(r"\b[A-Z]{2,}\b", line) is not None
+def invariants(text):
+    """Return {token: kind} for every fact-bearing token in text, in order of appearance."""
+    return _scan(text)[0]
+
+
+class _Lines:
+    """Line edges and per-line facts of one text, found once: hedges() asks for them per word,
+    and a fresh scan of the line each time made a long line quadratic."""
+
+    def __init__(self, text):
+        self.text = text
+        self.starts = [0] + [m.end() for m in re.finditer("\n", text)]
+        self._caps = {}
+
+    def bounds(self, pos):
+        i = bisect.bisect_right(self.starts, pos) - 1
+        end = self.starts[i + 1] - 1 if i + 1 < len(self.starts) else len(self.text)
+        return self.starts[i], end
+
+    def all_caps(self, start, end):
+        """True when the rest of the line has no lowercase letter and holds another all-caps word
+        of two or more letters ("WE MAY FAIL"); "ship: MAY, 14:02 UTC" is a mixed-case line.
+        start, end are the edges of an all-caps word that counts itself among those words."""
+        line_start, line_end = self.bounds(start)
+        if line_start not in self._caps:
+            line = self.text[line_start:line_end]
+            self._caps[line_start] = (re.search(r"[a-z]", line) is None,
+                                      len(re.findall(r"\b[A-Z]{2,}\b", line)))
+        no_lower, caps = self._caps[line_start]
+        return no_lower and caps >= 2
+
+
+MONTH_AFTER = re.compile(r"\s+\d|[ \t]*[:*]|[ \t]*(?:\n|$)")
 
 
 def hedges(text):
     """Return {group: [words]} for hedge words found in text."""
     text = LIST_MARKER.sub("", text)      # "2) May we proceed?": the marker is not a sentence
+    lines = _Lines(text)
     found = {}
     for m in HEDGE.finditer(text):
-        if m.group(0) in ("May", "MAY") and (re.match(r"\s+\d", text[m.end():])
-                                             or (m.group(0) == "May"
-                                                 and not _is_sentence_start(text, m.start()))
-                                             or (m.group(0) == "MAY"
-                                                 and not _all_caps_line(text, m.start(), m.end()))):
-            # "May 2026", "MAY 14", "in May because", "due: MAY": the month. The modal verb is
-            # capitalised only at a sentence start ("May I help?") or in an all-caps line
-            # ("WE MAY FAIL"), where another all-caps word stands beside it.
-            continue
-        word = m.group(0).lower()
+        word = m.group(0)
+        if word in ("May", "MAY"):
+            line_start, _ = lines.bounds(m.start())
+            if (MONTH_AFTER.match(text, m.end())
+                    or re.match(r"[ \t]*#", text[line_start:m.start()])
+                    or (word == "May" and not _is_sentence_start(text, m.start()))
+                    or (word == "MAY" and not lines.all_caps(m.start(), m.end()))):
+                # "May 2026", "MAY 14", "May: ship v2", "**May**", "## May", "May" alone at a
+                # line end, "in May because", "due: MAY": the month. The modal verb is
+                # capitalised only at a sentence start ("May I help?") or in an all-caps line
+                # ("WE MAY FAIL"), where another all-caps word stands beside it.
+                continue
+        word = word.lower()
         for group, words in HEDGE_GROUPS.items():
             if word in words:
                 found.setdefault(group, []).append(word)
@@ -217,23 +304,42 @@ def hedges(text):
     return found
 
 
-def present(tok, kind, text, tokens=None):
+TIME_PARTS = re.compile(r"(\d{1,2}:\d{2})(:\d{2})?(\.\d+)?(.*)", re.S)
+
+
+def _clock(rest):
+    """The pattern of "HH:MM[:SS][.f][zone]": seconds ":00" may be written or left out."""
+    hm, sec, frac, zone = TIME_PARTS.fullmatch(rest).groups()
+    if sec in (None, ":00") and not frac:
+        return re.escape(hm) + r"(?::00)?", zone
+    return re.escape(hm + (sec or "") + (frac or "")), zone
+
+
+def present(tok, kind, text, tokens=None, alone=True):
     """Whether the source token tok of kind is in the rendering text. tokens is
-    invariants(text) when the caller already has it."""
+    invariants(text) when the caller already has it. alone: the source writes tok on its own,
+    so a rendering that only extends it ("a.txt" as "a.txt.bak") does not count."""
     if kind == "number":
         return tok in (invariants(text) if tokens is None else tokens)
-    tail = r"Z?" if kind == "time" else ""
-    body = re.escape(tok)
-    if kind == "datetime":
+    left, right = L, (R_ALONE if alone else R)
+    if kind == "time":
+        clock, zone = _clock(tok)
+        body = clock + ("Z" if zone else "Z?")
+        left = L_TIME
+    elif kind == "datetime":
         # "2026-10-25T10:00Z" and "2026-10-25 10:00Z" are the same instant.
-        body = re.escape(tok[:10]) + r"[T ]" + re.escape(tok[11:])
-    left, right = (L_TIME if kind == "time" else L), R
-    forms = [left + body + tail + right]
+        clock, zone = _clock(tok[11:])
+        body = re.escape(tok[:10]) + r"[T ]" + clock + re.escape(zone)
+    else:
+        body = re.escape(tok)
+    if kind == "date":
+        right = rf"(?:(?=T\d)|{right})"     # the date of an ISO date and time
+    forms = [left + body + right]
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
     # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
-    # a capitalised name is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
-    # שבת ("MAY" is the one all-caps month, see hedges()).
-    if kind == "proper" or tok == "MAY":
+    # a capitalised name or a full name in capitals is a month or weekday: "DEC" and "SAT" are
+    # acronyms, not דצמבר and שבת.
+    if kind == "proper" or tok.lower() in CALENDAR_FULL:
         forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
                   for form in CALENDAR.get(tok.lower(), ())]
     return re.search("(?:" + "|".join(forms) + ")", text) is not None
@@ -256,9 +362,9 @@ class CheckResult:
 
 def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
-    inv = invariants(source)
+    inv, alone = _scan(source)
     rendered = invariants(rendering)
-    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered)]
+    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered, t in alone)]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)

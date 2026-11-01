@@ -296,3 +296,203 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(keyline_check, tmp_p
     note.write_bytes(bom + b"caf\xe9 503\n")
     with pytest.raises(OSError, match=rf"at byte {len(bom) + 3}\)"):
         keyline_check.read(note)
+
+
+# ---- review 8 (main bcc441c) ----
+
+def test_a_date_and_time_written_with_a_space_pass_against_the_iso_form(keyline_check):
+    # Review 8, medium 1: "2026-10-25 14:30" is a date and a time; the date's right boundary
+    # refused the "T" after it and the time's left boundary the "T" before it.
+    source = "Deploy at 2026-10-25 14:30."
+    assert keyline_check.check(source, "Deploy at 2026-10-25T14:30Z.").ok
+    assert keyline_check.check(source, "פריסה ב-2026-10-25T14:30").ok
+    assert keyline_check.check(source, "Deploy at 2026-10-25T15:30Z.").missing == ["14:30"]
+    assert keyline_check.check(source, "Deploy at 2026-10-26T14:30Z.").missing == ["2026-10-25"]
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("See notes/a.txt now.", "See notes/a.txt.bak now."),
+    ("Sign report.pdf now.", "Sign report.pdf.gpg now."),
+    ("Edit ~/.claude now.", "Edit ~/.claude.bak now."),
+    ("Run build.sh now.", "Run build.sh.old now."),
+    ("Read API.md now.", "Read API.md.bak now."),
+    ("Ask Jean-Luc today.", "Ask Jean-Luc-Picard today."),
+    ("See notes/a.txt now.", "See notes/a.txt/ now."),
+    ("Moved to S3 today.", "Moved to S3-backup today."),
+    ("Bump to v2 today.", "Bump to v2-beta today."),
+    ("Set max_retries today.", "Set max_retries.bak today."),
+    ("Fetch https://example.com/a now.", "Fetch https://example.com/a/b now."),
+])
+def test_a_rendering_that_only_extends_a_token_fails(keyline_check, source, rendering):
+    # Review 8, medium 2: the right boundary let ".x", "-X" and "/" follow a path, file or
+    # name, so a changed file name passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("See notes/a.txt now.", "ראה את notes/a.txt."),
+    ("See notes/a.txt now.", "ראה ב-notes/a.txt עכשיו"),
+    ("Ask Jean-Luc today.", "שאל את Jean-Luc's team"),
+    ("Ask Jean-Luc today.", "שאל את Jean-Luc-ים"),
+    ("Sign report.pdf now.", "חתום על report.pdf, עכשיו"),
+])
+def test_a_token_followed_by_punctuation_or_hebrew_is_still_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("line", [
+    "Use API-v2 today.", "Read report.pdf-old now.", "Ship v2-rc1 at 14:02.", "Call at 14:30-15:00.",
+    "See notes/a.txt.bak and notes/a.txt now.", "Mail Jean-Luc's team today.",
+])
+def test_a_token_glued_to_more_text_in_the_source_passes_against_itself(keyline_check, line):
+    result = keyline_check.check(line, line)
+    assert result.ok, result
+
+
+def test_a_sha256_digest_is_one_invariant(keyline_check):
+    # Review 8, medium 3: the hash rule stopped at 40 hex digits (SHA-1).
+    digest = "3b4ca1f2" * 8
+    source = f"sha256 {digest} at 14:02."
+    assert keyline_check.invariants(source)[digest] == "hash"
+    assert keyline_check.check(source, f"sha256 {digest[:-1]}3 at 14:02.").missing == [digest]
+    sha512 = "3b4ca1f2" * 16
+    assert keyline_check.invariants(f"sha512 {sha512} at 14:02")[sha512] == "hash"
+
+
+@pytest.mark.parametrize("name", ["Zürich", "Léa", "Ørsted", "Saint-Étienne", "Москва"])
+def test_a_capitalised_name_with_a_non_ascii_letter_is_extracted(keyline_check, name):
+    # Review 8, medium 4: the proper-noun rule was ASCII-only.
+    source = f"Meeting at 10:00 with {name} today."
+    assert keyline_check.invariants(source)[name] == "proper"
+    assert keyline_check.check(source, "Meeting at 10:00 with Bob today.").missing == [name]
+    assert keyline_check.check(source, f"פגישה ב-10:00 עם {name} היום").ok
+    assert keyline_check.check(source, f"פגישה ב-10:00 עם ב{name} היום").ok
+
+
+def test_an_upper_case_word_with_a_non_ascii_letter_is_one_identifier(keyline_check):
+    # Review 8, low 29: "ÉCOLE" extracted "COLE", and a rendering with "COLE" passed.
+    assert keyline_check.invariants("Visit ÉCOLE at 14:02.") == {"ÉCOLE": "upper", "14:02": "time"}
+    assert keyline_check.check("Visit ÉCOLE at 14:02.", "Visit COLE at 14:02.").missing == ["ÉCOLE"]
+    assert keyline_check.check("Visit ÉCOLE at 14:02.", "בקר ב-ÉCOLE ב-14:02").ok
+
+
+@pytest.mark.parametrize("english,hebrew", [("OCTOBER", "באוקטובר"), ("MONDAY", "ביום שני")])
+def test_an_upper_case_month_or_weekday_accepts_its_hebrew_form(keyline_check, english, hebrew):
+    # Review 8, low 6: the Hebrew forms were tried only for a capitalised name or MAY.
+    source = f"Due {english} 3 at 14:02."
+    assert keyline_check.check(source, f"יעד {hebrew} 3 ב-14:02").ok
+    assert keyline_check.check(source, "יעד 3 ב-14:02").missing == [english]
+
+
+@pytest.mark.parametrize("source, changed", [
+    ("2024. Migration done.", "2025. Migration done."),
+    ("503. Gateway timed out.", "Gateway timed out."),
+])
+def test_a_leading_number_of_three_or_more_digits_is_not_a_list_marker(keyline_check, source, changed):
+    # Review 8, low 9: any "N." at a line start was a list marker, so a year was skipped.
+    assert keyline_check.invariants(source)
+    assert not keyline_check.check(source, changed).ok
+    assert keyline_check.invariants("1. first\n12) twelfth\n") == {}
+
+
+def test_a_url_keeps_its_scheme(keyline_check):
+    # Review 8, low 10: "https://example.com/a/b?x=1" was the path "//example.com/a/b" and "1".
+    source = "Fetch https://example.com/a/b?x=1 at 14:02."
+    inv = keyline_check.invariants(source)
+    assert inv["https://example.com/a/b?x=1"] == "url"
+    assert keyline_check.check(source, source.replace("https", "http")).missing == ["https://example.com/a/b?x=1"]
+    assert keyline_check.check(source, "הורד את https://example.com/a/b?x=1 ב-14:02.").ok
+    assert keyline_check.check("See (https://example.com/a).", "ראה https://example.com/a").ok
+
+
+def test_ticket_no_is_not_a_negation(keyline_check):
+    # Review 8, low 15: "No. 5" counted as a negation, so "מס' 5" lost one.
+    assert keyline_check.negations("Ticket No. 5 and no. 7") == 0
+    assert keyline_check.check("Ticket No. 5 at 14:02.", "כרטיס מס' 5 ב-14:02").ok
+    assert keyline_check.negations("No, it is not.") == 2
+
+
+@pytest.mark.parametrize("text", ["May: ship v2", "## May", "**May**: 3", "**May** 5", "Plan\nMay\n", "MAY: ship"])
+def test_may_as_a_label_or_header_is_the_month(keyline_check, text):
+    # Review 8, low 15: "May:" and "## May" at a line start were read as the modal verb.
+    assert keyline_check.hedges(text) == {}
+
+
+def test_may_as_a_modal_at_a_sentence_start_is_still_a_hedge(keyline_check):
+    assert keyline_check.hedges("May I help?") == {"possibility": ["may"]}
+    assert keyline_check.hedges("May we ship: yes") == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Starts 14:30Z.", "Starts 14:30:00Z."),
+    ("Starts 14:30:00Z.", "Starts 14:30Z."),
+    ("Starts 2026-10-25T14:30Z.", "Starts 2026-10-25T14:30:00Z."),
+    ("Starts 2026-10-25T14:30:00Z.", "Starts 2026-10-25 14:30Z."),
+])
+def test_a_time_without_seconds_matches_the_same_time_with_zero_seconds(keyline_check, source, rendering):
+    # Review 8, low 30 (fails closed).
+    assert keyline_check.check(source, rendering).ok
+
+
+def test_a_time_is_not_present_inside_a_time_with_other_seconds(keyline_check):
+    assert keyline_check.check("Starts 14:30Z.", "Starts 14:30:15Z.").missing == ["14:30Z"]
+
+
+def test_a_yes_no_pair_before_a_period_is_prose_not_a_path(keyline_check):
+    # Review 8, low 31: "yes/no." was a path because the period was stripped after the check.
+    assert keyline_check.invariants("Answer: yes/no.") == {}
+    assert keyline_check.check("Answer yes/no at 14:02.", "תשובה כן/לא ב-14:02.").ok
+
+
+def test_underscore_emphasis_does_not_hide_a_hedge_or_a_negation(keyline_check):
+    # Review 8, low 34: "\b" saw "_could_" as one word.
+    assert keyline_check.hedges("it _could_ fail") == {"possibility": ["could"]}
+    assert keyline_check.negations("it is _not_ done") == 1
+
+
+def test_every_snake_token_has_an_inner_underscore_or_is_a_dunder(keyline_check):
+    # Review 8, low 35: invariants() had a snake filter no match could reach; the regex itself
+    # guarantees this, and the test pins it so the filter is not needed back.
+    import random
+    rng = random.Random(8)
+    for _ in range(3000):
+        text = "".join(rng.choice("ab_A1 _") for _ in range(rng.randint(1, 16)))
+        for tok, kind in keyline_check.invariants(text).items():
+            if kind == "snake":
+                assert "_" in tok.strip("_") or tok.startswith("__"), (text, tok)
+
+
+@pytest.mark.parametrize("text", [
+    "aA" * 50000 + "_",                     # camel-case run (review 8, low 32)
+    "MAY " * 25000,                         # all-caps MAY line (review 8, low 33)
+    "- May " * 17000,                       # a sentence-start look-back on one long line
+    "May " * 25000 + "5",
+    "Aa-" * 33000 + "_",
+    "a." * 50000,                           # URL scheme look-ahead
+    "x/" * 50000,
+    "ÉA" * 50000 + "_",
+    "1:" * 50000,
+])
+def test_extraction_and_hedges_are_linear_on_100_kb(keyline_check, text):
+    import time
+    start = time.perf_counter()
+    keyline_check.invariants(text)
+    keyline_check.hedges(text)
+    keyline_check.check(text, text)
+    assert time.perf_counter() - start < 1.0
+
+
+def test_random_sources_pass_against_themselves(keyline_check):
+    # Every new boundary is checked against the rule that a rendering holding the source
+    # verbatim always passes.
+    import random
+    rng = random.Random(88)
+    alphabet = ["a", "Z", "é", "É", "1", "0", ".", "-", "/", "\\", "_", " ", "'", ":", "T", "ב",
+                "x.txt", "API", "v2", "2026-10-25", "14:30", "https://", "Jean-Luc", "May", "No. "]
+    for _ in range(4000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 12)))
+        result = keyline_check.check(text, text)
+        assert not result.missing and not result.missing_hedges, (text, result)

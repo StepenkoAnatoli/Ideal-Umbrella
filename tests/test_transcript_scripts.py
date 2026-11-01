@@ -98,3 +98,42 @@ def test_a_missing_transcript_is_one_line_not_a_traceback(script, tmp_path):
     assert result.returncode == 1
     assert "Traceback" not in result.stderr, result.stderr
     assert "error:" in result.stderr and "missing.jsonl" in result.stderr
+
+
+# ---- review 8 (main bcc441c) ----
+
+MALFORMED = [
+    {"message": {"role": "user", "content": [{"type": "text", "text": None}]}},
+    {"message": {"role": "user", "content": [{"type": "text", "text": 5}, {"type": "text", "text": ["x"]}]}},
+    {"message": {"role": "user", "content": 5}},
+    {"message": {"role": None, "content": [{"type": "text", "text": "role is null"}]}},
+    {"message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": ["t9"], "name": 7, "input": {}},
+        {"type": "tool_use", "id": "t8", "name": ["Bash"], "input": {}},
+        {"type": "thinking", "thinking": None}]}},
+    {"message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": ["t9"], "content": "x"},
+        {"type": "tool_result", "tool_use_id": "t8", "content": [{"type": "text", "text": None}]}]}},
+]
+
+
+def bom_transcript(tmp_path, events):
+    """A transcript whose first line starts with a BOM, followed by events."""
+    path = write_jsonl(tmp_path / "bom.jsonl", events)
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    return path
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_malformed_fields_and_a_bom_neither_crash_nor_lose_the_first_line(script, tmp_path):
+    # Review 8, low 18: text null, a list id, a name of 7 or a role of null raised TypeError or
+    # AttributeError; a BOM lost the first line ("no user text found").
+    first = {"message": {"role": "user", "content": "please list the files"}}
+    result = run(script, str(bom_transcript(tmp_path, [first] + MALFORMED)))
+    assert result.returncode == 0 and "Traceback" not in result.stderr, result.stderr
+    if script == "toolresult_share.py":
+        assert "user_text" in result.stdout, result.stdout
+    elif script == "usertext_top.py":
+        assert "please list the" in result.stdout, result.stdout
+    else:
+        assert "typed by user" in result.stdout, result.stdout

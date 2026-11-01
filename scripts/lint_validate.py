@@ -3,7 +3,7 @@
 Usage: python -I scripts/lint_validate.py <old keyline_lint.py> [corpus folder]
 The new rule is the keyline_lint.py in this repository. The corpus is every *.md file under
 the corpus folder (default: the folder that holds this repository, so sibling repos count),
-capped at 400 files.
+outside hidden folders and node_modules/, capped at 400 files.
 """
 import collections
 import glob
@@ -63,8 +63,19 @@ def main(argv=None):
 
     sys.path.insert(0, str(ROOT / "keyline"))
     import keyline_lint as new
-    old = load_old(old_path)
-    words = new.load_words()
+    try:
+        old = load_old(old_path)
+    except Exception as e:   # the old file runs as code: a syntax error, an import, anything
+        print(f"Error: cannot load {old_path} ({type(e).__name__}: {e})", file=sys.stderr)
+        return 1
+    if not callable(getattr(old, "lint_text", None)):
+        print(f"Error: cannot load {old_path} (it has no lint_text function)", file=sys.stderr)
+        return 1
+    try:
+        words = new.load_words()
+    except (OSError, new.TiktokenMissing) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
     # corpus: markdown across the repos next to this one (real human/agent prose)
     files = corpus_files(folder)

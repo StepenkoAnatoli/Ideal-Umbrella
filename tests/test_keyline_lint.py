@@ -211,3 +211,45 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, bom):
     note.write_bytes(bom + b"caf\xe9\n")
     with pytest.raises(OSError, match=rf"at byte {len(bom) + 3}\)"):
         keyline_lint.read(note)
+
+
+# ---- review 8 (main bcc441c) ----
+
+@pytest.mark.parametrize("line, furniture", [
+    ("1. first step\n", True),
+    ("12) twelfth step\n", True),
+    ("2024. the year the cache moved\n", False),
+    ("503. gateway timed out\n", False),
+])
+def test_only_a_one_or_two_digit_number_is_a_numbered_item(line, furniture):
+    # Review 8, low 9: "2024. ..." and "503. ..." were flagged as numbered items; a list
+    # marker has one or two digits, as keyline_check reads it.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    words = set(line.replace(".", " ").replace(")", " ").split())
+    findings = [f for _, f in keyline_lint.lint_text(line, words, set())]
+    assert any("numbered item" in f for f in findings) == furniture
+
+
+def test_an_allow_file_line_with_several_words_allows_each(tmp_path):
+    # Review 8, low 22: "mgmt srvc" was one entry, so both words were still flagged.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    (tmp_path / keyline_lint.ALLOW_NAME).write_text("mgmt srvc  # two names\nkubectl\n", encoding="utf-8")
+    note = tmp_path / "note.txt"
+    allow = keyline_lint.load_allow(note, ())
+    assert {"mgmt", "srvc", "kubectl"} <= allow
+    assert "mgmt srvc" not in allow
+
+
+def test_an_encoding_that_cannot_load_while_building_the_cache_is_a_read_error(tmp_path, monkeypatch):
+    # Review 8, low 19 other hit: a ValueError (a corrupt cached file) escaped build_cache, and
+    # with it the OSError handlers in main() and the hook.
+    import types
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    monkeypatch.setattr(keyline_lint, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(keyline_lint, "WORDS_CACHE", tmp_path / "cache" / "words.txt")
+
+    def broken(name):
+        raise ValueError("hash mismatch for o200k_base")
+    monkeypatch.setattr(keyline_lint, "_tiktoken", lambda: types.SimpleNamespace(get_encoding=broken))
+    with pytest.raises(OSError, match="tiktoken could not load o200k_base: hash mismatch"):
+        keyline_lint.load_words()

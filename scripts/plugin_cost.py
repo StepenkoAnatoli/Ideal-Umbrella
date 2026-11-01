@@ -42,24 +42,42 @@ def desc_of(md):
         return ""
     fm = m.group(1)
     d = re.search(r"^description:\s*(.*?)(?=^\w[\w-]*:|\Z)", fm, re.S | re.M)
-    return re.sub(r"\s+", " ", d.group(1)).strip().strip("'\"") if d else ""
+    if not d:
+        return ""
+    # A YAML block scalar ("description: >" or "|", with an optional chomping and indentation
+    # indicator) starts on the next line; the indicator is not part of the text.
+    text = re.sub(r"\A[>|](?:[+-]?[1-9]?|[1-9][+-])[ \t]*(?:#[^\n]*)?\n", "", d.group(1))
+    return re.sub(r"\s+", " ", text).strip().strip("'\"")
 
 
 def plugin_roots(app_dir):
-    pattern = os.path.join(glob.escape(str(app_dir)), "**", ".claude-plugin", "plugin.json")
-    return sorted({os.path.dirname(os.path.dirname(p)) for p in glob.glob(pattern, recursive=True)})
+    """Folders holding .claude-plugin/plugin.json, hidden folders included. os.walk, not
+    glob("**"), which passes over hidden folders and has no include_hidden before 3.11.
+    Linked folders are followed, as glob follows them, each real folder once."""
+    roots, seen = set(), set()
+    for root, dirs, names in os.walk(str(app_dir), followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
+        if os.path.basename(root) == ".claude-plugin" and "plugin.json" in names:
+            roots.add(os.path.dirname(root))
+    return sorted(roots)
 
 
 def plugin_rows(app_dir, enc):
     rows = []
     for r in plugin_roots(app_dir):
         try:
-            man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8"))
+            man = json.load(open(os.path.join(r, ".claude-plugin", "plugin.json"), encoding="utf-8-sig"))
         except (OSError, ValueError, RecursionError):
             man = {}
         if not isinstance(man, dict):
             man = {}
-        name = man.get("name") or os.path.basename(r)
+        name = man.get("name")
+        if not isinstance(name, str) or not name:     # a hand-edited name: ["x"], 7, null
+            name = os.path.basename(r)
         skills = glob.glob(os.path.join(glob.escape(r), "skills", "*", "SKILL.md")) + \
             glob.glob(os.path.join(glob.escape(r), "commands", "*.md"))
         tok = 0
@@ -73,7 +91,8 @@ def plugin_rows(app_dir, enc):
         mf = os.path.join(r, ".mcp.json")
         if os.path.isfile(mf):
             try:
-                mcp = len(json.load(open(mf, encoding="utf-8")).get("mcpServers") or {})
+                servers = json.load(open(mf, encoding="utf-8-sig")).get("mcpServers")
+                mcp = len(servers) if isinstance(servers, dict) else 0
             except (OSError, ValueError, RecursionError, AttributeError):
                 pass
         hooks = os.path.isfile(os.path.join(r, "hooks", "hooks.json")) or bool(man.get("hooks"))
@@ -111,11 +130,19 @@ def main(argv=None):
     except ImportError:
         print("tiktoken is not installed; run: pip install tiktoken", file=sys.stderr)
         return 1
-    enc = tiktoken.get_encoding("o200k_base")
+    try:
+        enc = tiktoken.get_encoding("o200k_base")
+    except Exception as e:   # offline on first use, a proxy, a corrupt cache: any of them
+        print(f"Error: tiktoken could not load o200k_base: {e}", file=sys.stderr)
+        return 1
 
     rows = plugin_rows(app_dir, enc)
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(rows, f)
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+    except OSError as e:
+        print(f"Error: cannot write {out} ({e.strerror or e})", file=sys.stderr)
+        return 1
     tot = sum(x[2] for x in rows)
     print(f"{len(rows)} plugins, {sum(x[1] for x in rows)} skills/commands, "
           f"full listing would be {tot} tokens (o200k proxy)")
