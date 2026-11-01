@@ -20,6 +20,10 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 
 ### Fixed
 - Review 9 of main 7adc485 (`research/review-findings-main-7adc485.md`): all 4 medium and 12 low findings are fixed, and most informational notes.
+  - Self-review of that fix (3 medium regressions, SA1-SA9 and SB1-SB4, all fixed with tests):
+    - keyline_check: a token the source glues with a joiner (`, = & * $ (`) now passes only alone or with the same joiner on the same side; emphasis is not stripped inside URLs, paths and identifiers, and a dunder starts with a letter; variation selectors and keycaps are no longer marks; emphasis pairs reset only at a blank line; a lowercase "no." after a word is a negation;
+    - measure.py exits 2 on a file it cannot read; usage_breakdown accepts only whole, finite counts from 0 to 2**63;
+    - install: a reinstall over a created `settings.json` you edited keeps the values it wrote, so uninstall still puts back what `--force` replaced; uninstall notes a created file it leaves as `{}`; README "Undo" says a content check cannot tell a file you wrote holding an installer value from the installer's.
   - keyline_check:
     - a URL no longer takes in markup, quotes, dashes or bidi marks glued after it;
     - "No." before a number is a number sign only after a word on the same line, so a dropped "No. 5" fails;

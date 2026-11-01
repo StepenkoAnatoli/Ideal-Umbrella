@@ -36,11 +36,19 @@ def _char_class(pred):
     return "".join(out)
 
 
+def _mark_outside_words(c, category):
+    """A mark that is no part of a word: a variation selector (U+FE00-FE0F, U+E0100-E01EF:
+    the emoji form of "✔️") and an enclosing mark (the keycap U+20E3 of "5️⃣"), which follow
+    a symbol or a digit, not a letter, so "✔️v2.1" holds "v2.1" and "5️⃣" holds "5"."""
+    return category == "Me" or "\ufe00" <= c <= "\ufe0f" or "\U000e0100" <= c <= "\U000e01ef"
+
+
 def _word_classes():
     """(letter, alnum, mark): the insides of [...] classes for a letter, a letter or digit, and
     a combining mark, of any script but Hebrew. A mark NFC cannot fold into its letter (U+0331
     after the "a" of a name) is part of the word, as the letter is; a Hebrew point is not (a
-    Hebrew letter is no word character here). A mark is no word character to re ("\\W"), so the
+    Hebrew letter is no word character here), nor a variation selector or an enclosing mark
+    (see _mark_outside_words). A mark is no word character to re ("\\W"), so the
     classes are spelled out: a group "(?:[^\\W...]|[marks])" in a repeat is not linear in sre on
     a 100 kB run, and Python 3.10 has no possessive repeat. No letter, digit or mark lies in
     planes 4 to 13, 15 or 16, and no mark in the surrogates, the private use area or planes 2
@@ -61,7 +69,7 @@ def _word_classes():
     for m in [*nonword.finditer(text, 0, 0x20000), *nonword.finditer(text, top + 1)]:  # of a word
         for c in m.group():
             category = unicodedata.category(c)
-            if category[0] == "M":
+            if category[0] == "M" and not _mark_outside_words(c, category):
                 marks.append(ord(c))
             elif category != "Cn" and c > "\uffff":
                 walls.append(ord(c))
@@ -114,22 +122,24 @@ WORD = f"[_{_ALNUMS}]"            # ALNUM or "_"
 L = rf"(?<!{WORD})"
 R = rf"(?!{WORD}|\.\d)"
 # A token the source writes on its own is not present where a rendering only extends it, on
-# either side: "notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/", "a.txt~",
-# "API#x", "14:30:15" for "14:30", "a.txt=1", "API(x)" (EXT_RIGHT), and "old/notes/a.txt",
+# either side: "notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/", "ab.txt~",
+# "API#x", "14:30:15" for "14:30", "ab.txt=1", "API(x)" (EXT_RIGHT), and "old/notes/a.txt",
 # "old-report.pdf", "Marie-Jean-Luc", "/notes/a.txt", "#API", "x@a.txt" (the left side). Both
 # sides share one set of joiners (JOIN): a joiner glued between the token and a word character
-# extends it, and a few (EXT_ALWAYS_RIGHT, EXT_ALWAYS_LEFT) extend it on their own ("a.txt~",
-# "C#", "50%", "a.txt*", "+v2.1", "$PATH"). A Hebrew letter is not a word character, so "ב-v2.1"
+# extends it, and a few (EXT_ALWAYS_RIGHT, EXT_ALWAYS_LEFT) extend it on their own ("ab.txt~",
+# "C#", "50%", "ab.txt*", "+v2.1", "$PATH"). A Hebrew letter is not a word character, so "ב-v2.1"
 # and "בv2.14.0" are not extensions. Markup is not a joiner: "(API)", and emphasis ("**API**",
 # "_API_"), whose marks are dropped before the scan (see EMPHASIS). The one exception is a pair or a range of two tokens of one family joined by
 # "-" or "/" (PAIR_FAMILY): "14:30-15:00", "2026-10-25-2026-10-27", "v2.1/v2.3",
 # "Postgres/MySQL", "API/SDK". A hyphen joins the parts of a name ("Jean-Luc-Picard", "S3-IA",
 # "Paris-Nord"), so between names it is a pair only when both are month or weekday names
 # ("Monday-Friday", "Mon-Fri"); between times, dates and versions it is a range. A path, file
-# name, hash or number never pairs: "a.txt/b.txt" extends "a.txt". A token the source itself
-# extends at every occurrence ("API-v2") is looked up with R only, and every source occurrence
-# is judged by the same function as the rendering's, so a rendering holding the source verbatim
-# always passes.
+# name, hash or number never pairs: "ab.txt/cd.txt" extends "ab.txt". A token the source itself
+# extends at every occurrence ("API-v2", "v2.1,v2.2", "MODE=fast") is present on its own or
+# extended the way the source extends it (the same joiner on the same side, see _extension),
+# so "v2.1-rc,v2.2" does not hold the "v2.1" of "v2.1,v2.2". Every source occurrence is judged
+# by the same function as the rendering's, so a rendering holding the source verbatim always
+# passes.
 JOIN = ".-/\\:~@#+%=&*$,"
 EXT_ALWAYS_RIGHT, EXT_ALWAYS_LEFT = "/\\~@#+%*", "/\\@#+$%"
 EXT_RIGHT = re.compile(rf"[{re.escape(JOIN)}(]{WORD}|[{re.escape(EXT_ALWAYS_RIGHT)}]")
@@ -228,7 +238,9 @@ CALENDAR_FULL = {"january", "february", "march", "april", "may", "june", "july",
 # so a prose rendering that writes "doesn't" for "does not" is not reported as a lost negation.
 # "No. 5" is a number sign, not a negation, only right after a word on the same line ("Ticket
 # No. 5", see negations()); after anything else ("A: No. 5", "**Fixed?** No. 5", "(no. 3",
-# "- No. 5", "yet, no. 3") it is the answer "no". The number follows on the same line. The word edges are letters and digits,
+# "- No. 5", "yet, no. 3") it is the answer "no". A lowercase "no." is a number sign only
+# after a digit ("Item 3 no. 5"): after a word it is the answer ("I'd say no. 3 fail"), so
+# "ticket no. 5" counts as a negation (fails closed). The number follows on the same line. The word edges are letters and digits,
 # not "\b": "\b" counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
 EN_L, EN_R = r"(?<![^\W_])", r"(?![^\W_])"
 NEG_EN = re.compile(EN_L + r"(?:no|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
@@ -355,18 +367,20 @@ def _pairs(kind, tok, joiner, other):
 ISO_TIME = re.compile(r"T\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
 
 
-def _unextended(text, s, e, kind, tok):
-    """Whether the occurrence text[s:e] of tok is not extended on either side (see EXT_RIGHT)."""
+def _extension(text, s, e, kind, tok):
+    """How the occurrence text[s:e] of tok is extended (see EXT_RIGHT): (left, right), each
+    the joiner glued on that side or None; NOT_EXTENDED is neither."""
+    right = left = None
     if kind == "date":
         t = ISO_TIME.match(text, e)
         if t:                               # the date of an ISO date and time: what follows
             if WORD_CHAR.match(text, t.end()):    # the time is checked as if it followed the date
-                return False
+                right = "T"                       # "2026-10-25T10:00abc"
             e = t.end()
-    if EXT_RIGHT.match(text, e):
+    if right is None and EXT_RIGHT.match(text, e):
         joiner = text[e]
         if not _pairs(kind, tok, joiner, lambda: _token_at(text, e + 1)):
-            return False
+            right = joiner
     if s:
         c = text[s - 1]
         glued = s > 1 and WORD_CHAR.match(text, s - 2) is not None
@@ -374,26 +388,47 @@ def _unextended(text, s, e, kind, tok):
         # the pair test needs no glued check of its own.
         if c in EXT_ALWAYS_LEFT or (c in JOIN and glued):
             if not _pairs(kind, tok, c, lambda: _token_before(text, s - 1)):
-                return False
-    return True
+                left = c
+    return left, right
+
+
+NOT_EXTENDED = (None, None)
 
 
 # Emphasis marks ("_Paris_", "__14:30__", "*API*", "**https://x.io/a**"): "_" is a word
 # character, so it would hide the token inside it, and a "*" glued after a token is a joiner
-# ("a.txt*", see JOIN). An opening run of one or two "_" or one to three "*" (after no word
-# character, before a non-space) is paired with the next closing run of the same marks on the
-# line (after a non-space, before no word character), and both are dropped from source and
-# rendering alike. A lone edge mark ("_private", "snake_case_", "a.txt*") has no partner and
-# stays, and a dunder ("__init__") is a name, not emphasis.
-EMPHASIS = re.compile(r"(?P<open>(?<![\w*])\*{1,3}(?=[^\s*])|(?<!\w)_{1,2}(?=[^\s_]))"
-                      r"|(?P<close>(?<=[^\s*])\*{1,3}(?![\w*])|(?<=[^\s_])_{1,2}(?!\w))|\n")
-DUNDER_BODY = re.compile(r"[a-z0-9]+")
+# ("ab.txt*", see JOIN). An opening run of one or two "_" or one to three "*" (before a
+# non-space) is paired with the next closing run of the same marks in the paragraph (after a
+# non-space), and both are dropped from source and rendering alike. A mark run inside a URL,
+# path or identifier is no emphasis: an opening run does not follow a word character or one of
+# "*/\\.:~@=" or a "-" glued to a word ("https://x.io/_api_/v1", "/srv/_data_/x", "a-_b_";
+# "ל-_Paris_" is emphasis, a Hebrew letter is no word character here), a closing run does not
+# come before a word character, "/" or "\\", and a "*" run no "*" on either side ("**_Paris_**"
+# is two emphases). A lone edge mark ("_private", "snake_case_", "ab.txt*") has no partner and
+# stays, and so does a pair of "_" or "__" around one word that holds a "_" itself
+# ("_private_var_") and a dunder ("__init__", "__init_subclass__"; "__12__" is bold).
+_GLUED_DASH = r"(?<![^\W\u0590-\u05ff\ufb1d-\ufb4f]-)"
+EMPHASIS = re.compile(rf"(?P<open>(?<![\w*/\\.:~@=]){_GLUED_DASH}\*{{1,3}}(?=[^\s*])"
+                      rf"|(?<![\w/\\.:~@=]){_GLUED_DASH}_{{1,2}}(?=[^\s_]))"
+                      r"|(?P<close>(?<=[^\s*])\*{1,3}(?![\w*/\\])|(?<=[^\s_])_{1,2}(?![\w/\\]))"
+                      r"|\n[ \t]*\n")
+DUNDER_BODY = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 
 
 def _plain(text):
     """text without the marks of emphasis (see EMPHASIS). Linear: each run is pushed and popped
-    at most once."""
-    drop, opened = [], {}
+    at most once, and whether a body is one word holding a "_" is counted, not scanned (nested
+    pairs would scan the same text again)."""
+    drop, opened, edges = [], {}, None
+
+    def one_word_with_underscore(a, b):
+        nonlocal edges
+        if edges is None:
+            edges = ([m.start() for m in re.finditer(r"\s", text)], [m.start() for m in re.finditer("_", text)])
+        spaces, unders = edges
+        return (bisect.bisect_left(spaces, b) == bisect.bisect_left(spaces, a)
+                and bisect.bisect_left(unders, b) > bisect.bisect_left(unders, a))
+
     for m in EMPHASIS.finditer(text):
         if m.lastgroup == "open":
             opened.setdefault(m.group(), []).append(m)
@@ -401,10 +436,12 @@ def _plain(text):
             stack = opened.get(m.group())
             if stack:
                 o = stack.pop()
-                if not (m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start())):
+                if not (m.group()[0] == "_" and (
+                        one_word_with_underscore(o.end(), m.start())
+                        or m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start()))):
                     drop += [o.span(), m.span()]
         else:
-            opened = {}                       # emphasis does not run past a line end
+            opened = {}                       # emphasis does not run past a blank line
     if not drop:
         return text
     drop.sort()
@@ -417,11 +454,12 @@ def _plain(text):
 
 
 def _scan(text):
-    """Return ({token: kind}, alone): the fact-bearing tokens of text in order of appearance, and
-    the set of those the text writes on their own at least once (see EXT_RIGHT). text has been
-    through _plain()."""
+    """Return ({token: kind}, {token: extensions}): the fact-bearing tokens of text in order of
+    appearance, and for each token but a URL or a number the set of the ways text writes it
+    (see _extension); NOT_EXTENDED in it means the text writes the token on its own at least
+    once (see EXT_RIGHT). text has been through _plain()."""
     text = LIST_MARKER.sub("", text)
-    found, alone = {}, set()
+    found, extensions = {}, {}
     for m in INVARIANT.finditer(text):
         kind = m.lastgroup
         tok = m.group(kind)
@@ -446,11 +484,11 @@ def _scan(text):
                     parts.append((at, n))
                     at += len(n) + 1
         for start, part in parts:
-            if kind not in ("url", "number") and _unextended(text, start, start + len(part), kind, part):
-                alone.add(part)
+            if kind not in ("url", "number"):
+                extensions.setdefault(part, set()).add(_extension(text, start, start + len(part), kind, part))
             if part not in found:
                 found[part] = kind
-    return found, alone
+    return found, extensions
 
 
 def invariants(text):
@@ -560,11 +598,15 @@ def word_index(text):
     return index
 
 
-def present(tok, kind, text, tokens=None, alone=True, index=None):
+def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=None):
     """Whether the source token tok of kind is in the rendering text (through _plain()). tokens is
     invariants(text) and index is word_index(text) when the caller already has them. alone:
-    the source writes tok on its own, so a rendering that only extends it ("a.txt" as
-    "a.txt.bak", "old/a.txt") does not count (see EXT_RIGHT)."""
+    the source writes tok on its own, so a rendering that only extends it ("ab.txt" as
+    "ab.txt.bak", "old/ab.txt") does not count (see EXT_RIGHT). Otherwise extensions, when
+    given, is the set of ways the source extends tok (see _scan): a rendering occurrence counts
+    on its own or extended in one of those ways ("v2.1,v2.2" holds the "v2.1" of "v2.1,v2.2",
+    "v2.1-rc,v2.2" does not), so a joiner beside tok in the source lets no other extension
+    pass."""
     if kind in ("number", "url"):
         # A URL is looked up by extraction too: whatever a rendering glues to it ("@evil.io",
         # "&debug=1", "#frag") is part of the rendering's URL, so the source's is not there.
@@ -594,7 +636,12 @@ def present(tok, kind, text, tokens=None, alone=True, index=None):
         return None
 
     def found(m):
-        return m is not None and (not alone or _unextended(text, m[0], m[1], kind, tok))
+        if m is None:
+            return False
+        if not alone and extensions is None:
+            return True
+        how = _extension(text, m[0], m[1], kind, tok)
+        return how == NOT_EXTENDED or not alone and how in extensions
 
     first = WORD_RUN.match(tok)
     if kind != "time" and first:
@@ -626,21 +673,22 @@ def present(tok, kind, text, tokens=None, alone=True, index=None):
     return False
 
 
-def _after_word(text, start):
+def _after_word(text, start, digit=False):
     """True when the last character before start on its line, spaces and tabs aside, is a
-    letter or a digit."""
+    letter or a digit (a digit only, with digit)."""
     i = start - 1
     while i >= 0 and text[i] in " \t":
         i -= 1
-    return i >= 0 and text[i].isalnum()
+    return i >= 0 and (text[i].isdigit() if digit else text[i].isalnum())
 
 
 def negations(text):
     n = len(NEG_HE.findall(text))
     for m in NEG_EN.finditer(text):
-        if (m.group().lower() == "no" and NUMBER_SIGN.match(text, m.end())
-                and _after_word(text, m.start())):
-            continue                        # "Ticket No. 5": a number sign
+        word = m.group()
+        if (word.lower() == "no" and NUMBER_SIGN.match(text, m.end())
+                and _after_word(text, m.start(), digit=word not in ("No", "NO"))):
+            continue                        # "Ticket No. 5", "Item 3 no. 5": a number sign
         n += 1
     return n
 
@@ -660,10 +708,12 @@ def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
     # NFC: "Zürich" with a combining diaeresis (NFD, as some editors save it) is "Zürich".
     source, rendering = unicodedata.normalize("NFC", source), unicodedata.normalize("NFC", rendering)
-    inv, alone = _scan(_plain(source))
+    inv, extensions = _scan(_plain(source))
     plain = _plain(rendering)
     rendered, index = _scan(plain)[0], word_index(plain)
-    missing = [t for t, k in inv.items() if not present(t, k, plain, rendered, t in alone, index)]
+    missing = [t for t, k in inv.items()
+               if not present(t, k, plain, rendered, NOT_EXTENDED in extensions.get(t, (NOT_EXTENDED,)),
+                              index, extensions.get(t))]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)

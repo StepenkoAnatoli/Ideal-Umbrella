@@ -101,7 +101,8 @@ def main(argv):
             print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
             return 2
         before = len(rows)
-        file_args += paths == [Path(arg)]          # a walked folder's paths are below it
+        is_file = paths == [Path(arg)]             # a walked folder's paths are below it
+        file_args += is_file
         for p in paths:
             try:
                 # A named pipe or socket in a walked folder would block the read; a symlink to
@@ -115,16 +116,21 @@ def main(argv):
                     why = "symlink to a missing target"
                 else:
                     why = f"cannot read: {e.strerror or e}"
+            if why is None:
+                try:
+                    text = p.read_bytes().decode("utf-8-sig")
+                except UnicodeDecodeError:
+                    print(f"skip (not UTF-8 text): {p}", file=sys.stderr)
+                    continue
+                except OSError as e:
+                    why = f"cannot read: {e.strerror or e}"
             if why:
+                if is_file:
+                    # A file argument that cannot be read is an error, as a folder argument
+                    # that cannot be listed is; a file below a walked folder is skipped.
+                    print(f"error: {why} ({arg})", file=sys.stderr)
+                    return 2
                 print(f"skip ({why}): {p}", file=sys.stderr)
-                continue
-            try:
-                text = p.read_bytes().decode("utf-8-sig")
-            except UnicodeDecodeError:
-                print(f"skip (not UTF-8 text): {p}", file=sys.stderr)
-                continue
-            except OSError as e:
-                print(f"skip (cannot read: {e.strerror or e}): {p}", file=sys.stderr)
                 continue
             rows.append((p, len(text), *count(text, encs)))
         counted.append(len(rows) - before)

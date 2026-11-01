@@ -385,3 +385,26 @@ def test_a_folder_holding_one_file_is_not_half_of_a_change_pair(tmp_path, capsys
     new.write_text("hello there\n", encoding="utf-8")
     assert measure.main([str(d), str(new)]) == 0
     assert "change:" not in capsys.readouterr().out
+
+
+# ---- self-review of the review 9 fixes ----
+
+def test_a_file_argument_that_fails_to_read_is_exit_2(tmp_path, capsys, monkeypatch):
+    # SA6: A8 made a folder argument that cannot be read exit 2; a file argument still
+    # exited 1 ("skip"), though the docstring says 2.
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    good = tmp_path / "good.txt"
+    good.write_text("hello\n", encoding="utf-8")
+    bad = tmp_path / "bad.txt"
+    bad.write_text("hello\n", encoding="utf-8")
+    real_read_bytes = measure.Path.read_bytes
+
+    def read_bytes(self):
+        if self.name == "bad.txt":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self)
+    monkeypatch.setattr(measure.Path, "read_bytes", read_bytes)
+    assert measure.main([str(good), str(bad)]) == 2
+    captured = capsys.readouterr()
+    assert f"error: cannot read: Permission denied ({bad})" in captured.err, captured

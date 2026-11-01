@@ -10,17 +10,16 @@ def keyline_check():
     return load_module("keyline_check", "keyline/keyline_check.py")
 
 
-def _ratio(fn, small, big):
-    """Best-of-3 time of fn(big) over fn(small): a machine-independent measure of growth."""
+def _ratio(fn, small, big, runs=3):
+    """Best-of-runs time of fn(big) over fn(small): a machine-independent measure of growth.
+    The two are timed in turn, so a burst of load on the machine slows both alike."""
     import time
-    best = []
-    for arg in (small, big):
-        times = []
-        for _ in range(3):
+    best = [float("inf"), float("inf")]
+    for _ in range(runs):
+        for i, arg in enumerate((small, big)):
             start = time.perf_counter()
             fn(arg)
-            times.append(time.perf_counter() - start)
-        best.append(min(times))
+            best[i] = min(best[i], time.perf_counter() - start)
     return best[1] / max(best[0], 1e-4)
 
 
@@ -426,7 +425,7 @@ def test_a_url_keeps_its_scheme(keyline_check):
 
 def test_ticket_no_is_not_a_negation(keyline_check):
     # Review 8, low 15: "No. 5" counted as a negation, so "מס' 5" lost one.
-    assert keyline_check.negations("Ticket No. 5 and no. 7") == 0
+    assert keyline_check.negations("Ticket No. 5 and NO. 7") == 0   # SA8: lowercase "no. 7" after a word is "no"
     assert keyline_check.check("Ticket No. 5 at 14:02.", "כרטיס מס' 5 ב-14:02").ok
     assert keyline_check.negations("No, it is not.") == 2
 
@@ -494,14 +493,23 @@ def test_every_snake_token_has_an_inner_underscore_or_is_a_dunder(keyline_check)
     "see http://x/" + ")" * 100000,         # URL trim (self-review S6)
 ])
 def test_extraction_and_hedges_are_linear_on_100_kb(keyline_check, text):
-    # Self-review S8: an absolute limit (1 s) failed on a slow machine for linear code; the
-    # time of the whole text against its first half is ~2 for linear code and ~4 for quadratic.
+    # Self-review S8: an absolute limit (1 s) failed on a slow machine for linear code. The
+    # time of the whole text against its first quarter is ~4 for linear code and ~16 for
+    # quadratic (the first half, ~2 against ~4 with a limit of 3.2, failed under CPU load):
+    # a limit of 8 leaves linear code twice its ratio, and catches a quadratic part that
+    # takes 2/3 of the time where the old limit needed 3/4. A load spike can only slow one
+    # measurement, so the best of three measurements is taken; quadratic code never gets
+    # under the limit.
     def run(t):
         keyline_check.invariants(t)
         keyline_check.hedges(t)
         keyline_check.check(t, t)
-    ratio = _ratio(run, text[: len(text) // 2], text)
-    assert ratio < 3.2, ratio
+    ratios = []
+    for _ in range(3):
+        ratios.append(_ratio(run, text[: len(text) // 4], text))
+        if ratios[-1] < 8:
+            break
+    assert min(ratios) < 8, ratios
 
 
 def test_random_sources_pass_against_themselves(keyline_check):
@@ -601,7 +609,7 @@ def test_a_joiner_that_does_not_join_two_tokens_of_one_family_still_extends(keyl
     ("Is it up? No. 5 servers are down.", 1),
     ("No.\n5 of them failed.", 1),
     ("No. 5 of them failed.", 1),
-    ("Ticket No. 5 and no. 7", 0),
+    ("Ticket No. 5 and no. 7", 1),     # SA8: a lowercase "no." after a word is the answer
     ("Ticket No.\t5", 0),
 ])
 def test_no_before_a_number_is_a_negation_at_a_sentence_start(keyline_check, text, count):
@@ -744,7 +752,7 @@ def test_a_dropped_no_before_a_number_fails_after_any_non_word(keyline_check, so
 
 
 @pytest.mark.parametrize("text, count", [
-    ("Ticket No. 5", 0), ("See ticket no. 7", 0), ("Item 3 No. 5", 0), ("Ticket No.\n5", 1),
+    ("Ticket No. 5", 0), ("See ticket no. 7", 1), ("Item 3 No. 5", 0), ("Ticket No.\n5", 1),
     ("Ticket\nNo. 5", 1), ("Ticket No.  5", 0), ("Ticket: No. 5", 1),
 ])
 def test_no_is_a_number_sign_only_after_a_word_on_the_same_line(keyline_check, text, count):
@@ -956,8 +964,143 @@ def test_the_word_classes_match_unicode(keyline_check):
             assert not mark.match(c), hex(cp)
             continue
         hebrew = "\u0590" <= c <= "\u05ff" or "\ufb1d" <= c <= "\ufb4f"
-        is_mark = unicodedata.category(c)[0] == "M" and not c.isalnum() and not hebrew
+        # SA3: a variation selector and an enclosing mark (U+20E3) are no part of a word.
+        selector = "\ufe00" <= c <= "\ufe0f" or "\U000e0100" <= c <= "\U000e01ef"
+        is_mark = (unicodedata.category(c)[0] == "M" and not c.isalnum() and not hebrew
+                   and not selector and unicodedata.category(c) != "Me")
         want = {"LETTER": bool(letter.match(c)), "ALNUM": bool(alnum.match(c)), "WORD": bool(word.match(c))}
         for name, pattern in classes.items():
             assert bool(pattern.match(c)) == ((want[name] and not hebrew) or is_mark), (name, hex(cp))
         assert bool(mark.match(c)) == is_mark, hex(cp)
+
+
+# ---- self-review of the review 9 fixes (SA1-SA9) ----
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ship v2.1,v2.2 now", "Ship v2.1-rc,v2.2 now"),
+    ("Set MODE=fast now", "Set MODE-X=fast now"),
+    ("Visit Paris,London now", "Visit Paris-Nord,London now"),
+    ("Call at 14:30,15:00 now", "Call at 14:30-ish,15:00 now"),
+    ("Ship v2.1* now", "Ship v2.1-rc now"),
+    ("Call API(x) now", "Call API-v2 now"),
+    ("Call **at\n14:30** now", "Call at 14:30:15 now"),
+    ("Ship v2.1,v2.2 now", "Ship x-v2.1,v2.2 now"),
+])
+def test_a_source_token_glued_by_a_joiner_does_not_let_any_extension_pass(keyline_check, source, rendering):
+    # SA1: a source token glued by a joiner ("," "=" "*" "(") was "not alone", so any
+    # extended rendering of it passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ship v2.1,v2.2 now", "Ship v2.1, v2.2 now"),
+    ("Ship v2.1,v2.2 now", "שלחו v2.1,v2.2 עכשיו"),
+    ("Set MODE=fast now", "הגדירו MODE=fast עכשיו"),
+    ("Set MODE=fast now", "Set MODE to fast now"),
+    ("Call API(x) now", "Call API (x) now"),
+])
+def test_a_source_token_glued_by_a_joiner_passes_alone_or_in_the_same_context(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Get https://x.io/_api_/v1 now", "Get https://x.io/api/v1 now"),
+    ("Get https://x.io/api/v1 now", "Get https://x.io/_api_/v1 now"),
+    ("Get https://x.io/*a*/v1 now", "Get https://x.io/a/v1 now"),
+    ("Read /srv/_data_/x.txt now", "Read /srv/data/x.txt now"),
+    ("Call __init_subclass__ now", "Call init_subclass now"),
+    ("Call _private_var_ now", "Call private_var now"),
+])
+def test_emphasis_marks_inside_a_url_path_or_identifier_are_kept(keyline_check, source, rendering):
+    # SA2: _plain() dropped emphasis marks inside URLs, paths and identifiers.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Got 12 errors", "Got __12__ errors"),                      # SA5: "__12__" is bold
+    ("Deploy to Paris now", "Deploy to **_Paris_** now"),
+    ("Deploy to Paris now", "פריסה ל-_Paris_ עכשיו"),
+])
+def test_emphasis_beside_a_token_is_still_dropped(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok, keyline_check.check(source, rendering)
+
+
+def test_a_dunder_still_starts_with_a_letter(keyline_check):
+    assert keyline_check._plain("Call __init_subclass__ and __12__") == "Call __init_subclass__ and 12"
+
+
+@pytest.mark.parametrize("rendering", ["✅ שוחרר ✔️v2.1 ב-14:30 ל-5️⃣ שרתים", "✔️v2.1 at 14:30 to 5️⃣ hosts"])
+def test_a_variation_selector_or_keycap_is_not_part_of_a_word(keyline_check, rendering):
+    # SA3: U+FE0F and U+20E3 were in MARK, so "✔️v2.1" and "5️⃣" hid the token.
+    assert keyline_check.check("Ship v2.1 at 14:30 to 5 hosts", rendering).ok
+
+
+def test_emphasis_pairs_across_a_line_but_not_across_a_blank_line(keyline_check):
+    # SA4: the pairing was reset at every newline, so multi-line bold kept its marks.
+    assert keyline_check._plain("**a\nb**") == "a\nb"
+    assert keyline_check._plain("_a\n\nb_") == "_a\n\nb_"
+    assert keyline_check._plain("_a\n \t\nb_") == "_a\n \t\nb_"
+    assert keyline_check.check("Deploy at 14:30", "**פריסה\nב-14:30**").ok
+
+
+@pytest.mark.parametrize("text, count", [
+    ("I'd say no. 3 fail", 1), ("Fixed? Still no. 5 fail", 1), ("Honestly no. 3", 1),
+    ("Ticket no. 5", 1), ("Ticket No. 5", 0), ("TICKET NO. 5", 0), ("Item 3 no. 5", 0),
+])
+def test_a_lowercase_no_after_a_word_is_a_negation(keyline_check, text, count):
+    # SA8: only "No."/"NO." after a word, or "no." after a digit, is a number sign.
+    assert keyline_check.negations(text) == count
+
+
+def test_a_long_calendar_run_is_checked_in_linear_time(keyline_check):
+    # SA9: the A4 test used "Ab-", which _pairs short-circuits, so dropping TOKEN_REACH
+    # survived; "Monday-" reaches _token_at on every word (226 s unbounded at 20000).
+    import time
+    start = time.perf_counter()
+    keyline_check.check("Open Monday now", "Open " + "Monday-" * 10000 + "Monday now")
+    assert time.perf_counter() - start < 15, "quadratic"
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call at 14:30 now", "Call at 14:30:00 now"),
+    ("Call at 14:30:00 now", "Call at 14:30 now"),
+])
+def test_a_time_with_or_without_zero_seconds_is_present(keyline_check, source, rendering):
+    # SA9: the order of the forms (with ":00" first) had no test.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00abc today."),   # SA9: the ISO word check
+    ("Open ab.txt now", "Open ab.txt* now"),                         # SA9: "*" always extends
+    ("Read /srv/a̱/x now", "Read /srv/a/x now"),                # SA9: a mark in a path
+    ("Read /srv/a/x now", "Read /srv/a̱/x now"),
+])
+def test_guards_without_a_test_of_their_own(keyline_check, source, rendering):
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text", [
+    "/srv/_data_ now", "/srv/*data* now", "x._a_ y", "x:_a_ y", "~_a_ y", "x@_a_ y", "x=_a_ y",
+    "x\\_a_ y", "a-_b_ y", "a-*b* y",                      # an opening run glued after these
+    "y _data_/x", "y *data*/x", "y _data_\\x", "y *data*\\x",  # a closing run before these
+])
+def test_a_mark_run_on_one_side_of_a_path_or_word_is_no_emphasis(keyline_check, text):
+    # SA2: each guard alone, so a URL or path with emphasis-like marks on one side keeps them.
+    assert keyline_check._plain(text) == text
+
+
+def test_a_mark_run_on_one_side_of_a_path_changes_the_token(keyline_check):
+    assert not keyline_check.check("Read /srv/_data_ now", "Read /srv/data now").ok
+    assert not keyline_check.check("Read _data_/x.txt now", "Read data/x.txt now").ok
+
+
+def test_emphasis_after_a_hebrew_prefix_and_dash_is_dropped(keyline_check):
+    assert keyline_check._plain("ל-_Paris_ ו-*API*") == "ל-Paris ו-API"
