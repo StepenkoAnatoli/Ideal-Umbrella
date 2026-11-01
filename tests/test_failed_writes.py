@@ -121,6 +121,10 @@ def assert_undone(home, md, notices):
     assert (claude(home) / "CLAUDE.md").read_bytes() == md
     assert json.loads((claude(home) / "settings.json").read_text(encoding="utf-8")) == BEFORE_SETTINGS
     assert sorted(p.name for p in claude(home).glob("CLAUDE.md.bak-*")) == []
+    # Review 8, low 46 (N9): a backup taken before a settings write that then failed is a copy
+    # of the file as it still is, which no record names: an orphan.
+    settings = (claude(home) / "settings.json").read_bytes()
+    assert [p.name for p in claude(home).glob("settings.json.bak-*") if p.read_bytes() == settings] == []
     assert not (claude(home) / "ballast" / "context_check.py").exists()
     # Undoing a write that never happened is not a value or a section the user changed.
     assert not any("not the installed value" in n or "section of CLAUDE.md differs" in n

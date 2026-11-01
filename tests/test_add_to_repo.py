@@ -252,6 +252,39 @@ def test_a_symlinked_settings_file_stays_a_link_and_its_target_is_updated(add_to
     assert settings["customKey"] == 1 and "UserPromptSubmit" in settings["hooks"]
 
 
+def test_a_symlinked_hook_stays_a_link_and_its_target_is_updated(add_to_repo, tmp_path):
+    # Review 8, low 45 (N8): only the settings link was tested; the hook goes through the same
+    # realpath write, and abspath there would replace the link with a file.
+    repo = tmp_path / "repo"
+    (repo / ".claude" / "hooks").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "context_check.py").write_text("# an older hook\n", encoding="utf-8")
+    link = repo / ".claude" / "hooks" / "context_check.py"
+    try:
+        link.symlink_to(dotfiles / "context_check.py")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    add_to_repo._add(str(repo), force=False)
+    assert link.is_symlink()
+    assert (dotfiles / "context_check.py").read_bytes() == (ROOT / "hooks" / "context_check.py").read_bytes()
+
+
+def test_write_bytes_removes_the_temp_file_when_the_rename_fails(add_to_repo, tmp_path, monkeypatch):
+    # Review 8, low 26 (old #9): the cleanup in _write_bytes' finally had no test; install.py's
+    # twin has one (tests/test_install.py).
+    target = tmp_path / "settings.json"
+    target.write_text("{}\n", encoding="utf-8")
+
+    def boom(src, dst):
+        raise PermissionError(13, "simulated rename failure", dst)
+    monkeypatch.setattr(add_to_repo.os, "replace", boom)
+    with pytest.raises(PermissionError, match="simulated"):
+        add_to_repo._write_bytes(str(target), b'{"new": 1}\n')
+    assert target.read_text(encoding="utf-8") == "{}\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["settings.json"]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes")
 def test_an_existing_file_keeps_its_mode(add_to_repo, tmp_path):
     # Review 20, finding T2: nothing tested that a rewrite keeps the mode.

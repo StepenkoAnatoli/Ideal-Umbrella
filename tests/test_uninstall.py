@@ -76,7 +76,9 @@ def test_fresh_install_round_trip_removes_everything(install_module, uninstall_m
     install_module.install(home)  # a second run must not lose the first run's record
 
     uninstall_module.uninstall(home)
-    assert read_settings(home) == {}
+    # The install created settings.json, so it goes too (review 8, low 44), with no backup.
+    assert not settings_file(home).exists()
+    assert list((home / ".claude").glob("settings.json.bak-*")) == []
     assert not (home / ".claude" / "CLAUDE.md").exists()
 
 
@@ -367,7 +369,7 @@ def test_non_utf8_claude_md_does_not_block_uninstall(install_module, uninstall_m
     assert not ok and any("CLAUDE.md" in i for i in issues)
 
     _, notices = uninstall_module.uninstall(home)
-    assert read_settings(home) == {}
+    assert not settings_file(home).exists()   # the install created it
     assert md.read_bytes() == "caf\xe9\n".encode("cp1252")
     assert any("CLAUDE.md" in n for n in notices)
 
@@ -551,7 +553,7 @@ def test_a_pending_record_naming_a_key_the_user_deleted_is_no_traceback(install_
     del settings["autoCompactWindow"]
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
     assert uninstall_module.main(["--home", str(home)]) == 0, capsys.readouterr().err
-    assert read_settings(home) == {}
+    assert not settings_file(home).exists()   # the install created it
     assert not (home / ".claude" / "ballast" / "context_check.py").exists()
 
 
@@ -652,11 +654,15 @@ def test_a_section_the_install_did_not_write_whose_rules_differ_is_said_to_diffe
 
 
 def test_non_string_backup_name_in_record_does_not_crash(install_module, uninstall_module, tmp_path):
+    # Review 8, low 27 (old #18): a backup name backup_of rejects was read as "no backup", so
+    # CLAUDE.md was deleted. The record names a backup, so the file is left as is.
     home = tmp_path / "home"
     whole_file_install(install_module, home, 1)
 
     changes, notices = uninstall_module.uninstall(home)
-    assert "CLAUDE.md deleted" in changes, (changes, notices)
+    assert not any(c.startswith("CLAUDE.md") for c in changes), (changes, notices)
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert "CLAUDE.md left as is: the backup 1 the install record names is not usable" in notices, notices
 
 
 def test_deny_that_is_not_a_list_is_reported_and_kept_in_the_record(install_module, uninstall_module, tmp_path):
@@ -677,7 +683,8 @@ def test_deny_that_is_not_a_list_is_reported_and_kept_in_the_record(install_modu
     settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
     changes, notices = uninstall_module.uninstall(home)
     assert any(c.startswith("permissions.deny: removed") for c in changes), changes
-    assert "deny" not in read_settings(home).get("permissions", {})
+    # The install created settings.json, and the second run left it empty: it is deleted.
+    assert not settings_file(home).exists()
 
 
 def test_a_failed_section_removal_never_leaves_a_truncated_claude_md(install_module, uninstall_module, tmp_path, monkeypatch):
@@ -1118,14 +1125,17 @@ def test_a_joined_that_is_not_text_in_the_record_is_no_traceback(install_module,
     assert text.startswith("my rules\n") and "Ideal-Umbrella" not in text, text
 
 
-@pytest.mark.parametrize("name", ["../CLAUDE.md.bak", "sub/CLAUDE.md.bak"])
+@pytest.mark.parametrize("name", ["../CLAUDE.md.bak", "sub/CLAUDE.md.bak", "../.claude/my-backup.md"])
 def test_backup_name_with_a_separator_in_record_does_not_crash(install_module, uninstall_module, tmp_path, name):
     # Path.with_name raised ValueError on such a name after settings.json was already rewritten,
     # and main() then said "nothing written".
+    # Review 8, low 27 (old #18): it then deleted CLAUDE.md; the file is left as is now.
     home = tmp_path / "home"
     whole_file_install(install_module, home, name)
     changes, notices = uninstall_module.uninstall(home)
-    assert "CLAUDE.md deleted" in changes, (changes, notices)
+    assert not any(c.startswith("CLAUDE.md") for c in changes), (changes, notices)
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == TEMPLATE_MD
+    assert f"CLAUDE.md left as is: the backup {name!r} the install record names is not usable" in notices, notices
 
 
 def test_uninstall_removes_the_state_folder_and_the_log(install_module, uninstall_module, tmp_path):
@@ -2376,3 +2386,79 @@ def test_verify_names_a_file_it_cannot_read(install_module, tmp_path, capsys, na
     assert install_module.main(["--home", str(home), "--verify-only"]) == 1
     err = capsys.readouterr().err
     assert "cannot read" in err and "[Errno" not in err, err
+
+
+def test_settings_missing_at_uninstall_are_kept_for_a_later_run(install_module, uninstall_module, tmp_path):
+    # Review 8, low 23 (old #14): with settings.json gone at uninstall time the leftover record
+    # was {"uninstalled": true}; when the file came back, a second run removed only the hook
+    # entry, and the value the install replaced (123) was lost. Absent is not empty.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 123})
+    install_module.install(home, force=True)
+    away = tmp_path / "settings.json"
+    settings_file(home).rename(away)
+    _, notices = uninstall_module.uninstall(home)
+    assert "settings.json not found; settings left for a later run" in notices, notices
+    away.rename(settings_file(home))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 123}
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_replaced_key_the_user_deleted_names_the_value_from_before(install_module, uninstall_module, tmp_path):
+    # Review 8, low 24 (old #15): the key stays deleted (README), but the value the install
+    # replaced was skipped without a word.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 123})
+    install_module.install(home, force=True)
+    settings = read_settings(home)
+    del settings["autoCompactWindow"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    _, notices = uninstall_module.uninstall(home)
+    assert "autoCompactWindow: you deleted it; it was 123 before the install" in notices, notices
+    assert "autoCompactWindow" not in read_settings(home)
+
+
+def test_a_settings_file_the_install_created_is_deleted(install_module, uninstall_module, tmp_path):
+    # Review 8, low 44 (N7): uninstall left {} and a backup instead of removing the file.
+    home = tmp_path / "home"
+    install_module.install(home)
+    install_module.install(home)   # a second run finds the file, and must not forget who made it
+    changes, _ = uninstall_module.uninstall(home)
+    assert not settings_file(home).exists(), changes
+    assert list((home / ".claude").glob("settings.json.bak-*")) == []
+    assert "settings.json deleted (the install created it)" in changes, changes
+    assert uninstall_module.uninstall(home) == ([], [])
+
+
+def test_a_settings_file_the_install_created_keeps_the_users_own_keys(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["mine"] = 1
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"mine": 1}
+
+
+def test_a_record_that_does_not_say_who_made_settings_json_keeps_it(install_module, uninstall_module, tmp_path):
+    # Absent is not empty: a record from before "settings_created" says nothing, so the file
+    # stays, as before.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record.pop("settings_created") is True
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {}
+
+
+def test_a_settings_file_that_was_there_is_kept_empty(install_module, uninstall_module, tmp_path):
+    home = tmp_path / "home"
+    seed(home, {})
+    install_module.install(home)
+    record = json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+    assert "settings_created" not in record
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {}

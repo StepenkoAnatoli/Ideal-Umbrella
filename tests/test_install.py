@@ -291,6 +291,23 @@ def test_an_unset_home_is_taken_from_the_passwd_entry(install_module, tmp_path, 
     assert settings_file(home).is_file()
 
 
+def test_a_symlinked_hook_stays_a_link_and_its_target_is_updated(install_module, tmp_path):
+    # Review 8, low 45 other hit: add_to_repo's twin had no hook-link test, and neither had this.
+    home = tmp_path / "home"
+    (home / ".claude" / "ballast").mkdir(parents=True)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    (dotfiles / "context_check.py").write_text("# an older hook\n", encoding="utf-8")
+    link = home / ".claude" / "ballast" / "context_check.py"
+    try:
+        link.symlink_to(dotfiles / "context_check.py")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    install_module.install(home)
+    assert link.is_symlink()
+    assert (dotfiles / "context_check.py").read_bytes() == install_module.HOOK_SRC.read_bytes()
+
+
 def test_symlinked_settings_stay_symlinks(install_module, tmp_path):
     home = tmp_path / "home"
     claude = home / ".claude"
@@ -405,8 +422,9 @@ def test_a_pending_record_naming_a_key_deleted_since_is_settled(install_module, 
     module = install_module if tool == "install" else load_module("uninstall_module", "config/uninstall.py")
     capsys.readouterr()
     assert module.main(["--home", str(home)]) == 0, capsys.readouterr().err
-    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
-    # install adds the key again; uninstall leaves it deleted.
+    # install adds the key again; uninstall leaves it deleted (and the file, which the install
+    # created and which is left empty, goes too).
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8")) if settings_file(home).exists() else {}
     assert ("autoCompactWindow" in settings) == (tool == "install")
 
 

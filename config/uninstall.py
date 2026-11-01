@@ -6,7 +6,10 @@ permissions.deny tools and the hook entry the installer added, deletes the copie
 the state folder and log it wrote (<home>/.claude/ballast/state/, context_check.log), and
 removes the marked Ideal-Umbrella section from CLAUDE.md (the rest of the file stays; a file
 left with nothing but that section is deleted if the install created it, or replaced by the
-backup an earlier whole-file install made). settings.json is backed up before it is rewritten.
+backup an earlier whole-file install made). settings.json is backed up before it is rewritten,
+or deleted when the install created it and the undo leaves it empty; one that is missing is
+left for a later run, which the record keeps its part for. A read-only file the run would
+change stops it before the first write.
 
 It works from <home>/.claude/ballast/install-record.json, which install.py writes, and
 compares against the values the install wrote (not the current templates). Afterwards the
@@ -87,7 +90,13 @@ def undo_settings(settings, template, record, evidence=None):
         keys = []
         notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")
     for key in keys:
-        if key in ("hooks", "permissions") or key not in settings:
+        if key in ("hooks", "permissions"):
+            continue
+        if key not in settings:
+            if key in replaced:
+                # It stays deleted (README), but the value the install replaced is named once:
+                # the record entry goes, and no later run could say it.
+                notices.append(f"{key}: you deleted it; it was {replaced[key]!r} before the install")
             continue
         if key in installed:
             expected = installed[key]
@@ -146,11 +155,18 @@ def undo_settings(settings, template, record, evidence=None):
     return changes, notices, left
 
 
-def _leftover_record(record, left, claude_md_left):
+SETTINGS_FIELDS = ("added_keys", "replaced", "installed", "deny_added", "created", "settings_created")
+
+
+def _leftover_record(record, left, claude_md_left, settings_missing=False):
     """What an uninstall keeps of the record: a marker that it ran, plus anything left as is,
-    so a second run neither falls back to no-record mode nor forgets a pending backup."""
+    so a second run neither falls back to no-record mode nor forgets a pending backup. With
+    settings.json missing (settings_missing) nothing in it was undone, so every settings field
+    is kept as it was for a run once the file is back: a missing field stays missing."""
     leftover = {"uninstalled": True}
-    if record and left:
+    if record and settings_missing:
+        leftover.update({k: record[k] for k in SETTINGS_FIELDS if k in record})
+    elif record and left:
         leftover["added_keys"] = [k for k in record.get("added_keys", []) if k in left]
         leftover["replaced"] = {k: v for k, v in record.get("replaced", {}).items() if k in left}
         leftover["installed"] = {k: v for k, v in record.get("installed", {}).items() if k in left}
@@ -159,6 +175,8 @@ def _leftover_record(record, left, claude_md_left):
         if isinstance(record.get("created"), list):
             # Whatever a later run still empties, it must know who made the container.
             leftover["created"] = record["created"]
+        if record.get("settings_created") is True:
+            leftover["settings_created"] = True
     if record and claude_md_left and record.get("claude_md"):
         leftover["claude_md"] = record["claude_md"]
     return leftover
@@ -235,6 +253,12 @@ def _empty(claude_md):
     if install._is_link(claude_md):
         return "CLAUDE.md emptied (it is a link; the link is kept)", lambda: install._write_bytes(claude_md, b"")
     return "CLAUDE.md deleted", claude_md.unlink
+
+
+def _changes_claude_md(change):
+    """True when a change this module reports writes or deletes CLAUDE.md itself (each one
+    starts with "CLAUDE.md"); deleting a backup of it is not one."""
+    return change.startswith("CLAUDE.md") and not change.startswith("CLAUDE.md backup")
 
 
 def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
@@ -348,6 +372,11 @@ def _undo_section(claude_md, current, utf8, found, entry, apply, notices):
                            "install, and holds nothing but the Ideal-Umbrella section; left as is")
             return leave()
         if legacy:
+            if legacy_path is None:
+                # A name this installer never gives (a hand edit, a sync tool): as for the
+                # whole-file installer's backup, the file stays and the name is reported.
+                notices.append(f"CLAUDE.md left as is: the backup {legacy!r} the install record names is not usable")
+                return True
             if not _is_file(legacy_path):
                 # The install replaced a file of yours and its backup is gone: removing the
                 # section would leave nothing of it, so keep the file and say so.
@@ -419,6 +448,29 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     left, setting_changes = [], []
     if settings is not None:
         setting_changes, notices, left = undo_settings(settings, template, record, evidence)
+    # Absent is not empty: a settings.json that is gone now (moved away, a sync tool, a dotfiles
+    # folder not linked yet) had nothing undone, so the record keeps what a later run needs.
+    settings_missing = settings is None and isinstance(record, dict) and any(
+        record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
+    if settings_missing:
+        notices.append("settings.json not found; settings left for a later run")
+    # A settings.json the install created and the undo leaves empty is deleted, not left as {}.
+    # A record that does not say (from before the field, or a file that was there) keeps it.
+    delete_settings = settings == {} and isinstance(record, dict) and record.get("settings_created") is True \
+        and not install._is_link(paths["settings"])
+    settings_written = bool(setting_changes) and not delete_settings
+
+    if not dry_run:
+        # A read-only file is refused before the first write, as install refuses it: found at its
+        # own write, it would stop the undo part way (CLAUDE.md reverted, settings.json not).
+        # Which CLAUDE.md change the run makes is known only by working through it, so a dry run
+        # finds it; a CLAUDE.md the run leaves as is may stay read-only.
+        plan, _ = uninstall(home, dry_run=True, config_dir=config_dir)
+        for path, written in ((paths["record"], record is not None or paths["record"].exists()),
+                              (paths["claude_md"], any(_changes_claude_md(change) for change in plan)),
+                              (paths["settings"], settings_written)):
+            if written:
+                install.refuse_read_only(path)
 
     # What the hook wrote while it ran: the per-session state files and its log. A state folder
     # that is a symlink, or a junction on Windows, is unlinked, not followed (shutil.rmtree
@@ -540,6 +592,12 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             claude_md_left = True
             notices.append(f"CLAUDE.md left as is: the backup {backup.name} it should be restored "
                            "from is missing")
+        elif isinstance(entry, dict) and entry.get("backup") is not None:
+            # The record names a backup, but not one this installer gives (a hand edit or a sync
+            # tool): the user's earlier file may be anywhere, so deleting would be a guess.
+            claude_md_left = True
+            notices.append(f"CLAUDE.md left as is: the backup {entry['backup']!r} the install record names "
+                           "is not usable")
         elif record is not None:
             apply(*_empty(claude_md))
         elif evidence:
@@ -556,13 +614,14 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     # Without a record the hook entry in settings.json and the hook file are the only evidence
     # of an install, so both stay until the CLAUDE.md step is done, and the hook file goes last:
     # a rerun after a failure before this point still finds one.
-    if setting_changes:
-        changes.extend(setting_changes)
-        if not dry_run:
-            backup = install._backup(paths["settings"])
-            done(f"settings backup: {backup.name}")
-            install._write_json(paths["settings"], settings)
-            progress.append("settings.json written")
+    changes.extend(setting_changes)
+    if delete_settings:
+        apply("settings.json deleted (the install created it)", lambda: install.remove(paths["settings"]))
+    elif settings_written and not dry_run:
+        # The backup goes again when the write fails: it would be a copy of the file as it is.
+        backup = install.replace_json(paths["settings"], settings, progress)
+        changes.append(f"settings backup: {backup.name}")
+        progress.append("settings.json written")
     if paths["hook"].exists():
         if dry_run:
             changes.append("hook deleted")
@@ -571,7 +630,7 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
             done("hook deleted")
 
     if (record is not None or paths["record"].exists()) and not dry_run:
-        install._write_json(paths["record"], _leftover_record(record, left, claude_md_left))
+        install._write_json(paths["record"], _leftover_record(record, left, claude_md_left, settings_missing))
     return changes, notices
 
 
