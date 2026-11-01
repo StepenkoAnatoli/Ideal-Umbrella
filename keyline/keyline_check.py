@@ -403,69 +403,111 @@ NOT_EXTENDED = (None, None)
 # character, so it would hide the token inside it, and a "*" glued after a token is a joiner
 # ("ab.txt*", see JOIN). An opening run of one or two "_" or one to three "*" (before a
 # non-space) is paired with the next closing run of the same marks in the block (after a
-# non-space), and both are dropped from source and rendering alike; a blank line and a line that
-# starts a list item, heading or quote end the block. A mark run inside a URL (URL_SPAN, all of
+# non-space), and both are dropped from source and rendering alike; a blank line, a line that
+# starts a list item, heading, quote or code fence, and a table cell separator "|" end the block.
+# A mark inside an inline code span pairs only with one in the same span ("`*.o`" and a later
+# "ab.txt*" are no pair; "**use `x`**" is emphasis). A mark run inside a URL (URL_SPAN, all of
 # it but the marks and punctuation that end it: "?_k_=1", "#_frag_"), path or identifier is no
 # emphasis: an opening run does not follow a word character or one of "*/\\.:~@=" or a "-"
 # glued to a word ("/srv/_data_/x", "a-_b_"; "ל-_Paris_" is emphasis, a Hebrew letter is no word
 # character here), a closing run does not follow "/" or "\\" ("**/*.py and docs/**") nor come
 # before a word character, "/" or "\\", and a "*" run no "*" on either side ("**_Paris_**" is
 # two emphases). A lone edge mark ("_private", "snake_case_", "ab.txt*") has no partner and
-# stays, and so does a pair of "_" or "__" whose first or last word holds a "_" itself
-# ("_private_var_", "_private_key is ... api_key_") and a dunder ("__init__",
-# "__init_subclass__"; "__12__" is bold).
+# stays, and so does an "_" or "__" glued to word characters that hold a "_" ("_private_var_";
+# of "_v2.1 adds max_retries_" only the closing "_", so "v2.1" is still a token) and a dunder
+# pair ("__init__", "__init_subclass__"; "__12__" is bold).
 _GLUED_DASH = r"(?<![^\W\u0590-\u05ff\ufb1d-\ufb4f]-)"
 EMPHASIS = re.compile(rf"(?P<open>(?<![\w*/\\.:~@=]){_GLUED_DASH}\*{{1,3}}(?=[^\s*])"
                       rf"|(?<![\w/\\.:~@=]){_GLUED_DASH}_{{1,2}}(?=[^\s_]))"
                       r"|(?P<close>(?<=[^\s*/\\])\*{1,3}(?![\w*/\\])|(?<=[^\s_/\\])_{1,2}(?![\w/\\]))"
-                      r"|\n[ \t]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|>))")
+                      r"|\n[ \t]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|>|```|~~~))|\|")
 DUNDER_BODY = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
-# A URL as _plain() masks it: its marks are no emphasis. The scheme is bounded as in INVARIANT.
-URL_SPAN = re.compile(r"[A-Za-z][A-Za-z0-9+.-]{0,30}://[^\s<>\"'`]+")
+# A URL as _plain() masks it: its marks are no emphasis. The scheme and the characters are as
+# in INVARIANT's url, so a URL ends where its token does ("https://x.io/a—_Paris_").
+URL_SPAN = re.compile(rf"[A-Za-z][A-Za-z0-9+.-]{{0,30}}://(?:{WORD}|[-.~:/?\#\[\]@!$&()*+,;=%])+")
 # What ends a URL span but is not masked: sentence punctuation, closing brackets and the closing
 # marks of an emphasis around the URL ("**https://x.io/a**,").
 URL_TAIL = "*_.,;:!?)]}"
+BACKTICKS, BLANK_LINE = re.compile("`+"), re.compile(r"\n[ \t]*\n")
+
+
+def _code_spans(text):
+    """The (start, end) of each inline code span of text: a run of backticks up to the next run
+    of as many, within one paragraph (an unclosed run is a literal). Linear: the next run of each
+    length is found once, from the right."""
+    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(text)]
+    if len(runs) < 2:
+        return []
+    blanks = [m.start() for m in BLANK_LINE.finditer(text)]
+    after, last = [None] * len(runs), {}
+    for i in range(len(runs) - 1, -1, -1):
+        n = runs[i][1] - runs[i][0]
+        after[i], last[n] = last.get(n), i
+    spans, i = [], 0
+    while i < len(runs):
+        j = after[i]
+        if j is not None and bisect.bisect_left(blanks, runs[i][1]) == bisect.bisect_left(blanks, runs[j][0]):
+            spans.append((runs[i][0], runs[j][1]))
+            i = j + 1
+        else:
+            i += 1
+    return spans
 
 
 def _plain(text):
     """text without the marks of emphasis (see EMPHASIS). Linear: each run is pushed and popped
-    at most once, and whether a body is one word holding a "_" is counted, not scanned (nested
+    at most once, and whether a word glued to a mark holds a "_" is counted, not scanned (nested
     pairs would scan the same text again)."""
-    drop, opened, edges = [], {}, None
+    drop, opened, inner, edges = [], {}, {}, None
     urls = [(u.start(), u.start() + len(u.group().rstrip(URL_TAIL))) for u in URL_SPAN.finditer(text)]
-    url = 0
+    codes = _code_spans(text)
+    url = code = 0
+    in_code = None                            # the code span inner pairs belong to
 
-    def edge_word_with_underscore(a, b):
-        """Whether the first or the last word of text[a:b] holds a "_"."""
+    def glued_identifier(a, b, forward):
+        """Whether the word characters glued to a (forward) or to b (backward) within text[a:b]
+        hold a "_": the mark there is part of an identifier ("_private_key", "api_key_")."""
         nonlocal edges
         if edges is None:
-            edges = ([m.start() for m in re.finditer(r"\s", text)], [m.start() for m in re.finditer("_", text)])
-        spaces, unders = edges
-        i = bisect.bisect_left(spaces, a)
-        first_end = min(spaces[i], b) if i < len(spaces) else b
-        j = bisect.bisect_left(spaces, b)
-        last_start = max(spaces[j - 1] + 1, a) if j else a
-        return (bisect.bisect_left(unders, first_end) > bisect.bisect_left(unders, a)
-                or bisect.bisect_left(unders, b) > bisect.bisect_left(unders, last_start))
+            edges = ([m.start() for m in re.finditer(r"\W", text)], [m.start() for m in re.finditer("_", text)])
+        others, unders = edges
+        if forward:
+            k = bisect.bisect_left(others, a)
+            b = min(others[k], b) if k < len(others) else b
+        else:
+            k = bisect.bisect_left(others, b)
+            a = max(others[k - 1] + 1, a) if k else a
+        return bisect.bisect_left(unders, b) > bisect.bisect_left(unders, a)
 
     for m in EMPHASIS.finditer(text):
         while url < len(urls) and urls[url][1] <= m.start():
             url += 1
         if url < len(urls) and urls[url][0] < m.start():
             continue                          # a mark inside a URL ("?_k_=1") is part of it
+        while code < len(codes) and codes[code][1] <= m.start():
+            code += 1
+        if code < len(codes) and codes[code][0] <= m.start():
+            if in_code != code:               # a mark inside a code span pairs only inside it
+                in_code, inner = code, {}
+            pairs = inner
+        else:
+            pairs = opened
         if m.lastgroup == "open":
-            opened.setdefault(m.group(), []).append(m)
+            pairs.setdefault(m.group(), []).append(m)
         elif m.lastgroup == "close":
-            stack = opened.get(m.group())
+            stack = pairs.get(m.group())
             if stack:
                 o = stack.pop()
-                if not (m.group()[0] == "_" and (
-                        edge_word_with_underscore(o.end(), m.start())
-                        or m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start()))):
+                if m.group()[0] != "_":
                     drop += [o.span(), m.span()]
+                elif not (m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start())):
+                    if not glued_identifier(o.end(), m.start(), True):
+                        drop.append(o.span())
+                    if not glued_identifier(o.end(), m.start(), False):
+                        drop.append(m.span())
         else:
-            opened = {}                       # emphasis does not run past a blank line or into
-                                              # a list item, heading or quote
+            pairs.clear()                     # emphasis does not run past a blank line, into a
+                                              # list item, heading, quote or fence, or past a "|"
     if not drop:
         return text
     drop.sort()
@@ -698,35 +740,35 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
 
 
 def _after_word(text, start, digit=False):
-    """True when the last character before start on its line, spaces and tabs aside, is a
-    letter or a digit (a digit only, with digit)."""
+    """True when the last character before start on its line, spaces, tabs and emphasis marks
+    aside ("Ticket **No. 5**", "ticket_no. 5"), is a letter or a digit (a digit only, with
+    digit)."""
     i = start - 1
-    while i >= 0 and text[i] in " \t":
+    while i >= 0 and text[i] in " \t*_":
         i -= 1
     return i >= 0 and (text[i].isdigit() if digit else text[i].isalnum())
 
 
 def _negation_counts(text):
-    """(definite, ambiguous): the negations of text, and of them the lowercase "no. N" after a
-    word ("ticket no. 5"), which may be a number sign."""
+    """(definite, ambiguous): the negations of text but a "No. N" that is a number sign, and of
+    them those that may be one ("no. N" before a number, read as the answer "no": "ticket no. 5",
+    "(No. 5)", "A: No. 5")."""
     n, ambiguous = len(NEG_HE.findall(text)), 0
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):
-            if _after_word(text, m.start(), digit=word not in ("No", "NO")):
-                continue                    # "Ticket No. 5", "Item 3 no. 5": a number sign
-            if _after_word(text, m.start()):       # "ticket no. 5"
-                ambiguous += 1
-                continue
+            if not _after_word(text, m.start(), digit=word not in ("No", "NO")):
+                ambiguous += 1              # "(No. 5)", "ticket no. 5"
+            continue                        # "Ticket No. 5", "Item 3 no. 5": a number sign
         n += 1
     return n, ambiguous
 
 
 def negations(text, rendering_of=None):
     """The number of negations in text. For a rendering of the source rendering_of, an
-    ambiguous "no. N" (see _negation_counts) counts only as often as the source has one, so it
+    ambiguous "No. N" (see _negation_counts) counts only as often as the source has one, so it
     cannot stand in for a negation the rendering dropped ("Do not deploy. Ticket No. 5." ->
-    "Deploy. ticket no. 5.")."""
+    "Deploy. ticket no. 5.", "Deploy. Ticket: No. 5.", "Deploy (No. 5).")."""
     n, ambiguous = _negation_counts(text)
     if rendering_of is not None:
         ambiguous = min(ambiguous, _negation_counts(rendering_of)[1])

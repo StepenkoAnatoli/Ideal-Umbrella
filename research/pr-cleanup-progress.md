@@ -26,7 +26,7 @@ Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is done and r
 - **User decision (2026-11-01):** "yes, fix all of them then check your work and merge". In progress on branch `ccr-review9-7adc485` (PR #33):
   - fixer A: keyline/ and scripts/ findings (A1-A10, the old #4, #10 and #15 neighbours);
   - fixer B: config/, hooks/, README and tests (B1-B7, I-1 to I-3).
-  - Done: fixes committed (18025a0, ae22a1c); first self-review found SA1-SA9 and SB1-SB4, fixed (0ea6811, da4f87e); second self-review found M1-M3 (all mediums), L1, I1, fixed in the commit after da4f87e. Report sections "Self-review of the PR diff" and "Second self-review".
+  - Done: fixes committed (18025a0, ae22a1c); first self-review found SA1-SA9 and SB1-SB4, fixed (0ea6811, da4f87e); second self-review found M1-M3 (all mediums), L1, I1, fixed (228c4ba); third self-review found 3 more mediums (one a regression vs main), fixed in the next commit. Report sections "Self-review of the PR diff", "Second self-review", "Third self-review".
   - Next: CI green on PR #33, then mark ready and merge with a merge commit.
 - If restarting: `git diff` on the branch shows the uncommitted fix work. Re-run `python -m pytest -q`, `python -I keyline/tests/run_tests.py` and pyflakes before committing.
 - **Recurring classes:** every medium this round is a *neighbour of a previous fix*; mutation runs found *fixes without tests* (6 in keyline_check.py, 8 in install/uninstall). Other classes to watch: absent is not empty (B3, A8), halfway state (B2, A7), stale record field (B1).

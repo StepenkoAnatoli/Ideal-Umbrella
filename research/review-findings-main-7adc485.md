@@ -206,3 +206,14 @@ SA1-SA9 and SB1-SB4 fixed (0ea6811 config, da4f87e keyline). A fresh reviewer th
 - **I1 (info, pre-existing):** `**/*.py and docs/**` was stripped as bold. Fixed: emphasis does not close after `/` or `\`.
 - **Still passing, accepted:** a bare `v2.1` for a source `v2.1*` (a standalone token counts as present; `_unextended` decision).
 - Checks: pytest 1801 passed, 14 skipped; keyline 35/35; pyflakes clean; self-pass fuzz 0 failures; 23 of 23 mutants killed.
+
+## Third self-review (fresh reviewer, diff da4f87e..228c4ba)
+
+0 high, 3 medium, 4 low, 2 info. Self-pass clean on 11,596 repo .md chunks and 60k fuzz strings; linear to 200 kB. All mediums reproduced with `python -I`, compared with main 7adc485, and fixed with tests:
+- **"No. N" offsets a lost negation (medium, regression vs main):** "Do not deploy. Ticket No. 5." against "Deploy. Ticket **No. 5**." (also `(No. 5)`, `Ticket: No. 5`) passed. Fix: a "No./no. + number" that is not a sure number sign counts in the rendering only as often as the source has one; `**` and `_` are skipped when finding the word before it.
+- **Kept `_` pair hid its tokens (medium, also on main):** `_\`max_retries\` is 5 from 14:30_` against `…14:45_` passed. Fix: kept or dropped is decided per mark; only a mark glued to an identifier holding `_` stays.
+- **Emphasis paired across code spans (medium, also on main):** `` keep `ab.txt` `` against `` keep `ab.txt*` `` passed. Fix: a mark inside a code span pairs only within it; pairing resets at `|` and fence lines.
+- Two lows fixed (L-a, L-d); L-b and L-c left by design.
+- **Accepted, fails closed (low):** `_v2.1 adds max_retries_` against `v2.1 adds max_retries` fails, since the trailing `_` glued to `max_retries` is kept as part of the token.
+- Checks: pytest 1838 passed, 14 skipped; keyline 35/35; pyflakes clean; 17 of 17 mutants killed.
+- **Stopped here:** three rounds of fresh review each found neighbours in the emphasis stripper, each smaller than the last; the third round's fixes were verified against every repro of all rounds. A further review is a candidate for the next scheduled review rather than a blocker for this merge.

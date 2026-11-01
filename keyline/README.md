@@ -57,13 +57,17 @@ and a combining mark NFC cannot fold into its letter (`a` with U+0331) is part o
 Hebrew point is not, nor is a variation selector or a keycap mark (`✔️v2.1` holds `v2.1`, `5️⃣`
 holds `5`). Emphasis marks (`**v2.1**`, `_API_`, `*ab.txt*`), also across the lines of one
 paragraph, are dropped before the scan, so they neither hide nor extend a token. A pair does not
-span a blank line or a line that starts a list item, heading or quote (`- `, `1. `, `# `, `>`).
+span a blank line, a line that starts a list item, heading, quote or code fence (`- `, `1. `,
+`# `, `>`, a fence of three backticks or tildes) or a table cell separator `|`. A mark inside an
+inline code span pairs only with a mark in the same span (`` `*.o` `` and a later `ab.txt*` are
+no pair); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
 An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
 (`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
 are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
 or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks), glued to a word that
-holds an `_` itself (`_private_var_`, `_private_key is ... api_key_`), a dunder (`__init__`,
-`__init_subclass__`; `__12__` is bold), or a lone edge mark (`_private_name`, `snake_case_`).
+holds an `_` itself (`_private_var_`; of `_v2.1 adds max_retries_` only the closing `_` stays,
+so `v2.1` is still a token), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold), or a
+lone edge mark (`_private_name`, `snake_case_`).
 A token the source writes on its own is not present where a rendering only extends it, on either
 side: `ab.txt` in `ab.txt.bak`, `ab.txt~`, `ab.txt=1` or `old/ab.txt`, `report.pdf` in `old-report.pdf`,
 `Jean-Luc` in `Jean-Luc-Picard` or `Marie-Jean-Luc`, `14:30` in `14:30:15`, `notes/a` in
@@ -244,12 +248,14 @@ Two panel claims do not reproduce exactly:
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted. A
   negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation,
-  only after a word on the same line (`Ticket No. 5`); anywhere else (`Up? No. 5 are down.`,
-  `A: No. 5 fail`, `(no. 3 ...)`, a line that starts `No.`) it is the negation. A lowercase
-  `no.` is a number sign only after a digit (`Item 3 no. 5`); after a word it is the answer
-  (`I'd say no. 3 fail`), so `ticket no. 5` counts as a negation (fails closed). In the
-  rendering it counts only as often as the source has one, so it cannot stand in for a dropped
-  negation (`Do not deploy. Ticket No. 5.` to `Deploy. ticket no. 5.` fails). The number must
+  only after a word on the same line, emphasis marks aside (`Ticket No. 5`, `Ticket **No. 5**`);
+  anywhere else (`Up? No. 5 are down.`, `A: No. 5 fail`, `(no. 3 ...)`, a line that starts
+  `No.`) it is the negation. A lowercase `no.` is a number sign only after a digit
+  (`Item 3 no. 5`); after a word it is the answer (`I'd say no. 3 fail`), so `ticket no. 5`
+  counts as a negation (fails closed). Each of these "No. N" negations counts in the rendering
+  only as often as the source has one, so it cannot stand in for a dropped negation
+  (`Do not deploy. Ticket No. 5.` to `Deploy. ticket no. 5.`, `Deploy. Ticket: No. 5.` or
+  `Deploy (No. 5).` fails). The number must
   follow on the same line. `Ticket No 5` without the period counts as a negation (fails closed).
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase

@@ -1201,3 +1201,91 @@ def test_a_mark_run_after_a_slash_closes_nothing(keyline_check, text):
     assert keyline_check._plain(text) == text
     # check() still passes "match /*.py and docs/": a bare token is present for a source that
     # writes it extended ("docs/**"), by design (see EXT_RIGHT).
+
+
+# --- SA3 review (self9c): N1-N3, L-a, L-d ----------------------------------------------------
+
+@pytest.mark.parametrize("rendering", [
+    "Deploy. Ticket **No. 5**.", "Deploy. Ticket _No. 5_.", "Deploy (No. 5).", "Deploy. Ticket: No. 5.",
+    "Deploy. Ticket *No. 5*.", "Deploy. ticket_no. 5.",
+])
+def test_a_no_before_a_number_in_the_rendering_does_not_stand_in_for_a_negation(keyline_check, rendering):
+    # N2: any "No./no. N" the rendering reads as a negation counts only as often as the source
+    # has one, whatever markup or punctuation is around it.
+    result = keyline_check.check("Do not deploy. Ticket No. 5.", rendering)
+    assert not result.ok and result.neg_rendering < result.neg_source, result
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ticket **No. 5** is done", "Ticket No. 5 is done"),
+    ("Ticket No. 5 is done", "Ticket **No. 5** is done"),
+    ("Ticket _No. 5_ is done", "Ticket No. 5 is done"),
+    ("Up? No. 5 are down.", "Up? No. 5 are down."),
+    ("(No. 5) is done", "(No. 5) is done"),
+])
+def test_emphasis_around_a_number_sign_is_ignored(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("_`max_retries` is 5 per Dana_", "_`max_retries` is 5 per Omer_"),
+    ("_`max_retries` is 5 from 14:30_", "_`max_retries` is 5 from 14:45_"),
+    ("_`max_retries` is 5 since 2026-10-25_", "_`max_retries` is 5 since 2026-10-26_"),
+    ("_v2.1 adds max_retries_", "_v3.1 adds max_retries_"),
+    ("_`max_retries` defaults to 5 since v2.1_", "_`max_retries` defaults to 5 since v9.9_"),
+    ("_private_key rotates at 14:30_", "_private_key rotates at 14:45_"),
+])
+def test_a_kept_underscore_does_not_hide_the_token_at_the_other_edge(keyline_check, source, rendering):
+    # N1: only a mark glued to an identifier that holds "_" is kept; the other edge is emphasis.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("_`max_retries` is 5 from 14:30_", "`max_retries` is 5 from 14:30"),
+    ("_v2.1 adds max_retries_", "v2.1 adds max_retries_"),
+    ("_private_key is set now_", "_private_key is set now"),
+    ("_private_var_ and _private_key is api_key_", "_private_var_ and _private_key is api_key_"),
+])
+def test_only_the_mark_glued_to_an_identifier_is_kept(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Delete `*.o` and keep `ab.txt`", "Delete `*.o` and keep `ab.txt*`"),
+    ("| Delete | `*.o` |\n| Keep | ab.txt |", "| Delete | `*.o` |\n| Keep | ab.txt* |"),
+    ("| run all tests | v2 |\n| remove ab.txt | v3 |", "| run *all tests | v2 |\n| remove ab.txt* | v3 |"),
+    ("```\nrm *.o\n```\nKeep ab.txt", "```\nrm *.o\n```\nKeep ab.txt*"),
+    ("~~~\nrm *.o\n~~~\nKeep ab.txt", "~~~\nrm *.o\n~~~\nKeep ab.txt*"),
+    ("```\nrm *.o\n````\nKeep ab.txt", "```\nrm *.o\n````\nKeep ab.txt*"),   # no code span
+    ("Run `*` then keep ab.txt", "Run `*` then keep ab.txt*"),
+    ("Delete `` *.o ` `` and keep ab.txt", "Delete `` *.o ` `` and keep ab.txt*"),
+    ("Delete `` ` *.o `` and keep ab.txt", "Delete `` ` *.o `` and keep ab.txt*"),   # run lengths
+])
+def test_emphasis_does_not_pair_across_code_or_table_cells(keyline_check, source, rendering):
+    # N3: a mark inside a code span pairs only inside it; a "|" and a fence line end the block.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("**use `x` for v2.1**", "use `x` for v2.1"),
+    ("`_v2.1_` and `*a*`", "`v2.1` and `a`"),
+    ("a ` b *c* d", "a ` b c d"),
+    ("*a `b\n\nc` d*", "*a `b\n\nc` d*"),
+])
+def test_emphasis_around_or_inside_code_is_still_dropped(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Use https://x.io/a—_Paris_ now", "Use https://x.io/a—_Lyon_ now"),
+    ("“_v2.1 is at https://x.io/a_”", "“_v3.1 is at https://x.io/a_”"),
+    ("Use https://x.io/a|_Paris_ now", "Use https://x.io/a|_Lyon_ now"),
+])
+def test_a_url_span_ends_where_the_url_token_ends(keyline_check, source, rendering):
+    # L-a: URL_SPAN uses the url token's characters, so marks after a glued "—" are emphasis.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
