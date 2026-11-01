@@ -2462,3 +2462,72 @@ def test_a_settings_file_that_was_there_is_kept_empty(install_module, uninstall_
     assert "settings_created" not in record
     uninstall_module.uninstall(home)
     assert read_settings(home) == {}
+
+
+def test_an_uninstall_stopped_after_deleting_the_created_settings_json_finishes(install_module, uninstall_module, tmp_path):
+    # Review 8 self-review M1 (halfway state): uninstall deleted the settings.json the install
+    # created, then failed (a folder where the hook file is). The record still held every
+    # settings field, so each rerun said "settings.json not found; settings left for a later
+    # run", and a settings.json the user made later was undone and deleted.
+    home = tmp_path / "home"
+    install_module.install(home)
+    hook = home / ".claude" / "ballast" / "context_check.py"
+    hook.unlink()
+    hook.mkdir()
+    with pytest.raises(OSError):
+        uninstall_module.uninstall(home)
+    assert not settings_file(home).exists()
+    hook.rmdir()
+    _, notices = uninstall_module.uninstall(home)
+    assert not any("later run" in n for n in notices), notices
+    assert uninstall_module.uninstall(home) == ([], [])
+    settings_file(home).write_text('{"autoCompactWindow": 250000}', encoding="utf-8")
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 250000}
+
+
+def test_an_install_while_settings_json_is_away_keeps_the_value_from_before(install_module, uninstall_module, tmp_path):
+    # Review 8 self-review M2 (absent is not empty): an install run while settings.json was
+    # away (a dotfiles folder not linked yet) read it as {}, marked the file as created and
+    # moved the value kept from before the first install into added_keys. Once the file was
+    # back, uninstall removed the user's value and deleted the file.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 100000})
+    install_module.install(home, force=True)
+    away = tmp_path / "settings.json"
+    settings_file(home).rename(away)
+    install_module.install(home)
+    settings_file(home).unlink()
+    away.rename(settings_file(home))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 100000}
+
+
+def test_an_install_after_an_uninstall_with_settings_away_keeps_the_value_from_before(install_module, uninstall_module, tmp_path):
+    # M2, second path: uninstall with the file away keeps its part for a later run; an install
+    # before the file is back must not turn that part into keys the install added.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 123})
+    install_module.install(home, force=True)
+    away = tmp_path / "settings.json"
+    settings_file(home).rename(away)
+    uninstall_module.uninstall(home)
+    install_module.install(home)
+    settings_file(home).unlink()
+    away.rename(settings_file(home))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 123}
+
+
+def test_settings_created_false_in_a_record_is_read_as_missing(install_module, uninstall_module, tmp_path):
+    # Review 8 self-review L1: only true was accepted, so a false (a hand edit, a sync tool)
+    # stopped install and uninstall with a field-type error.
+    home = tmp_path / "home"
+    install_module.install(home)
+    record_path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["settings_created"] = False
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {}

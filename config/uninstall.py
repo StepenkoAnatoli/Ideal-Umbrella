@@ -452,7 +452,13 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     # folder not linked yet) had nothing undone, so the record keeps what a later run needs.
     settings_missing = settings is None and isinstance(record, dict) and any(
         record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
-    if settings_missing:
+    if settings_missing and record.get("settings_created") is True and not record.get("replaced"):
+        # The file the install created is gone (often deleted by an earlier run that then
+        # stopped) and held nothing of the user's to put back: its part of the record goes, so a
+        # settings.json made later is not undone against it.
+        settings_missing = False
+        notices.append("settings.json not found; the install created it, so nothing in it is left to undo")
+    elif settings_missing:
         notices.append("settings.json not found; settings left for a later run")
     # A settings.json the install created and the undo leaves empty is deleted, not left as {}.
     # A record that does not say (from before the field, or a file that was there) keeps it.
