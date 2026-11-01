@@ -281,3 +281,66 @@ Informational (no action proposed):
 1. Mediums 1-4 in `keyline_check`, with tests. Medium 2 is the most serious, because a changed path or name passes the check.
 2. Old #14, #6, #18 and N7 in uninstall: they lose or keep the user's state silently.
 3. The rest of the lows, class by class: transcript guards (18, 41, 42), hook argument and notes handling (11-14, 40), and doc and test gaps (7, 8, 17, 22, 26, 28, 34, 45).
+
+## Fixes (PR #32, on "yes, fix all of them then check your work and merge")
+
+All findings are fixed except 36 (a Windows junction, which cannot be checked on Linux) and the 3 informational notes. Each fix has a test that failed before the fix, with three exceptions:
+
+- 26 and 45 add tests to unchanged code. Each test was checked by a mutation (the code removed, or `realpath` changed to `abspath`).
+- 7 and 28 are doc wording, so they have no test.
+
+Commits:
+
+- 74a3343: config/ findings 23-28 and 44-46.
+- 51f97b8: keyline/ and scripts/ findings 1-22, 29-35 and 38-43.
+
+After both commits: pytest 1430 passed, 14 skipped (as root), keyline 35/35, pyflakes clean. The config tests also pass as uid 65534: 927 passed, 10 skipped.
+
+The table gives, per finding, the fix (in `keyline_check.py` unless the line names another file), its test, the other hits of the same pattern, and how the fix is kept from coming back.
+
+| # | Fixed | Test | Other hits | Prevention |
+|---|---|---|---|---|
+| 1 | Datetime matches `[T ]` both ways. Time and datetime share `_clock` (`:310`, `:329`). | `test_a_date_and_time_written_with_a_space_pass_against_the_iso_form` | The time kind shares `_clock`. Fixed. | One time normaliser. |
+| 2 | `R_ALONE` (`:54`). `_scan` notes the tokens the source writes on their own; `present` refuses an extension of those. | `test_a_rendering_that_only_extends_a_token_fails`, `test_a_token_glued_to_more_text_in_the_source_passes_against_itself` | None. Lookup by extraction was tried first; it broke the self-pass rule on Hebrew prefixes. | Each kind has an "extension fails" test. |
+| 3 | Hash length `{7,128}` (`:90`). | `test_a_sha256_digest_is_one_invariant` | None. | Tests at the SHA-512 limit. |
+| 4 | Unicode `UP`/`LO` classes in upper, camel and proper (`:22-43`, `:86-88`). | `test_a_capitalised_name_with_a_non_ascii_letter_is_extracted` | Low 29, same root cause. Fixed. | No letter class built from `A-Z`. |
+| 5 | The message uses `e.filename` (`keyline_hook.py:216`). | `test_a_rendering_that_is_not_utf8_is_not_blamed_on_the_note` | The stat path (`:191`) is correct. | The message is built from the error itself. |
+| 6 | `CALENDAR_FULL` for any kind (`:139`, `:340`). | `test_an_upper_case_month_or_weekday_accepts_its_hebrew_form` | DEC, SAT and MAR stay acronyms, on purpose. | — |
+| 7 | keyline/README.md no longer names gittoken. | — | None. | No private repository is named in a public doc. |
+| 8 | Test only. | `test_a_file_that_fails_to_read_is_skipped_not_a_traceback` (fails by mutation without the handler) | None. | Every `except` has a test. |
+| 9 | List marker is `\d{1,2}` (`:119`, `keyline_lint.py:42`). | `test_a_leading_number_of_three_or_more_digits_is_not_a_list_marker` | The hedge path shares `LIST_MARKER`. Fixed. | One marker definition. |
+| 10 | New `url` kind and `_trim_url` (`:79`, `:210`). | `test_a_url_keeps_its_scheme` | None. | — |
+| 11 | Dotfiles skipped (`keyline_hook.py:97-101`). | `test_a_dotfile_under_notes_is_not_a_note` | Hidden files walked by `measure.py`. Fixed. | Every walker skips dotted names. |
+| 12 | `parse_watch` rejects unknown or empty arguments with exit 1 (`keyline_hook.py:145-169`). | `test_a_bad_hook_argument_is_reported_not_ignored` | None. | Unknown arguments are refused, never skipped. |
+| 13 | The header is chosen from the finding types (`keyline_hook.py:220-223`). | `test_an_inconclusive_rendering_alone_does_not_say_the_note_breaks_the_rules` | None. | — |
+| 14 | `HE_SUFFIXES` (`.he.txt`, `.he.md`, `.he.keyline`); renderings are checked against every same-stem note (`keyline_hook.py:41`, `:105-128`). | `test_a_rendering_is_checked_against_every_note_with_its_stem` | Low 40. Fixed. | One helper pair for both directions. |
+| 15 | `No. 5` is not a negation (`:148`). May before `:` or `*`, at line end or in a header is the month (`:275-295`). | `test_ticket_no_is_not_a_negation`, `test_may_as_a_label_or_header_is_the_month` | None. | — |
+| 16 | Exit 1 with "nothing counted for ARG" (`measure.py:131`). | `test_a_named_argument_that_produced_no_row_exits_1` | None. | — |
+| 17 | The docstring and README say a symlinked sub-folder is not followed. | `test_the_docstring_says_a_walked_symlinked_folder_is_not_followed` | None. | — |
+| 18 | `utf-8-sig` and `isinstance` guards in usage_breakdown, usertext_split, usertext_top, toolresult_share, unused_tools and plugin_cost. | `test_malformed_fields_and_a_bom_neither_crash_nor_lose_the_first_line` and 3 more | `.mcp.json` and the unused_tools settings file. Fixed. | User JSON is read with `utf-8-sig`, and every field's type is checked. |
+| 19 | Output write and `get_encoding` guarded (`plugin_cost.py:136`, `:144`). | `test_an_output_path_in_a_missing_folder_is_one_line_not_a_traceback` | `get_encoding` in keyline_lint and measure. Fixed. | Every tiktoken load and output write is guarded. |
+| 20 | `os.walk(followlinks=True)` with a realpath seen-set (`plugin_cost.py:54`). | `test_a_plugin_under_a_hidden_folder_is_counted` | lint_validate skips hidden folders on purpose (documented). | — |
+| 21 | Block indicators read (`plugin_cost.py:49`). | `test_a_folded_or_literal_description_is_read_without_its_indicator` | None. | — |
+| 22 | An allow line is split into words (`keyline_lint.py:151`). Honest limits updated. | `test_an_allow_file_line_with_several_words_allows_each` | None. | — |
+| 23 | settings.json missing: the leftover record keeps the settings fields, with a notice (`uninstall.py:158-161`, `:453`). | `test_settings_missing_at_uninstall_are_kept_for_a_later_run` | A missing CLAUDE.md drops its entry: documented design, and the notice names the backups. | A missing file keeps its part of the record. |
+| 24/37 | "you deleted it; it was V before the install" notice (`uninstall.py:99`). | `test_a_replaced_key_the_user_deleted_names_the_value_from_before` | None. | Each dropped record entry is acted on or named. |
+| 25 | Uninstall dry-runs itself, then calls `refuse_read_only` on each file it will change (`uninstall.py:468`). | `test_a_read_only_file_stops_uninstall_before_any_write[...]` | S45 (a read-only folder) is not fixed: `os.access` on folders is unreliable. | Every writer checks every file before its first write. |
+| 26 | Test only. | `test_write_bytes_removes_the_temp_file_when_the_rename_fails` | install.py is already tested. | A twin helper gets the twin test. |
+| 27 | CLAUDE.md is left as is, with "the backup ... is not usable" (`uninstall.py:600`). The 2 tests are changed. | `test_backup_name_with_a_separator_in_record_does_not_crash` | The legacy_backup message now says "not usable". | A value we cannot use is not read as no value. |
+| 28 | The docstring is in write order (`install.py:15`). | — | None. | — |
+| 29 | Same change as 4. | `test_an_upper_case_word_with_a_non_ascii_letter_is_one_identifier` | — | — |
+| 30 | `:00` seconds are optional in `_clock`. | `test_a_time_without_seconds_matches_the_same_time_with_zero_seconds` | None. | — |
+| 31 | A trailing period is stripped before the path-shape check (`:225`). | `test_a_yes_no_pair_before_a_period_is_prose_not_a_path` | None. | — |
+| 32 | Camel uses an emulated atomic group (`:87`). | `test_extraction_and_hedges_are_linear_on_100_kb` | Path and file are bounded at 200 characters. | The linear-time test. |
+| 33 | `_Lines` per-line cache (`:248-272`). | Same test as 32. | None. | Same. |
+| 34 | `EN_L`/`EN_R` replace `\b` in HEDGE and NEG_EN (`:147`). | `test_underscore_emphasis_does_not_hide_a_hedge_or_a_negation` | NEG_EN. Fixed. | No `\b` around English words. |
+| 35 | Snake uses `ALNUM`; the dead filter is removed (`:89`). | `test_every_snake_token_has_an_inner_underscore_or_is_a_dunder` | — | — |
+| 38 | The change line needs two file arguments that each produced a row (`measure.py:123`). | `test_the_change_line_needs_two_files_that_each_produced_a_row` | None. | — |
+| 39 | `NotRegular` message (`measure.py:35`). | `test_a_named_pipe_argument_is_not_called_missing` | None. | — |
+| 40 | Same change as 14. | `test_a_rendering_named_in_capitals_is_found_from_its_note` | — | — |
+| 41 | A non-string name falls back to the folder name (`plugin_cost.py:79`). | `test_a_plugin_name_that_is_not_text_falls_back_to_the_folder` | — | — |
+| 42 | `load_old`/`load_words` guarded (`lint_validate.py:66-77`). | `test_a_word_cache_that_cannot_be_read_is_one_line_not_a_traceback` | — | — |
+| 43 | Only finite numbers are compared (`ledger.py:108-120`). | `test_a_hand_edited_nan_inf_or_null_is_shown_as_written_without_a_change` | — | — |
+| 44 | Install records `settings_created: true`; uninstall deletes such a settings.json when the undo leaves `{}` and the file is not a link. A record without the field keeps `{}`. | `test_a_settings_file_the_install_created_is_deleted`, `test_a_record_that_does_not_say_who_made_settings_json_keeps_it` | CLAUDE.md already has `created`. | A file the install creates is recorded as created. |
+| 45 | Tests only. | `test_a_symlinked_hook_stays_a_link_and_its_target_is_updated` (add_to_repo and install) | install.py had the same gap. Fixed. | Each written file has a symlink test. |
+| 46 | `install.replace_json` deletes its own backup when the write fails, and drops it from the progress list. | `assert_undone` in `tests/test_failed_writes.py` | The uninstall settings write uses the same helper. | A backup the record does not name is removed when its write fails. |
