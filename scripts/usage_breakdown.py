@@ -35,9 +35,10 @@ TOKEN_KEYS = (
 
 
 def _int(value):
+    """A token count; anything else (text, null, NaN, Infinity: json reads both) counts 0."""
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

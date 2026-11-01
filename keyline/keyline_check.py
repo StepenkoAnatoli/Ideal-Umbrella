@@ -1,9 +1,9 @@
 """keyline_check.py - deterministic fact check between a source note and a rendering of it.
 
-Extracts every date, timestamp, time, version, number, percentage, UPPER_CASE identifier, file path,
-CamelCase name, proper noun, file name, snake_case token, git hash and lowercase identifier with
-digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
-Hebrew, JSON, markdown...). A month or weekday name may appear in its Hebrew form. Also fails if
+Extracts every URL, date, timestamp, time, version, number, percentage, UPPER_CASE identifier, file
+path, CamelCase name, proper noun, file name, snake_case token, git hash and lowercase identifier
+with digits (sha256, utf8) from SOURCE and fails if any is missing from a RENDERING (English prose,
+Hebrew, JSON, markdown...), or is there only extended (see EXT_RIGHT). A month or weekday name may appear in its Hebrew form. Also fails if
 the rendering drops a hedge class (could/may, likely, should, can; English or Hebrew words) or
 has fewer negation words than the source. A source with no extractable invariant and no hedge
 is INCONCLUSIVE, never PASS.
@@ -16,6 +16,7 @@ Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage o
 import bisect
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass
 
 # Letters by case, from the Basic Multilingual Plane (the planes above it hold no cased letter a
@@ -47,12 +48,24 @@ WORD = rf"[^\W{HEB_RANGE}]"               # ALNUM or "_"
 # and "COLE" is not a token inside "ÉCOLE".
 L = rf"(?<!{WORD})"
 R = rf"(?!{WORD}|\.\d)"
-# The right boundary of a token the source writes on its own: it is not present where a
-# rendering only extends it ("notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/",
-# "14:30:15" for "14:30"). A token the source itself glues to more text ("API-v2") keeps R, so a
-# rendering holding the source verbatim always passes.
-R_ALONE = rf"(?!{WORD}|[.\-/\\:]{WORD}|[/\\])"
-ALONE = re.compile(R_ALONE)
+# A token the source writes on its own is not present where a rendering only extends it, on
+# either side: "notes/a.txt.bak", "report.pdf-old", "Jean-Luc-Picard", "notes/a/", "a.txt~",
+# "API#x", "14:30:15" for "14:30" (EXT_RIGHT), and "old/notes/a.txt", "old-report.pdf",
+# "Marie-Jean-Luc", "/notes/a.txt" (EXT_LEFT: a "/" or "\\", or ".", "-", "~" after a word
+# character). A Hebrew letter is not a word character, so "ב-v2.1" and "בv2.14.0" are not
+# extensions. The one exception is a pair or a range of two tokens of one family joined by
+# "-" or "/" (PAIR_FAMILY): "14:30-15:00", "2026-10-25-2026-10-27", "v2.1/v2.3",
+# "Postgres/MySQL", "API/SDK". A hyphen joins the parts of a name ("Jean-Luc-Picard", "S3-IA",
+# "Paris-Nord"), so between names it is a pair only when both are month or weekday names
+# ("Monday-Friday", "Mon-Fri"); between times, dates and versions it is a range. A path, file
+# name, hash or number never pairs: "a.txt/b.txt" extends "a.txt". A token the source itself
+# extends at every occurrence ("API-v2") is looked up with R only, and every source occurrence
+# is judged by the same function as the rendering's, so a rendering holding the source verbatim
+# always passes.
+EXT_RIGHT = re.compile(rf"[.\-/\\:]{WORD}|[/\\~@#+%]")
+WORD_CHAR = re.compile(WORD)
+PAIR_FAMILY = {"proper": "name", "camel": "name", "upper": "name", "ident": "name", "snake": "name",
+               "time": "when", "date": "when", "datetime": "when", "version": "version"}
 # A number is looked up by extraction, not by a boundary: "10" is present when the rendering's
 # own invariants hold "10" as a token, so it is not found inside "10:00", "2,500", "10%",
 # "10/25" or the date "2026-10-25" (each one token to the extractor), while both ends of the
@@ -142,10 +155,12 @@ CALENDAR_FULL = {"january", "february", "march", "april", "may", "june", "july",
 
 # English: the specified list (no, not, never, without, none) plus "cannot" and n't contractions,
 # so a prose rendering that writes "doesn't" for "does not" is not reported as a lost negation.
-# "No. 5" is a number sign, not a negation. The word edges are letters and digits, not "\b": "\b"
-# counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
+# "No. 5" is a number sign, not a negation, except at a sentence start ("Up? No. 5 are down.",
+# see negations()); the number follows on the same line. The word edges are letters and digits,
+# not "\b": "\b" counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
 EN_L, EN_R = r"(?<![^\W_])", r"(?![^\W_])"
-NEG_EN = re.compile(EN_L + r"(?:no(?![^\W_])(?!\.\s*\d)|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
+NEG_EN = re.compile(EN_L + r"(?:no|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
+NUMBER_SIGN = re.compile(r"\.[ \t]*\d")
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
 # לא/אין/ללא and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו).
 HEB = "א-ת"
@@ -208,15 +223,70 @@ def _is_path(tok):
 
 
 def _trim_url(tok):
-    """A URL without the sentence punctuation after it; a ")" stays when the URL opened one."""
-    while tok and (tok[-1] in ".,;:!?" or (tok[-1] in ")]}" and tok.count(tok[-1]) > tok.count("([{"[")]}".index(tok[-1])]))):
-        tok = tok[:-1]
-    return tok
+    """A URL without the sentence punctuation after it; a ")" stays when the URL opened one.
+    The brackets are counted once, so a long run of ")" is trimmed in linear time."""
+    opened = {")": tok.count("("), "]": tok.count("["), "}": tok.count("{")}
+    closed = {c: tok.count(c) for c in opened}
+    end = len(tok)
+    while end:
+        c = tok[end - 1]
+        if c in ".,;:!?":
+            end -= 1
+        elif c in closed and closed[c] > opened[c]:
+            closed[c] -= 1
+            end -= 1
+        else:
+            break
+    return tok[:end]
+
+
+def _token_at(text, pos):
+    """(kind, token) of the token that starts at pos, or None."""
+    m = INVARIANT.match(text, pos)
+    return (m.lastgroup, m.group(m.lastgroup)) if m else None
+
+
+def _token_before(text, end):
+    """(kind, token) of a token that ends at end (one of at most 64 characters), or None."""
+    for p in range(max(0, end - 64), end):
+        m = INVARIANT.match(text, p, end)
+        if m and m.end() == end:
+            return m.lastgroup, m.group(m.lastgroup)
+    return None
+
+
+def _pairs(kind, tok, joiner, other):
+    """Whether tok and the token other on the far side of joiner are a pair (see EXT_RIGHT)."""
+    if other is None or PAIR_FAMILY.get(kind) is None:
+        return False
+    family = PAIR_FAMILY[kind]
+    if family != PAIR_FAMILY.get(other[0]):
+        return False
+    if joiner == "/" or family != "name":
+        return True
+    return tok.lower() in CALENDAR and other[1].lower() in CALENDAR
+
+
+def _unextended(text, s, e, kind, tok):
+    """Whether the occurrence text[s:e] of tok is not extended on either side (see EXT_RIGHT)."""
+    if kind == "date" and re.match(r"T\d", text[e:e + 2]):
+        pass                                # the date of an ISO date and time
+    elif EXT_RIGHT.match(text, e):
+        joiner = text[e]
+        if joiner not in "-/" or not _pairs(kind, tok, joiner, _token_at(text, e + 1)):
+            return False
+    if s:
+        c = text[s - 1]
+        glued = s > 1 and WORD_CHAR.match(text, s - 2) is not None
+        if c in "/\\" or (c in ".-~" and glued):
+            if not (glued and c in "-/" and _pairs(kind, tok, c, _token_before(text, s - 1))):
+                return False
+    return True
 
 
 def _scan(text):
     """Return ({token: kind}, alone): the fact-bearing tokens of text in order of appearance, and
-    the set of those the text writes on their own at least once (see R_ALONE)."""
+    the set of those the text writes on their own at least once (see EXT_RIGHT)."""
     text = LIST_MARKER.sub("", text)
     found, alone = {}, set()
     for m in INVARIANT.finditer(text):
@@ -233,7 +303,7 @@ def _scan(text):
         if kind == "proper":
             if tok.lower() in PROPER_STOP or _is_sentence_start(text, m.start()):
                 continue
-        if ALONE.match(text, m.start(kind) + len(tok)):
+        if kind not in ("url", "number") and _unextended(text, m.start(kind), m.start(kind) + len(tok), kind, tok):
             alone.add(tok)
         if tok not in found:
             found[tok] = kind
@@ -267,12 +337,16 @@ class _Lines:
         if line_start not in self._caps:
             line = self.text[line_start:line_end]
             self._caps[line_start] = (re.search(r"[a-z]", line) is None,
-                                      len(re.findall(r"\b[A-Z]{2,}\b", line)))
+                                      len(CAPS_WORD.findall(line)))
         no_lower, caps = self._caps[line_start]
         return no_lower and caps >= 2
 
 
-MONTH_AFTER = re.compile(r"\s+\d|[ \t]*[:*]|[ \t]*(?:\n|$)")
+# "May 2026", "May: ship", "**May**: 3", "**May** 5", "**May**" or "May" at a line end. A
+# header line is no exception of its own: "## May" ends the line, "## May we ship?" is a modal.
+MONTH_AFTER = re.compile(r"\s+\d|[ \t]*:|\*\*[ \t]*(?::|\d|\n|$)|[ \t]*(?:\n|$)")
+# An all-caps word between letter-or-digit edges, so "_MAY_" (emphasis) is one.
+CAPS_WORD = re.compile(r"(?<![^\W_])[A-Z]{2,}(?![^\W_])")
 
 
 def hedges(text):
@@ -283,12 +357,10 @@ def hedges(text):
     for m in HEDGE.finditer(text):
         word = m.group(0)
         if word in ("May", "MAY"):
-            line_start, _ = lines.bounds(m.start())
             if (MONTH_AFTER.match(text, m.end())
-                    or re.match(r"[ \t]*#", text[line_start:m.start()])
                     or (word == "May" and not _is_sentence_start(text, m.start()))
                     or (word == "MAY" and not lines.all_caps(m.start(), m.end()))):
-                # "May 2026", "MAY 14", "May: ship v2", "**May**", "## May", "May" alone at a
+                # "May 2026", "MAY 14", "May: ship v2", "**May** 5", "## May", "May" alone at a
                 # line end, "in May because", "due: MAY": the month. The modal verb is
                 # capitalised only at a sentence start ("May I help?") or in an all-caps line
                 # ("WE MAY FAIL"), where another all-caps word stands beside it.
@@ -315,13 +387,29 @@ def _clock(rest):
     return re.escape(hm + (sec or "") + (frac or "")), zone
 
 
-def present(tok, kind, text, tokens=None, alone=True):
+# The runs of word characters of a rendering, by text, so present() tries a token only where
+# its first run starts instead of searching the whole rendering once per distinct token.
+WORD_RUN = re.compile(rf"{L}{WORD}+")
+
+
+def word_index(text):
+    """{run: [start, ...]} for every maximal run of word characters in text."""
+    index = {}
+    for m in WORD_RUN.finditer(text):
+        index.setdefault(m.group(), []).append(m.start())
+    return index
+
+
+def present(tok, kind, text, tokens=None, alone=True, index=None):
     """Whether the source token tok of kind is in the rendering text. tokens is
-    invariants(text) when the caller already has it. alone: the source writes tok on its own,
-    so a rendering that only extends it ("a.txt" as "a.txt.bak") does not count."""
-    if kind == "number":
+    invariants(text) and index is word_index(text) when the caller already has them. alone:
+    the source writes tok on its own, so a rendering that only extends it ("a.txt" as
+    "a.txt.bak", "old/a.txt") does not count (see EXT_RIGHT)."""
+    if kind in ("number", "url"):
+        # A URL is looked up by extraction too: whatever a rendering glues to it ("@evil.io",
+        # "&debug=1", "#frag") is part of the rendering's URL, so the source's is not there.
         return tok in (invariants(text) if tokens is None else tokens)
-    left, right = L, (R_ALONE if alone else R)
+    left, right = L, R
     if kind == "time":
         clock, zone = _clock(tok)
         body = clock + ("Z" if zone else "Z?")
@@ -334,19 +422,58 @@ def present(tok, kind, text, tokens=None, alone=True):
         body = re.escape(tok)
     if kind == "date":
         right = rf"(?:(?=T\d)|{right})"     # the date of an ISO date and time
-    forms = [left + body + right]
+    pattern = re.compile(left + body + right)
+
+    def found(m):
+        return m is not None and (not alone or _unextended(text, m.start(), m.end(), kind, tok))
+
+    first = WORD_RUN.match(tok)
+    if kind != "time" and first:
+        # left is L here: a match starts where a run of word characters starts, and that run
+        # is the token's own first run (the token goes on with a non-word character or ends,
+        # and R refuses a word character after it).
+        if index is None:
+            index = word_index(text)
+        if any(found(pattern.match(text, pos)) for pos in index.get(first.group(), ())):
+            return True
+    else:
+        pos = 0
+        while True:                         # every match, overlapping ones too
+            m = pattern.search(text, pos)
+            if m is None:
+                break
+            if found(m):
+                return True
+            pos = m.start() + 1
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
     # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
     # a capitalised name or a full name in capitals is a month or weekday: "DEC" and "SAT" are
     # acronyms, not דצמבר and שבת.
     if kind == "proper" or tok.lower() in CALENDAR_FULL:
-        forms += [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-                  for form in CALENDAR.get(tok.lower(), ())]
-    return re.search("(?:" + "|".join(forms) + ")", text) is not None
+        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+                 for form in CALENDAR.get(tok.lower(), ())]
+        if forms and re.search("(?:" + "|".join(forms) + ")", text):
+            return True
+    return False
+
+
+def _after_sentence_end(text, start):
+    """True when only spaces or tabs separate start from the text start, a line start or a
+    sentence end (".", "?", "!")."""
+    i = start - 1
+    while i >= 0 and text[i] in " \t":
+        i -= 1
+    return i < 0 or text[i] in BOUNDARY
 
 
 def negations(text):
-    return len(NEG_EN.findall(text)) + len(NEG_HE.findall(text))
+    n = len(NEG_HE.findall(text))
+    for m in NEG_EN.finditer(text):
+        if (m.group().lower() == "no" and NUMBER_SIGN.match(text, m.end())
+                and not _after_sentence_end(text, m.start())):
+            continue                        # "Ticket No. 5": a number sign
+        n += 1
+    return n
 
 
 @dataclass
@@ -362,9 +489,11 @@ class CheckResult:
 
 def check(source, rendering):
     """Return a CheckResult for one source/rendering pair."""
+    # NFC: "Zürich" with a combining diaeresis (NFD, as some editors save it) is "Zürich".
+    source, rendering = unicodedata.normalize("NFC", source), unicodedata.normalize("NFC", rendering)
     inv, alone = _scan(source)
-    rendered = invariants(rendering)
-    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered, t in alone)]
+    rendered, index = invariants(rendering), word_index(rendering)
+    missing = [t for t, k in inv.items() if not present(t, k, rendering, rendered, t in alone, index)]
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering)
@@ -375,10 +504,11 @@ def check(source, rendering):
 
 
 def read(path):
-    """Read a UTF-8 (optionally BOM-marked) text file; any other encoding is a read error."""
+    """Read a UTF-8 (optionally BOM-marked) text file, NFC-normalized; any other encoding is a
+    read error."""
     try:
         with open(path, encoding="utf-8-sig") as f:
-            return f.read()
+            return unicodedata.normalize("NFC", f.read())
     except UnicodeDecodeError as e:
         # utf-8-sig counts from after a BOM; the offset names the byte in the file.
         with open(path, "rb") as f:

@@ -137,3 +137,13 @@ def test_malformed_fields_and_a_bom_neither_crash_nor_lose_the_first_line(script
         assert "please list the" in result.stdout, result.stdout
     else:
         assert "typed by user" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("role", [5, ["user"], {"x": 1}])
+def test_toolresult_share_counts_a_role_that_is_not_text_as_unknown(tmp_path, role):
+    # Self-review S9: the isinstance(role, str) check had no test (MALFORMED's role is null).
+    events = [{"message": {"role": role, "content": "odd role"}},
+              {"message": {"role": role, "content": [{"type": "text", "text": "odd role"}]}}]
+    result = run("toolresult_share.py", str(write_jsonl(tmp_path / "t.jsonl", events)))
+    assert result.returncode == 0 and "Traceback" not in result.stderr, result.stderr
+    assert "?_text" in result.stdout, result.stdout

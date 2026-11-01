@@ -8,6 +8,20 @@ def keyline_check():
     return load_module("keyline_check", "keyline/keyline_check.py")
 
 
+def _ratio(fn, small, big):
+    """Best-of-3 time of fn(big) over fn(small): a machine-independent measure of growth."""
+    import time
+    best = []
+    for arg in (small, big):
+        times = []
+        for _ in range(3):
+            start = time.perf_counter()
+            fn(arg)
+            times.append(time.perf_counter() - start)
+        best.append(min(times))
+    return best[1] / max(best[0], 1e-4)
+
+
 def test_iso_timestamp_is_one_invariant(keyline_check):
     # "2026-10-25T10:00:00Z" used to split into the numbers 2026 and 10 and the time 00:00Z, so
     # a rendering with the day changed passed.
@@ -475,14 +489,17 @@ def test_every_snake_token_has_an_inner_underscore_or_is_a_dunder(keyline_check)
     "x/" * 50000,
     "ÉA" * 50000 + "_",
     "1:" * 50000,
+    "see http://x/" + ")" * 100000,         # URL trim (self-review S6)
 ])
 def test_extraction_and_hedges_are_linear_on_100_kb(keyline_check, text):
-    import time
-    start = time.perf_counter()
-    keyline_check.invariants(text)
-    keyline_check.hedges(text)
-    keyline_check.check(text, text)
-    assert time.perf_counter() - start < 1.0
+    # Self-review S8: an absolute limit (1 s) failed on a slow machine for linear code; the
+    # time of the whole text against its first half is ~2 for linear code and ~4 for quadratic.
+    def run(t):
+        keyline_check.invariants(t)
+        keyline_check.hedges(t)
+        keyline_check.check(t, t)
+    ratio = _ratio(run, text[: len(text) // 2], text)
+    assert ratio < 3.2, ratio
 
 
 def test_random_sources_pass_against_themselves(keyline_check):
@@ -496,3 +513,163 @@ def test_random_sources_pass_against_themselves(keyline_check):
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 12)))
         result = keyline_check.check(text, text)
         assert not result.missing and not result.missing_hedges, (text, result)
+
+
+# ---- self-review of the review 8 fixes (S1-S13) ----
+
+@pytest.mark.parametrize("source, rendering", [
+    ("See notes/a.txt now.", "See old/notes/a.txt now."),
+    ("Sign report.pdf now.", "Sign old-report.pdf now."),
+    ("Sign report.pdf now.", "Sign old.report.pdf now."),
+    ("Ask Jean-Luc today.", "Ask Marie-Jean-Luc today."),
+    ("See notes/a.txt now.", "See /notes/a.txt now."),
+    ("See notes/a.txt now.", "See notes/a.txt~ now."),
+    ("Bump API today.", "Bump API# today."),
+    ("Bump API today.", "Bump API@v3 today."),
+])
+def test_a_rendering_that_extends_a_token_on_either_side_fails(keyline_check, source, rendering):
+    # S1: the boundary guarded only the right side, and not against "~", "@", "#", "+", "%".
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Fetch https://example.com now.", "Fetch https://example.com@evil.io now."),
+    ("Fetch https://e.com/?x=1 now.", "Fetch https://e.com/?x=1&debug=1 now."),
+    ("Fetch https://e.com/a now.", "Fetch https://e.com/a#frag now."),
+    ("Fetch https://e.com/a now.", "Fetch https://e.com/a%20b now."),
+    ("Fetch https://e.com/a now.", "Fetch https://e.com/a,b now."),
+])
+def test_a_rendering_that_extends_a_url_fails(keyline_check, source, rendering):
+    # S2: a URL is looked up by extraction, so whatever the rendering appends is part of its URL.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("See https://e.com/a now.", "ראה https://e.com/a עכשיו."),
+    ("See https://e.com/a now.", "ראה https://e.com/a, עכשיו."),
+    ("See https://e.com/a now.", "ראה ב-https://e.com/a עכשיו."),
+    ("See https://en.wikipedia.org/wiki/Foo_(bar) now.", "ראה (https://en.wikipedia.org/wiki/Foo_(bar))."),
+])
+def test_a_url_with_punctuation_or_hebrew_around_it_is_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Maintenance from 14:30 to 15:00.", "תחזוקה 14:30-15:00."),
+    ("Maintenance from 14:30 to 15:00.", "תחזוקה 14:30/15:00."),
+    ("Use Postgres or MySQL.", "השתמשו ב-Postgres/MySQL."),
+    ("Open Monday to Friday.", "פתוח Monday-Friday."),
+    ("Open Mon to Fri.", "פתוח Mon-Fri."),
+    ("Supports v2.1 and v2.3.", "תומך ב-v2.1/v2.3."),
+    ("Supports v2.1 and v2.3.", "תומך ב-v2.1-v2.3."),
+    ("From 2026-10-25 to 2026-10-27.", "מ-2026-10-25-2026-10-27."),
+    ("Use API and SDK today.", "השתמשו ב-API/SDK היום."),
+])
+def test_a_range_or_pair_of_tokens_keeps_both_tokens(keyline_check, source, rendering):
+    # S3: the right boundary refused "-WORD" and "/" after a token, so a range or a pair of two
+    # source tokens false-failed.
+    result = keyline_check.check(source, rendering)
+    assert result.ok, result
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ask Jean-Luc today.", "Ask Jean-Luc-Picard today."),      # a hyphen extends a name
+    ("Ask Luc today.", "Ask Jean-Luc today."),
+    ("Ask Paris today.", "Ask Paris-Nord today."),
+    ("Moved to S3 today.", "Moved to S3-IA today."),
+    ("Bump to v2 today.", "Bump to v2-rc1 today."),
+    ("From 2026-10-25 today.", "From 2026-10-25-27 today."),
+    ("Edit notes/a.txt today.", "Edit notes/a.txt/notes/b.txt today."),   # a path never pairs
+    ("Run build.sh today.", "Run build.sh/run.sh today."),
+    ("Use Postgres today.", "Use notes/Postgres today."),
+    ("Use Postgres today.", "Use /Postgres today."),
+])
+def test_a_joiner_that_does_not_join_two_tokens_of_one_family_still_extends(keyline_check, source, rendering):
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+
+
+@pytest.mark.parametrize("text, count", [
+    ("Is it up? No. 5 servers are down.", 1),
+    ("No.\n5 of them failed.", 1),
+    ("No. 5 of them failed.", 1),
+    ("Ticket No. 5 and no. 7", 0),
+    ("Ticket No.\t5", 0),
+])
+def test_no_before_a_number_is_a_negation_at_a_sentence_start(keyline_check, text, count):
+    # S4: "No. 5" was a number sign anywhere, also after "?" or across a newline.
+    assert keyline_check.negations(text) == count
+
+
+def test_a_dropped_no_at_a_sentence_start_fails(keyline_check):
+    assert not keyline_check.check("Is it up? No. 5 servers are down.", "Is it up? 5 servers are down.").ok
+
+
+@pytest.mark.parametrize("text", ["**May** we ship v2?", "## Risks. May we ship v2?", "## May we ship v2?",
+                                  "WE _MAY_ FAIL", "_MAY_ FAIL"])
+def test_may_in_bold_or_on_a_header_line_before_a_clause_is_a_hedge(keyline_check, text):
+    # S5: any "**" after "May", and any "#" line, made it the month; "_MAY_" was not all-caps.
+    assert keyline_check.hedges(text) == {"possibility": ["may"]}
+
+
+@pytest.mark.parametrize("text", ["## **May**", "**May**\nship", "## May"])
+def test_may_alone_in_bold_or_on_a_header_is_still_the_month(keyline_check, text):
+    assert keyline_check.hedges(text) == {}
+
+
+def test_trimming_a_url_is_linear(keyline_check):
+    # S6: _trim_url counted the parentheses again for every character it removed.
+    import time
+    text = "see http://x/" + ")" * 100000
+    start = time.perf_counter()
+    inv = keyline_check.invariants(text)
+    assert time.perf_counter() - start < 1.0
+    assert inv == {"http://x/": "url"}
+
+
+def test_many_distinct_tokens_are_checked_in_linear_time(keyline_check):
+    # S7: present() searched the whole rendering once per distinct source token.
+    def text(n):
+        return " ".join(f"tok{i}x" for i in range(n))
+    ratio = _ratio(lambda t: keyline_check.check(t, t), text(2000), text(8000))
+    assert ratio < 8, ratio          # quadratic gives ~16
+
+
+def test_a_url_scheme_alone_is_not_an_invariant(keyline_check):
+    # S9: the "://" skip had no test.
+    assert keyline_check.invariants("Links start with https://. At 14:02.") == {"14:02": "time"}
+
+
+def test_a_url_keeps_a_parenthesis_it_opened(keyline_check):
+    # S9: the balance check in _trim_url had no test.
+    url = "https://en.wikipedia.org/wiki/Foo_(bar)"
+    assert keyline_check.invariants(f"See {url} now.") == {url: "url"}
+    assert keyline_check.invariants(f"(see {url})") == {url: "url"}
+
+
+def test_a_time_with_a_zone_is_not_present_without_it(keyline_check):
+    # S9: "Z?" for a source zone let "14:30" pass for "14:30Z".
+    assert keyline_check.check("Starts 14:30Z.", "Starts 14:30.").missing == ["14:30Z"]
+
+
+def test_a_time_is_not_present_inside_a_time_with_seconds(keyline_check):
+    # S9: ":" in the extension guard had no test ("14:30:15" for "14:30").
+    assert keyline_check.check("Starts 14:30 today.", "Starts 14:30:15 today.").missing == ["14:30"]
+
+
+def test_nfd_text_is_read_as_nfc(keyline_check, tmp_path):
+    # S13: "Zürich" written with a combining diaeresis extracted "Zu".
+    import unicodedata
+    nfc = "Meeting with Zürich at 10:00."
+    nfd = unicodedata.normalize("NFD", nfc)
+    assert keyline_check.check(nfc, nfd).ok
+    assert keyline_check.check(nfd, nfc).ok
+    note = tmp_path / "n.txt"
+    note.write_text(nfd, encoding="utf-8")
+    assert keyline_check.read(note) == nfc

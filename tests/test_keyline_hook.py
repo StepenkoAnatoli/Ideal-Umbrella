@@ -259,3 +259,60 @@ def test_a_rendering_named_in_capitals_is_found_from_its_note(keyline_hook, tmp_
     (notes / "c.HE.TXT").write_text("לפרוס היום\n", encoding="utf-8")
     assert edit(keyline_hook, monkeypatch, note) == 2
     assert "c.HE.TXT" in capsys.readouterr().err
+
+
+# ---- self-review of the review 8 fixes ----
+
+@pytest.mark.parametrize("stem", ["data.json", "v1.2"])
+def test_a_rendering_is_not_checked_against_a_file_that_is_not_a_note(keyline_hook, tmp_path, monkeypatch, capsys,
+                                                                      stem):
+    # S10: editing data.json.he.txt checked it against data.json (exit 2), while editing
+    # data.json checked nothing: a file is a note only with a note suffix, in both directions.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    other = notes / stem
+    other.write_text("deploy v9 today\n", encoding="utf-8")
+    rendering = notes / (stem + ".he.txt")
+    rendering.write_text("לפרוס היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, other) == 0
+    assert edit(keyline_hook, monkeypatch, rendering) == 0
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("argv", [["--watch", "--print-config"], ["--watch", " "], ["--watch", "--watch"]])
+def test_a_watch_pattern_that_is_an_option_or_blank_is_refused(keyline_hook, tmp_path, monkeypatch, capsys, argv):
+    # S11: "--watch --print-config" took --print-config as a pattern and exited 0.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("please wait\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note, argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("keyline hook:") and err.count("\n") == 1
+
+
+def test_a_rendering_that_cannot_be_opened_is_named_with_the_reason(keyline_hook, tmp_path, monkeypatch, capsys):
+    # S9: the e.filename branch of the read-error message had no test.
+    import errno
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    rendering = notes / "c.he.txt"
+    rendering.write_text("לפרוס v2 היום\n", encoding="utf-8")
+    real_read = keyline_hook.keyline_check.read
+
+    def read(path):
+        if path == rendering:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_read(path)
+    monkeypatch.setattr(keyline_hook.keyline_check, "read", read)
+    assert edit(keyline_hook, monkeypatch, note) == 1
+    assert capsys.readouterr().err == f"keyline hook: cannot read {rendering}: Permission denied\n"
+
+
+def test_a_folder_named_like_a_rendering_is_not_a_rendering(keyline_hook, tmp_path, monkeypatch, capsys):
+    # S9: the is_file() check in _siblings had no test.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    (notes / "c.he.txt").mkdir()
+    assert edit(keyline_hook, monkeypatch, note) == 0
+    assert capsys.readouterr().err == ""

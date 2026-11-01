@@ -235,7 +235,8 @@ def test_a_bom_does_not_lose_the_first_tool_call(unused_tools, tmp_path):
 
 
 @pytest.mark.parametrize("settings", ['[1]', '{"permissions": []}', '{"permissions": {"deny": "Bash"}}',
-                                      '﻿{"permissions": {"deny": ["Bash"]}}'])
+                                      '﻿{"permissions": {"deny": ["Bash"]}}',
+                                      '{"permissions": {"deny": ["Bash", 7]}}'])   # self-review S9
 def test_a_settings_file_of_another_shape_is_one_line_not_a_traceback(unused_tools, tmp_path, capsys, monkeypatch,
                                                                        settings):
     # Review 8, low 18 other hit: .get on a list raised AttributeError, a deny string was

@@ -48,11 +48,21 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
 
 `--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
-Matching is exact and case-sensitive, on ASCII token boundaries: `5` does not count as present
-because `503` is, a bare number does not count as present inside a time or a grouped number
-(`10` is not in `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still
-counts. A token the source writes on its own is not present where a rendering only extends it
-(`a.txt` in `a.txt.bak`, `14:30` in `14:30:15`, `notes/a` in `notes/a/`). Markdown list numbers of
+Matching is exact and case-sensitive, on Unicode word boundaries (letters of any script, digits
+and `_`) except Hebrew letters: `5` does not count as present because `503` is, `COLE` is not in
+`ÉCOLE`, a bare number does not count as present inside a time or a grouped number (`10` is not in
+`10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still counts (`בv2.14.0`,
+`ב-v2.1`). Text is compared in Unicode NFC, so a name saved with combining accents (NFD) matches.
+A token the source writes on its own is not present where a rendering only extends it, on either
+side: `a.txt` in `a.txt.bak`, `a.txt~` or `old/a.txt`, `report.pdf` in `old-report.pdf`,
+`Jean-Luc` in `Jean-Luc-Picard` or `Marie-Jean-Luc`, `14:30` in `14:30:15`, `notes/a` in
+`notes/a/` or `/notes/a`, `API` in `API#x`. A URL is looked up as the rendering's whole URL, so
+`https://e.com` is not in `https://e.com@evil.io` and `?x=1` is not in `?x=1&debug=1`. The one
+exception is a pair or range of two tokens of one family joined by `-` or `/`: times, dates and
+versions (`14:30-15:00`, `2026-10-25-2026-10-27`, `v2.1/v2.3`), and names with `/`
+(`Postgres/MySQL`, `API/SDK`). A hyphen also joins the parts of one name (`Jean-Luc-Picard`,
+`S3-IA`, `Paris-Nord`), so between names it counts as a pair only for month and weekday names
+(`Monday-Friday`, `Mon-Fri`). A path, file name, hash or number never pairs. Markdown list numbers of
 one or two digits (`1. `, `12) `) are not facts and are skipped; `2024. Done` keeps `2024`. Proper nouns are extracted
 when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
 and `Prisma`; so does `- **Stack:** Postgres`). A month or weekday name may appear in its Hebrew
@@ -132,11 +142,13 @@ cannot be read or is not a regular file or folder (a named pipe).
    absolute pattern matches the absolute path, a relative one the path from the project dir;
    the suffix rule still applies, so a watched `.py` file is passed over).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
-   checks only that file, wherever it is written from. A `--watch` without a pattern, or any
-   other argument, exits 1 with one line on stderr.
+   checks only that file, wherever it is written from. A `--watch` without a pattern, with a
+   blank one or one starting with `--`, or any other argument, exits 1 with one line on stderr.
 3. Put a Hebrew rendering of `notes/x.txt` at `notes/x.he.txt` (or `x.he.md`, `x.he.keyline`; any
    case). The hook then checks it whenever either file is written or edited: a rendering is
    checked against every note with its stem (`x.txt`, `x.md`, `x.keyline`, `x`) and is not linted.
+   A file is a note only with a note suffix, in both directions: `data.json.he.txt` is not checked
+   against `data.json`, nor `v1.2.he.txt` against `v1.2`.
 4. Optional: add `keyline-allow.txt` at the repo root for project names that split into tokens.
 5. Paste `CLAUDE-snippet.md` into the repo's CLAUDE.md.
 6. Start a new Claude Code session in the repo so it loads the settings.
@@ -195,11 +207,20 @@ Two panel claims do not reproduce exactly:
   prefix letters (ב, מ, ל, ה, ו, ש, כ) and Hebrew-letter boundaries, so a word that is a prefix
   plus the name (לשבת, "to sit") still counts as the name; a rendering that writes the date as a number instead of the name is still a miss.
 - A time with `:00` seconds matches with or without them (`14:30` and `14:30:00`); other seconds
-  must be written. `May` is the month when a number, `:`, `*` or the line end follows, or when it
-  is not at a sentence start; `May I help?` is the modal verb.
+  must be written. `May` is the month when a number, `:` or the line end follows, or a closing
+  `**` followed by `:`, a number or the line end (`**May**: 3`, `## **May**`), or when it is not at
+  a sentence start; `May I help?`, `**May** we ship?` and `## Risks. May we ship?` are the modal
+  verb (a header line is no exception of its own). An all-caps `MAY` is the modal only in an
+  all-caps line, `_MAY_` emphasis included.
+- The extension rule fails closed on some faithful English: `Postgres-based` for `Postgres`
+  is an extension, and so is a name pair with a hyphen (`Paris-Berlin`). It also lets a name gain
+  a slash pair (`Jean-Luc/Picard` for `Jean-Luc`), and a hyphenated pair of a time, date or version
+  with another of its family (`v2.1-v2.3` for `v2.1`) passes as a range.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted. A
-  negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation.
+  negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation,
+  except at a sentence start (`Up? No. 5 are down.`, or a line that starts `No.`), where it is
+  the negation; the number must follow on the same line.
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
   words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,

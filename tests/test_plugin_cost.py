@@ -171,3 +171,33 @@ def test_a_folded_or_literal_description_is_read_without_its_indicator(plugin_co
     md = tmp_path / "SKILL.md"
     md.write_text(f"---\nname: x\n{front}---\n", encoding="utf-8")
     assert plugin_cost.desc_of(md) == want
+
+
+# ---- self-review of the review 8 fixes ----
+
+class _CharEncoding:
+    """A stand-in for tiktoken: one token per character."""
+
+    def encode(self, text, disallowed_special=()):
+        return list(text)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_linked_plugin_folder_is_followed_and_a_link_loop_is_walked_once(plugin_cost, tmp_path):
+    # Self-review S9: neither followlinks=True nor the realpath guard had a test.
+    app = tmp_path / "Claude"
+    make_plugin(app, "plain")
+    make_plugin(tmp_path / "elsewhere", "linked")
+    (app / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    (app / "loop").symlink_to(app, target_is_directory=True)
+    names = sorted(os.path.basename(r) for r in plugin_cost.plugin_roots(app))
+    assert names == ["linked", "plain"]
+
+
+@pytest.mark.parametrize("servers", [["a", "b"], "abc", 3])
+def test_mcp_servers_that_are_not_a_mapping_count_as_none(plugin_cost, tmp_path, servers):
+    # Self-review S9: the isinstance(servers, dict) check had no test; len() of a list or a
+    # string counted its items or characters as servers.
+    make_plugin(tmp_path, "alpha", mcp=servers)
+    (row,) = plugin_cost.plugin_rows(tmp_path, _CharEncoding())
+    assert row[3] == 0

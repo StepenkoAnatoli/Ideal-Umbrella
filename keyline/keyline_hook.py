@@ -20,7 +20,9 @@ A rendering is the note's name with .he.txt, .he.md or .he.keyline in place of i
 Exit 0 when clean or not applicable. Exit 2 with the findings on stderr when anything fails:
 for PostToolUse the file is already written, and Claude Code shows stderr to Claude so it fixes it.
 Exit 1 (non-blocking, one line on stderr) when a file cannot be read, tiktoken is missing, or an
-argument is wrong (a --watch without a pattern, or anything else besides --print-config).
+argument is wrong (a --watch without a pattern, with a blank one or one starting with --, or
+anything else besides --print-config). A file is a note only with a note suffix, so data.json is
+not the note of data.json.he.txt.
 """
 import fnmatch
 import io
@@ -124,8 +126,11 @@ def renderings_for(note):
 
 
 def notes_for(rendering):
+    # Only a file that is a note when edited (its suffix is a note suffix) is checked here:
+    # "data.json" or "v1.2" beside data.json.he.txt is no note, and editing it checks nothing.
     stem = rendering.name[: -len(he_suffix(rendering))].lower()
-    return _siblings(rendering, {stem + ext for ext in NOTE_SUFFIXES})
+    return [n for n in _siblings(rendering, {stem + ext for ext in NOTE_SUFFIXES})
+            if n.suffix.lower() in NOTE_SUFFIXES]
 
 
 def shown(path, root):
@@ -143,14 +148,15 @@ def run_check(note, rendering, problems, root):
 
 
 def parse_watch(argv):
-    """The --watch patterns in argv; ValueError for a missing or empty pattern or another argument."""
+    """The --watch patterns in argv; ValueError for a missing, blank or option-like ("--...")
+    pattern or another argument."""
     patterns, it = [], iter(argv)
     for a in it:
         if a != "--watch":
             raise ValueError(f"unknown argument {a!r} (expected --watch PATTERN or --print-config)")
         nxt = next(it, None)
-        if not nxt:
-            raise ValueError("--watch needs a non-empty PATTERN")
+        if not nxt or not nxt.strip() or nxt.startswith("--"):
+            raise ValueError(f"--watch needs a PATTERN, got {nxt!r}" if nxt else "--watch needs a non-empty PATTERN")
         patterns.append(nxt)
     return patterns
 

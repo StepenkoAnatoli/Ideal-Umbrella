@@ -349,3 +349,17 @@ def test_an_encoding_that_cannot_load_is_one_line_not_a_traceback(tmp_path, caps
     assert measure.main([str(tmp_path / "a.txt")]) == 2
     err = capsys.readouterr().err
     assert err == "error: tiktoken could not load o200k_base: hash mismatch for o200k_base\n", err
+
+
+def test_a_folder_holding_one_file_is_not_half_of_a_change_pair(tmp_path, capsys):
+    # Self-review S9: the file_args == 2 condition had no test; a folder with one file counts
+    # one row, as a file does, but it is not a named before/after file.
+    pytest.importorskip("tiktoken")
+    measure = load_module("measure", "keyline/measure.py")
+    d = tmp_path / "d"
+    d.mkdir()
+    (d / "a.txt").write_text("hi\n", encoding="utf-8")
+    new = tmp_path / "new.txt"
+    new.write_text("hello there\n", encoding="utf-8")
+    assert measure.main([str(d), str(new)]) == 0
+    assert "change:" not in capsys.readouterr().out
