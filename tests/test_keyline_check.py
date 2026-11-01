@@ -3,22 +3,23 @@ import pytest
 from conftest import load_module
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def keyline_check():
+    # One load per module: the module builds its word classes from Unicode on import (~0.2 s),
+    # and no test changes it.
     return load_module("keyline_check", "keyline/keyline_check.py")
 
 
-def _ratio(fn, small, big):
-    """Best-of-3 time of fn(big) over fn(small): a machine-independent measure of growth."""
+def _ratio(fn, small, big, runs=3):
+    """Best-of-runs time of fn(big) over fn(small): a machine-independent measure of growth.
+    The two are timed in turn, so a burst of load on the machine slows both alike."""
     import time
-    best = []
-    for arg in (small, big):
-        times = []
-        for _ in range(3):
+    best = [float("inf"), float("inf")]
+    for _ in range(runs):
+        for i, arg in enumerate((small, big)):
             start = time.perf_counter()
             fn(arg)
-            times.append(time.perf_counter() - start)
-        best.append(min(times))
+            best[i] = min(best[i], time.perf_counter() - start)
     return best[1] / max(best[0], 1e-4)
 
 
@@ -424,7 +425,7 @@ def test_a_url_keeps_its_scheme(keyline_check):
 
 def test_ticket_no_is_not_a_negation(keyline_check):
     # Review 8, low 15: "No. 5" counted as a negation, so "מס' 5" lost one.
-    assert keyline_check.negations("Ticket No. 5 and no. 7") == 0
+    assert keyline_check.negations("Ticket No. 5 and NO. 7") == 0   # SA8: lowercase "no. 7" after a word is "no"
     assert keyline_check.check("Ticket No. 5 at 14:02.", "כרטיס מס' 5 ב-14:02").ok
     assert keyline_check.negations("No, it is not.") == 2
 
@@ -492,14 +493,23 @@ def test_every_snake_token_has_an_inner_underscore_or_is_a_dunder(keyline_check)
     "see http://x/" + ")" * 100000,         # URL trim (self-review S6)
 ])
 def test_extraction_and_hedges_are_linear_on_100_kb(keyline_check, text):
-    # Self-review S8: an absolute limit (1 s) failed on a slow machine for linear code; the
-    # time of the whole text against its first half is ~2 for linear code and ~4 for quadratic.
+    # Self-review S8: an absolute limit (1 s) failed on a slow machine for linear code. The
+    # time of the whole text against its first quarter is ~4 for linear code and ~16 for
+    # quadratic (the first half, ~2 against ~4 with a limit of 3.2, failed under CPU load):
+    # a limit of 8 leaves linear code twice its ratio, and catches a quadratic part that
+    # takes 2/3 of the time where the old limit needed 3/4. A load spike can only slow one
+    # measurement, so the best of three measurements is taken; quadratic code never gets
+    # under the limit.
     def run(t):
         keyline_check.invariants(t)
         keyline_check.hedges(t)
         keyline_check.check(t, t)
-    ratio = _ratio(run, text[: len(text) // 2], text)
-    assert ratio < 3.2, ratio
+    ratios = []
+    for _ in range(3):
+        ratios.append(_ratio(run, text[: len(text) // 4], text))
+        if ratios[-1] < 8:
+            break
+    assert min(ratios) < 8, ratios
 
 
 def test_random_sources_pass_against_themselves(keyline_check):
@@ -599,7 +609,7 @@ def test_a_joiner_that_does_not_join_two_tokens_of_one_family_still_extends(keyl
     ("Is it up? No. 5 servers are down.", 1),
     ("No.\n5 of them failed.", 1),
     ("No. 5 of them failed.", 1),
-    ("Ticket No. 5 and no. 7", 0),
+    ("Ticket No. 5 and no. 7", 1),     # SA8: a lowercase "no." after a word is the answer
     ("Ticket No.\t5", 0),
 ])
 def test_no_before_a_number_is_a_negation_at_a_sentence_start(keyline_check, text, count):
@@ -673,3 +683,609 @@ def test_nfd_text_is_read_as_nfc(keyline_check, tmp_path):
     note = tmp_path / "n.txt"
     note.write_text(nfd, encoding="utf-8")
     assert keyline_check.read(note) == nfc
+
+
+# ---- review 9 (main 7adc485) ----
+
+URL_A1 = "https://x.io/a"
+
+
+@pytest.mark.parametrize("rendering", [
+    f"ראו **{URL_A1}** עכשיו",
+    f"See *{URL_A1}* now",
+    f"See “{URL_A1}” now",
+    f"See ‘{URL_A1}’ now",
+    f"See {URL_A1}—now",
+    f"See {URL_A1}… now",
+    f"| {URL_A1}| now |",
+    f"|{URL_A1}|now|",
+    f"ראו {URL_A1}‏ עכשיו",
+    f"ראו {URL_A1}‎ עכשיו",
+    f"See {URL_A1}​ now",
+    f"See ‪{URL_A1}‬ now",
+    f"See ⁦{URL_A1}⁩ now",
+    f"See «{URL_A1}» now",
+    f"See _{URL_A1}_ now",
+    f"See __{URL_A1}__ now",
+])
+def test_markup_or_a_mark_glued_after_a_url_is_not_part_of_it(keyline_check, rendering):
+    # Review 9, A1: the URL body refused a short list of characters, so "**", "”", "—", "…",
+    # "|", RLM and the like became part of the rendering's URL. Both directions, and each
+    # text against itself.
+    source = f"See {URL_A1} now"
+    assert keyline_check.check(source, rendering).ok, keyline_check.invariants(rendering)
+    assert keyline_check.check(rendering, source).ok, keyline_check.invariants(rendering)
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("url", [
+    "https://x.io/a?b=1&c=2#f", "https://x.io/a(b)", "https://x.io/~u/a_b-c.d", "https://x.io/a%20b",
+    "https://x.io/a;p=1", "https://user@x.io/a", "https://x.io/a*b", "https://x.io/a,b", "https://x.io/a!b",
+    "https://x.io/a+b$c", "https://x.io/[x]", "https://x.io/Zürich", "https://x.io/a_",
+])
+def test_a_url_keeps_every_character_a_url_may_hold(keyline_check, url):
+    assert keyline_check.invariants(f"See {url} now") == {url: "url"}
+
+
+def test_a_url_with_a_glued_change_still_fails(keyline_check):
+    # The allow-list must not let a rendering cut the URL short at a character a URL holds.
+    assert not keyline_check.check(f"See {URL_A1} now", f"See {URL_A1}*b now").ok
+    assert not keyline_check.check(f"See {URL_A1}b now", f"See **{URL_A1}** now").ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Q: Fixed? A: No. 5 tests still fail.", "Q: Fixed? A: 5 tests still fail."),
+    ("**Fixed?** No. 5 tests fail.", "**Fixed?** 5 tests fail."),
+    ("Fixed? — No. 5 tests fail.", "Fixed? — 5 tests fail."),
+    ('He asked "fixed?" No. 5 tests fail.', 'He asked "fixed?" 5 tests fail.'),
+    ("Status (no. 3 tables remain).", "Status (3 tables remain)."),
+    ("- No. 5 servers are down", "- 5 servers are down"),
+    ("## No. 5 is down", "## 5 is down"),
+    ("Done? Not yet, no. 3 tables remain.", "Done? Not yet, 3 tables remain."),
+    ("Up?\n> No. 5 are down", "Up?\n> 5 are down"),
+    ("Up? _No._ 5 are down", "Up? 5 are down"),
+])
+def test_a_dropped_no_before_a_number_fails_after_any_non_word(keyline_check, source, rendering):
+    # Review 9, A2: "No." was a number sign everywhere but after a listed sentence boundary.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.neg_source == result.neg_rendering + 1, result
+
+
+@pytest.mark.parametrize("text, count", [
+    ("Ticket No. 5", 0), ("See ticket no. 7", 1), ("Item 3 No. 5", 0), ("Ticket No.\n5", 1),
+    ("Ticket\nNo. 5", 1), ("Ticket No.  5", 0), ("Ticket: No. 5", 1),
+])
+def test_no_is_a_number_sign_only_after_a_word_on_the_same_line(keyline_check, text, count):
+    # Review 9, A2 and A9 (4): "[ \t]*", not "\s*", between "No." and its number.
+    assert keyline_check.negations(text) == count
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Deploy to _Paris_ at _14:30_ with _v2.1_ and _5_ hosts, ticket API-7",
+     "Deploy to _Berlin_ at _16:00_ with _v9.9_ and _7_ hosts, ticket API-7"),
+    ("Deploy to __Paris__ at __14:30__", "Deploy to __Berlin__ at __16:00__"),
+    ("Deploy to _Paris_ at _14:30_", "Deploy to Berlin at 16:00"),
+    ("Deploy to Paris at 14:30", "Deploy to _Berlin_ at _16:00_"),
+    ("See _https://x.io/a_ now", "See _http://x.io/a_ now"),
+    ("Edit _notes/a.txt_ now", "Edit _notes/b.txt_ now"),
+    ("Ship _v2.1_ to _API_", "שלחו את _v2.2_ ל-_API_"),
+])
+def test_underscore_emphasis_does_not_hide_an_invariant(keyline_check, source, rendering):
+    # Review 9, A3 and the old #10 neighbour: "_" is a word character, so "_Paris_" hid "Paris".
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Deploy to _Paris_ at _14:30_ with _v2.1_", "Deploy to Paris at 14:30 with v2.1"),
+    ("Deploy to Paris at 14:30 with v2.1", "פריסה ל-_Paris_ ב-_14:30_ עם _v2.1_"),
+    ("See _https://x.io/a_ now", "See https://x.io/a now"),
+    ("Call __init__ and _private_name now", "Call __init__ and _private_name now"),
+])
+def test_underscore_emphasis_around_an_invariant_keeps_it_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call __init__ now", "Call init now"),               # a dunder is not emphasis
+    ("Call _private_name now", "Call private_name now"),  # a lone edge "_" is part of the name
+    ("Call snake_case_ now", "Call snake_case now"),
+])
+def test_an_underscore_that_is_not_emphasis_stays_part_of_the_token(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+def test_a_long_dash_joined_run_is_checked_in_linear_time(keyline_check):
+    # Review 9, A4: _token_at matched the whole rest of the run from every token in it.
+    import time
+    start = time.perf_counter()
+    result = keyline_check.check("Meet Ab today.", "Meet " + "Ab-" * 20000 + "Ab today.")
+    assert time.perf_counter() - start < 3, "quadratic"
+    assert not result.ok
+    fn = lambda n: keyline_check.check("Meet Ab today.", "Meet " + "Ab-" * n + "Ab today.")  # noqa: E731
+    assert _ratio(fn, 2000, 16000) < 25
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Errors last week:\n12.  \nAll in API.", "Errors last week:\n13.  \nAll in API."),
+    ("Errors last week:\n12.\t\nAll in API.", "Errors last week:\n13.\t\nAll in API."),
+    ("Errors last week:\n12)  \nAll in API.", "Errors last week:\n13)  \nAll in API."),
+])
+def test_a_list_marker_with_only_trailing_space_is_a_number(keyline_check, source, rendering):
+    # Review 9, A5: a markdown hard break leaves spaces after "12." and the marker was stripped.
+    assert keyline_check.check(source, rendering).missing == ["12"]
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Open ab.txt now", "Open ab.txt=1 now"),
+    ("Open ab.txt now", "Open ab.txt&x now"),
+    ("Call API now", "Call API(x) now"),
+    ("Open ab.txt now", "Open ab.txt,v now"),
+    ("Call API now", "Call API$x now"),
+    ("Call API now", "Call API*x now"),
+    ("Open ab.txt now", "Open x@ab.txt now"),
+    ("Call API now", "Call #API now"),
+    ("Call API now", "Call x#API now"),
+    ("Ship v2.1 now", "Ship +v2.1 now"),
+    ("Call API now", "Call $API now"),
+    ("Open notes/a.txt now", "Open C:notes/a.txt now"),
+    ("Call API now", "Call x=API now"),
+    ("Call API now", "Call x&API now"),
+    ("Call API now", "Call x,API now"),
+    ("Call API now", "Call x*API now"),
+    ("Call API now", "Call %API now"),
+])
+def test_a_joiner_extends_a_token_on_both_sides_alike(keyline_check, source, rendering):
+    # Review 9, A6: the two sides refused different sets, so "API#x" failed and "#API" passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call API now", "Call **API** now"),
+    ("Call API now", "Call *API*, now"),
+    ("Call API now", "Call (API) now"),
+    ("Call API now", "Call API: now"),
+    ("Call API now", "Call API, then SDK"),
+    ("Call API now", "Call `API` now"),
+    ("Call API now", "Call [API](https://x.io) now"),
+    ("Call API now", "קראו ל-API עכשיו"),
+    ("Call API now", "Call API's client now"),
+])
+def test_markup_or_punctuation_beside_a_token_does_not_extend_it(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Mon open Monday-Friday", "Mon open Monday to Friday"),
+    ("Mon open Monday-Friday", "Mon open יום שני עד יום שישי"),
+    ("Mon open Monday-Wednesday-Friday", "Mon open Monday, Wednesday and Friday"),
+    ("Mon open Monday-Friday", "Mon open Monday-Friday"),
+])
+def test_a_pair_of_calendar_names_in_the_source_is_two_tokens(keyline_check, source, rendering):
+    # Review 9, A7: the calendar pair rule was applied on the rendering side only.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Mon open Monday-Friday", "Mon open Monday to Thursday"),
+    ("Mon open Monday-Paris", "Mon open Monday to Paris"),
+])
+def test_a_calendar_pair_still_needs_both_names(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T99 today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00.bak today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00/x today."),
+])
+def test_a_date_inside_a_bad_or_extended_iso_timestamp_is_not_present(keyline_check, source, rendering):
+    # Review 9, A9 (2) and A10: the ISO "T" pass skipped the extension check.
+    assert keyline_check.check(source, rendering).missing == ["2026-10-25"]
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00Z today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00:00+02:00 today."),
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00Z-2026-10-26T10:00Z today."),
+])
+def test_a_date_inside_an_iso_timestamp_is_present(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Open Monday now", "Open Monday-Paris now"),     # A9 (3): both names must be calendar names
+    ("Open Paris now", "Open Monday-Paris now"),
+    ("Open Monday now", "Open Paris-Monday now"),
+])
+def test_a_hyphen_pair_needs_two_calendar_names(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Use sha256 now", "Use sha256/sha512 now"),       # A9 (5): an identifier pairs
+    ("Use sha512 now", "Use sha256/sha512 now"),
+    ("Use foo_bar now", "Use foo_bar/baz_qux now"),    # A9 (6): a snake_case token pairs
+    ("Use baz_qux now", "Use foo_bar/baz_qux now"),
+])
+def test_identifiers_and_snake_case_tokens_pair(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("text", [
+    "May, June and July are busy.", "May and June are busy.", "May or June works.",
+    "May was busy.", "May is busy.", "May has 31 days.", "May.", "MAY, JUNE AND JULY ARE BUSY.",
+    "May to July is busy.",
+])
+def test_may_as_a_sentence_start_subject_is_the_month(keyline_check, text):
+    # Review 9, old #15 neighbour.
+    assert keyline_check.hedges(text) == {}, text
+
+
+@pytest.mark.parametrize("text", ["May I help?", "May we ship?", "May, I ask, we ship?",
+                                  "May the tests pass.", "May and should are modals."])
+def test_may_as_a_modal_stays_a_hedge(keyline_check, text):
+    assert "possibility" in keyline_check.hedges(text), text
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Meet Ra̱ndi today", "Meet Ra̱ndo today"),
+    ("Meet Ra̱ndi today", "Meet Ra today"),
+    ("Ask Q\u0331uinn today", "Ask Q\u0331uinne today"),
+    ("Edit fa̱.txt today", "Edit fa̱b.txt today"),
+])
+def test_a_combining_mark_is_part_of_its_word(keyline_check, source, rendering):
+    # Review 9, old #4 residue: a combining mark NFC cannot compose ended the token.
+    assert not keyline_check.check(source, rendering).ok
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_hebrew_point_is_still_not_a_word_character(keyline_check):
+    assert keyline_check.check("Ship v2.1 today", "שִׁלחו v2.1 הַיום").ok
+    assert keyline_check.check("Ship v2.1 today", "בְּv2.1").ok
+
+
+def test_the_word_classes_match_unicode(keyline_check):
+    # The classes are built from part of Unicode only (see _word_classes). A letter, a digit or
+    # "_" as re reads them, plus every combining mark that is no word character to re, and no
+    # Hebrew letter or point: exactly these, over all assigned characters of Unicode.
+    import re
+    import unicodedata
+    classes = {name: re.compile(getattr(keyline_check, name)) for name in ("LETTER", "ALNUM", "WORD")}
+    mark = re.compile(f"[{keyline_check.MARK}]")
+    letter, alnum, word = re.compile(r"[^\W\d_]"), re.compile(r"[^\W_]"), re.compile(r"\w")
+    for cp in range(0x110000):
+        c = chr(cp)
+        if cp > 0xFFFF and unicodedata.category(c) == "Cn":
+            # An unassigned gap above the BMP may be joined into a range (it keeps the class
+            # short); it is no character yet, so it is never a mark.
+            assert not mark.match(c), hex(cp)
+            continue
+        hebrew = "\u0590" <= c <= "\u05ff" or "\ufb1d" <= c <= "\ufb4f"
+        # SA3: a variation selector and an enclosing mark (U+20E3) are no part of a word.
+        selector = "\ufe00" <= c <= "\ufe0f" or "\U000e0100" <= c <= "\U000e01ef"
+        is_mark = (unicodedata.category(c)[0] == "M" and not c.isalnum() and not hebrew
+                   and not selector and unicodedata.category(c) != "Me")
+        want = {"LETTER": bool(letter.match(c)), "ALNUM": bool(alnum.match(c)), "WORD": bool(word.match(c))}
+        for name, pattern in classes.items():
+            assert bool(pattern.match(c)) == ((want[name] and not hebrew) or is_mark), (name, hex(cp))
+        assert bool(mark.match(c)) == is_mark, hex(cp)
+
+
+# ---- self-review of the review 9 fixes (SA1-SA9) ----
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ship v2.1,v2.2 now", "Ship v2.1-rc,v2.2 now"),
+    ("Set MODE=fast now", "Set MODE-X=fast now"),
+    ("Visit Paris,London now", "Visit Paris-Nord,London now"),
+    ("Call at 14:30,15:00 now", "Call at 14:30-ish,15:00 now"),
+    ("Ship v2.1* now", "Ship v2.1-rc now"),
+    ("Call API(x) now", "Call API-v2 now"),
+    ("Call **at\n14:30** now", "Call at 14:30:15 now"),
+    ("Ship v2.1,v2.2 now", "Ship x-v2.1,v2.2 now"),
+])
+def test_a_source_token_glued_by_a_joiner_does_not_let_any_extension_pass(keyline_check, source, rendering):
+    # SA1: a source token glued by a joiner ("," "=" "*" "(") was "not alone", so any
+    # extended rendering of it passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(rendering, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ship v2.1,v2.2 now", "Ship v2.1, v2.2 now"),
+    ("Ship v2.1,v2.2 now", "שלחו v2.1,v2.2 עכשיו"),
+    ("Set MODE=fast now", "הגדירו MODE=fast עכשיו"),
+    ("Set MODE=fast now", "Set MODE to fast now"),
+    ("Call API(x) now", "Call API (x) now"),
+])
+def test_a_source_token_glued_by_a_joiner_passes_alone_or_in_the_same_context(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Get https://x.io/_api_/v1 now", "Get https://x.io/api/v1 now"),
+    ("Get https://x.io/api/v1 now", "Get https://x.io/_api_/v1 now"),
+    ("Get https://x.io/*a*/v1 now", "Get https://x.io/a/v1 now"),
+    ("Read /srv/_data_/x.txt now", "Read /srv/data/x.txt now"),
+    ("Call __init_subclass__ now", "Call init_subclass now"),
+    ("Call _private_var_ now", "Call private_var now"),
+])
+def test_emphasis_marks_inside_a_url_path_or_identifier_are_kept(keyline_check, source, rendering):
+    # SA2: _plain() dropped emphasis marks inside URLs, paths and identifiers.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Got 12 errors", "Got __12__ errors"),                      # SA5: "__12__" is bold
+    ("Deploy to Paris now", "Deploy to **_Paris_** now"),
+    ("Deploy to Paris now", "פריסה ל-_Paris_ עכשיו"),
+])
+def test_emphasis_beside_a_token_is_still_dropped(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok, keyline_check.check(source, rendering)
+
+
+def test_a_dunder_still_starts_with_a_letter(keyline_check):
+    assert keyline_check._plain("Call __init_subclass__ and __12__") == "Call __init_subclass__ and 12"
+
+
+@pytest.mark.parametrize("rendering", ["✅ שוחרר ✔️v2.1 ב-14:30 ל-5️⃣ שרתים", "✔️v2.1 at 14:30 to 5️⃣ hosts"])
+def test_a_variation_selector_or_keycap_is_not_part_of_a_word(keyline_check, rendering):
+    # SA3: U+FE0F and U+20E3 were in MARK, so "✔️v2.1" and "5️⃣" hid the token.
+    assert keyline_check.check("Ship v2.1 at 14:30 to 5 hosts", rendering).ok
+
+
+def test_emphasis_pairs_across_a_line_but_not_across_a_blank_line(keyline_check):
+    # SA4: the pairing was reset at every newline, so multi-line bold kept its marks.
+    assert keyline_check._plain("**a\nb**") == "a\nb"
+    assert keyline_check._plain("_a\n\nb_") == "_a\n\nb_"
+    assert keyline_check._plain("_a\n \t\nb_") == "_a\n \t\nb_"
+    assert keyline_check.check("Deploy at 14:30", "**פריסה\nב-14:30**").ok
+
+
+@pytest.mark.parametrize("text, count", [
+    ("I'd say no. 3 fail", 1), ("Fixed? Still no. 5 fail", 1), ("Honestly no. 3", 1),
+    ("Ticket no. 5", 1), ("Ticket No. 5", 0), ("TICKET NO. 5", 0), ("Item 3 no. 5", 0),
+])
+def test_a_lowercase_no_after_a_word_is_a_negation(keyline_check, text, count):
+    # SA8: only "No."/"NO." after a word, or "no." after a digit, is a number sign.
+    assert keyline_check.negations(text) == count
+
+
+def test_a_long_calendar_run_is_checked_in_linear_time(keyline_check):
+    # SA9: the A4 test used "Ab-", which _pairs short-circuits, so dropping TOKEN_REACH
+    # survived; "Monday-" reaches _token_at on every word (226 s unbounded at 20000).
+    import time
+    start = time.perf_counter()
+    keyline_check.check("Open Monday now", "Open " + "Monday-" * 10000 + "Monday now")
+    assert time.perf_counter() - start < 15, "quadratic"
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Call at 14:30 now", "Call at 14:30:00 now"),
+    ("Call at 14:30:00 now", "Call at 14:30 now"),
+])
+def test_a_time_with_or_without_zero_seconds_is_present(keyline_check, source, rendering):
+    # SA9: the order of the forms (with ":00" first) had no test.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Due 2026-10-25 today.", "Due 2026-10-25T10:00abc today."),   # SA9: the ISO word check
+    ("Open ab.txt now", "Open ab.txt* now"),                         # SA9: "*" always extends
+    ("Read /srv/a̱/x now", "Read /srv/a/x now"),                # SA9: a mark in a path
+    ("Read /srv/a/x now", "Read /srv/a̱/x now"),
+])
+def test_guards_without_a_test_of_their_own(keyline_check, source, rendering):
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text", [
+    "/srv/_data_ now", "/srv/*data* now", "x._a_ y", "x:_a_ y", "~_a_ y", "x@_a_ y", "x=_a_ y",
+    "x\\_a_ y", "a-_b_ y", "a-*b* y",                      # an opening run glued after these
+    "y _data_/x", "y *data*/x", "y _data_\\x", "y *data*\\x",  # a closing run before these
+])
+def test_a_mark_run_on_one_side_of_a_path_or_word_is_no_emphasis(keyline_check, text):
+    # SA2: each guard alone, so a URL or path with emphasis-like marks on one side keeps them.
+    assert keyline_check._plain(text) == text
+
+
+def test_a_mark_run_on_one_side_of_a_path_changes_the_token(keyline_check):
+    assert not keyline_check.check("Read /srv/_data_ now", "Read /srv/data now").ok
+    assert not keyline_check.check("Read _data_/x.txt now", "Read data/x.txt now").ok
+
+
+def test_emphasis_after_a_hebrew_prefix_and_dash_is_dropped(keyline_check):
+    assert keyline_check._plain("ל-_Paris_ ו-*API*") == "ל-Paris ו-API"
+
+
+# --- SA2 review: M1-M3, L1, I1 ---------------------------------------------------------------
+
+@pytest.mark.parametrize("marked, bare", [
+    ("https://x.io/a?_k_=1", "https://x.io/a?k=1"),
+    ("https://x.io/a?q=1&_b_=2", "https://x.io/a?q=1&b=2"),
+    ("https://x.io/a#_frag_", "https://x.io/a#frag"),
+    ("https://x.io/a?x=1&*b*=2", "https://x.io/a?x=1&b=2"),
+    ("https://x.io/a,_b_", "https://x.io/a,b"),
+    ("https://x.io/a+_b_", "https://x.io/a+b"),
+    ("https://x.io/a(_b_)", "https://x.io/a(b)"),
+    ("https://x.io/a;_b_", "https://x.io/a;b"),
+    ("https://x.io/a!_b_", "https://x.io/a!b"),
+    ("https://x.io/a$_b_", "https://x.io/a$b"),
+    ("https://x.io/a%_b_", "https://x.io/a%b"),
+    ("https://x.io/a?q=*b*", "https://x.io/a?q=b"),
+])
+def test_marks_inside_a_url_are_part_of_it(keyline_check, marked, bare):
+    # M1: a URL is masked before emphasis is paired, in both directions.
+    for source, rendering in ((f"see {marked}", f"see {bare}"), (f"see {bare}", f"see {marked}")):
+        result = keyline_check.check(source, rendering)
+        assert not result.ok and result.missing, (source, rendering, result)
+        assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("See **https://x.io/a** now", "See https://x.io/a now"),
+    ("See _https://x.io/a_ now", "See https://x.io/a now"),
+    ("See __https://x.io/a__, now", "See https://x.io/a, now"),
+    ("See *https://x.io/a?q=1*. Now", "See https://x.io/a?q=1. Now"),
+    ("_see https://x.io/a_", "see https://x.io/a"),
+])
+def test_emphasis_around_a_url_is_still_dropped(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Do not deploy. Ticket No. 5.", "Deploy. ticket no. 5."),
+    ("Servers are not affected. See ticket No. 5.", "Servers are affected. See ticket no. 5."),
+])
+def test_an_ambiguous_no_in_the_rendering_does_not_stand_in_for_a_negation(keyline_check, source, rendering):
+    # M2: a lowercase "no. N" after a word counts in the rendering only as often as the source has one.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.neg_rendering < result.neg_source, result
+
+
+@pytest.mark.parametrize("text", [
+    "See ticket no. 5.", "Do not deploy. See ticket no. 5 and no. 6.", "I'd say no. 3 fail",
+])
+def test_an_ambiguous_no_present_on_both_sides_passes(keyline_check, text):
+    assert keyline_check.check(text, text).ok
+    assert keyline_check.check(text, text.replace("ticket", "Ticket")).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("- run all tests\n- remove ab.txt", "- run *all tests\n- remove ab.txt*"),
+    ("- run all tests\n- remove ab.txt", "- run _all tests\n- remove ab.txt_"),
+    ("1. run all tests\n2. remove ab.txt", "1. run *all tests\n2. remove ab.txt*"),
+    ("Run all tests\n# remove ab.txt", "Run *all tests\n# remove ab.txt*"),
+    ("Run all tests\n> remove ab.txt", "Run *all tests\n> remove ab.txt*"),
+    ("_private_key is set\nrotate api_key_", "private_key is set\nrotate api_key"),
+    ("_private_key is api_key_", "private_key is api_key"),
+    ("_private_key is set now_", "private_key is set now"),    # the first word alone
+    ("_rotate the api_key_", "rotate the api_key"),            # the last word alone
+])
+def test_emphasis_does_not_pair_across_a_block_or_an_identifier(keyline_check, source, rendering):
+    # M3: pairing resets where a list item, heading or quote starts, and an "_" glued to a word
+    # that holds a "_" is part of that identifier.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    self_check = keyline_check.check(rendering, rendering)   # "ab.txt_" holds no token
+    assert self_check.ok or self_check.inconclusive and not self_check.missing
+
+
+@pytest.mark.parametrize("text", [
+    "- a\n- b *c*\n- d", "- *a\n  b*", "Run *all\ntests* now", "_see this\nnow_",
+])
+def test_emphasis_within_one_block_is_still_dropped(keyline_check, text):
+    assert "*" not in keyline_check._plain(text).replace("- ", "") and "_" not in keyline_check._plain(text)
+
+
+def test_a_joiner_glued_onward_is_another_extension(keyline_check):
+    # L1: "v2.1*" and "v2.1*-rc" are extended differently.
+    assert not keyline_check.check("ship at v2.1* now", "ship at v2.1*-rc now").ok
+    assert not keyline_check.check("ship at v2.1* now", "ship at v2.1*rc now").ok
+    assert keyline_check.check("ship at v2.1* now", "ship at v2.1*. now").ok
+    assert keyline_check.check("ship at v2.1*-rc now", "ship at v2.1*-rc now").ok
+
+
+@pytest.mark.parametrize("text", ["match **/*.py and docs/**", "a __/x and y/__ b", "a *\\x and y\\* b"])
+def test_a_mark_run_after_a_slash_closes_nothing(keyline_check, text):
+    # I1: a close does not follow "/" or "\\", as an open does not.
+    assert keyline_check._plain(text) == text
+    # check() still passes "match /*.py and docs/": a bare token is present for a source that
+    # writes it extended ("docs/**"), by design (see EXT_RIGHT).
+
+
+# --- SA3 review (self9c): N1-N3, L-a, L-d ----------------------------------------------------
+
+@pytest.mark.parametrize("rendering", [
+    "Deploy. Ticket **No. 5**.", "Deploy. Ticket _No. 5_.", "Deploy (No. 5).", "Deploy. Ticket: No. 5.",
+    "Deploy. Ticket *No. 5*.", "Deploy. ticket_no. 5.",
+])
+def test_a_no_before_a_number_in_the_rendering_does_not_stand_in_for_a_negation(keyline_check, rendering):
+    # N2: any "No./no. N" the rendering reads as a negation counts only as often as the source
+    # has one, whatever markup or punctuation is around it.
+    result = keyline_check.check("Do not deploy. Ticket No. 5.", rendering)
+    assert not result.ok and result.neg_rendering < result.neg_source, result
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Ticket **No. 5** is done", "Ticket No. 5 is done"),
+    ("Ticket No. 5 is done", "Ticket **No. 5** is done"),
+    ("Ticket _No. 5_ is done", "Ticket No. 5 is done"),
+    ("Up? No. 5 are down.", "Up? No. 5 are down."),
+    ("(No. 5) is done", "(No. 5) is done"),
+])
+def test_emphasis_around_a_number_sign_is_ignored(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("_`max_retries` is 5 per Dana_", "_`max_retries` is 5 per Omer_"),
+    ("_`max_retries` is 5 from 14:30_", "_`max_retries` is 5 from 14:45_"),
+    ("_`max_retries` is 5 since 2026-10-25_", "_`max_retries` is 5 since 2026-10-26_"),
+    ("_v2.1 adds max_retries_", "_v3.1 adds max_retries_"),
+    ("_`max_retries` defaults to 5 since v2.1_", "_`max_retries` defaults to 5 since v9.9_"),
+    ("_private_key rotates at 14:30_", "_private_key rotates at 14:45_"),
+])
+def test_a_kept_underscore_does_not_hide_the_token_at_the_other_edge(keyline_check, source, rendering):
+    # N1: only a mark glued to an identifier that holds "_" is kept; the other edge is emphasis.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("_`max_retries` is 5 from 14:30_", "`max_retries` is 5 from 14:30"),
+    ("_v2.1 adds max_retries_", "v2.1 adds max_retries_"),
+    ("_private_key is set now_", "_private_key is set now"),
+    ("_private_var_ and _private_key is api_key_", "_private_var_ and _private_key is api_key_"),
+])
+def test_only_the_mark_glued_to_an_identifier_is_kept(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Delete `*.o` and keep `ab.txt`", "Delete `*.o` and keep `ab.txt*`"),
+    ("| Delete | `*.o` |\n| Keep | ab.txt |", "| Delete | `*.o` |\n| Keep | ab.txt* |"),
+    ("| run all tests | v2 |\n| remove ab.txt | v3 |", "| run *all tests | v2 |\n| remove ab.txt* | v3 |"),
+    ("```\nrm *.o\n```\nKeep ab.txt", "```\nrm *.o\n```\nKeep ab.txt*"),
+    ("~~~\nrm *.o\n~~~\nKeep ab.txt", "~~~\nrm *.o\n~~~\nKeep ab.txt*"),
+    ("```\nrm *.o\n````\nKeep ab.txt", "```\nrm *.o\n````\nKeep ab.txt*"),   # no code span
+    ("Run `*` then keep ab.txt", "Run `*` then keep ab.txt*"),
+    ("Delete `` *.o ` `` and keep ab.txt", "Delete `` *.o ` `` and keep ab.txt*"),
+    ("Delete `` ` *.o `` and keep ab.txt", "Delete `` ` *.o `` and keep ab.txt*"),   # run lengths
+])
+def test_emphasis_does_not_pair_across_code_or_table_cells(keyline_check, source, rendering):
+    # N3: a mark inside a code span pairs only inside it; a "|" and a fence line end the block.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("**use `x` for v2.1**", "use `x` for v2.1"),
+    ("`_v2.1_` and `*a*`", "`v2.1` and `a`"),
+    ("a ` b *c* d", "a ` b c d"),
+    ("*a `b\n\nc` d*", "*a `b\n\nc` d*"),
+])
+def test_emphasis_around_or_inside_code_is_still_dropped(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Use https://x.io/a—_Paris_ now", "Use https://x.io/a—_Lyon_ now"),
+    ("“_v2.1 is at https://x.io/a_”", "“_v3.1 is at https://x.io/a_”"),
+    ("Use https://x.io/a|_Paris_ now", "Use https://x.io/a|_Lyon_ now"),
+])
+def test_a_url_span_ends_where_the_url_token_ends(keyline_check, source, rendering):
+    # L-a: URL_SPAN uses the url token's characters, so marks after a glued "—" are emphasis.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result

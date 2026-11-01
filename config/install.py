@@ -192,6 +192,44 @@ def _is_ours(entry):
                for h in _hook_entries(entry))
 
 
+def has_our_hook(settings):
+    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry."""
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return any(_is_ours(entry) for entries in hooks.values() if isinstance(entries, list)
+               for entry in entries)
+
+
+def holds_install(settings, record):
+    """True when settings still holds something an install wrote: its hook entry, a key the
+    record says it added or replaced with the value it wrote, or every tool it added to
+    permissions.deny.
+    A settings.json the record marks as created is that file only while this holds; one with
+    none of them is a file the user wrote since (the created one was deleted), and is neither
+    deleted nor marked as created on its account."""
+    if not isinstance(settings, dict) or not isinstance(record, dict):
+        return False
+    if has_our_hook(settings):
+        return True
+    installed = record.get("installed")
+    if isinstance(installed, dict) and any(
+            key in installed and key in settings and settings[key] == installed[key]
+            for key in [*record.get("added_keys", []), *record.get("replaced", {})]):
+        return True
+    permissions = settings.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    added = record.get("deny_added")
+    return bool(added) and isinstance(deny, list) and all(tool in deny for tool in added)
+
+
+# The record fields that describe settings.json (uninstall keeps them all while the file is away).
+SETTINGS_FIELDS = ("added_keys", "replaced", "installed", "deny_added", "created", "settings_created")
+# Of those, the ones that hold for a file only while it is the one the install wrote. The
+# others name keys and values that uninstall compares by value, so they hold for any file.
+FILE_FIELDS = ("settings_created", "deny_added", "created")
+
+
 def _template_hook(entries):
     for entry in entries:
         for hook in _hook_entries(entry):
@@ -901,6 +939,7 @@ _RECORD_FIELDS = {
     "pending": ("an object", lambda v: isinstance(v, dict)),
     "claude_md": ("an object or null", lambda v: v is None or isinstance(v, dict)),
     "settings_created": ("true or false", lambda v: isinstance(v, bool)),
+    "uninstalled": ("true or false", lambda v: isinstance(v, bool)),
 }
 
 
@@ -1050,6 +1089,22 @@ def install(home, force=False, progress=None, config_dir=None):
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
+    # The settings.json the record marks as created is gone (deleted, or never written by a
+    # first install that stopped at it): the record's part for it describes no file there is,
+    # so this run starts that part afresh; a missing file it describes is not one that is away.
+    # One that holds nothing the install wrote (the user's own, or the created one the user
+    # emptied of it) keeps the keys and values, which uninstall compares by value, and loses
+    # what holds only for the installer's file: kept, "settings_created" would mark the user's
+    # file as created (uninstall deletes it), and deny_added would count their deny entries as
+    # ours. The installer's deny tools left in such a file stay (README, Undo).
+    if old_record.get("settings_created") is True:
+        if not paths["settings"].exists():
+            old_record = {k: v for k, v in old_record.items() if k not in SETTINGS_FIELDS}
+        elif not old_record.get("uninstalled") and not holds_install(existing, old_record):
+            old_record = {k: v for k, v in old_record.items() if k not in FILE_FIELDS}
+            # Empty, not missing: a record without "created" reads as one from before the field,
+            # and this run's list is the one that holds for the file.
+            old_record["created"] = []
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)

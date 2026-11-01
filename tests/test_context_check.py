@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from conftest import ROOT, clean_env, write_jsonl
 
 HOOK = ROOT / "hooks" / "context_check.py"
@@ -594,3 +596,19 @@ def test_unexpected_error_names_itself_when_the_log_cannot_be_written(tmp_path):
     assert result.returncode == 0
     assert "unexpected error (JSONDecodeError" in result.stderr
     assert "details in" not in result.stderr
+
+
+@pytest.mark.parametrize("raw", ["1_000", "١٢٠٠٠٠", "１２００００"])
+def test_a_threshold_in_ascii_digits_only(context_check, monkeypatch, capsys, tmp_path, raw):
+    # Review 9, I-1: int() also took "1_000" and other scripts' digits, which add_to_repo.py
+    # refuses for the same setting (--handoff-at: ASCII digits only).
+    monkeypatch.setenv("IDEAL_UMBRELLA_LOG", str(tmp_path / "log"))
+    monkeypatch.setenv("IDEAL_UMBRELLA_HANDOFF_AT", raw)
+    assert context_check.parse_int("IDEAL_UMBRELLA_HANDOFF_AT", 150000) == 150000
+    assert "is not an integer" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw, value", [("120000", 120000), (" 120000\n", 120000), ("+5", 5)])
+def test_a_threshold_in_ascii_digits_is_read(context_check, monkeypatch, raw, value):
+    monkeypatch.setenv("IDEAL_UMBRELLA_HANDOFF_AT", raw)
+    assert context_check.parse_int("IDEAL_UMBRELLA_HANDOFF_AT", 150000) == value

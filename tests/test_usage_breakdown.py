@@ -292,3 +292,39 @@ def test_a_token_count_of_infinity_counts_zero_not_a_traceback(usage_breakdown, 
                     '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
     totals, _chars, turns = usage_breakdown.summarize([path])
     assert totals["input_tokens"] == 0 and totals["output_tokens"] == 7 and turns == 1
+
+
+@pytest.mark.parametrize("raw, counted", [
+    ('"12"', 0), ('" 12 "', 0), ('"1_000"', 0), ("true", 0), ("null", 0), ('{"n":1}', 0),
+    ("12", 12), ("12.0", 12),
+])
+def test_only_a_json_number_is_a_token_count(usage_breakdown, tmp_path, raw, counted):
+    # Review 9, A10: int("12") made the text "12" a count, though _int's docstring says text
+    # counts 0; int(True) made true a 1.
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":%s,'
+                    '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
+    totals, _chars, turns = usage_breakdown.summarize([path])
+    assert totals["input_tokens"] == counted and totals["output_tokens"] == 7 and turns == 1
+
+
+@pytest.mark.parametrize("raw, counted", [
+    ("-5", 0), ("-0.0", 0), ("12.9", 0), ("1e308", 0), ("1" + "0" * 400, 0), (str(2 ** 63), 0),
+    (str(2 ** 63 - 1), 2 ** 63 - 1), ("0", 0), ("12.0", 12), ("1e3", 1000),
+])
+def test_a_token_count_is_a_whole_number_from_0_to_2_63(usage_breakdown, tmp_path, raw, counted):
+    # SA7: -5 gave a "-17%" share, 1e308 "nan%", a 401-digit count an OverflowError.
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":%s,'
+                    '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
+    totals, _chars, turns = usage_breakdown.summarize([path])
+    assert totals["input_tokens"] == counted and totals["output_tokens"] == 7 and turns == 1
+
+
+def test_a_huge_token_count_is_no_traceback_in_the_report(usage_breakdown, tmp_path, capsys):
+    (tmp_path / "t.jsonl").write_text(
+        '{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":1%s,'
+        '"output_tokens":7},"content":[]}}\n' % ("0" * 400), encoding="utf-8")
+    usage_breakdown.main([str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "nan" not in out and " -" not in out, out

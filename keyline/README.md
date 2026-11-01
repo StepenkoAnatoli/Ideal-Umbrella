@@ -52,18 +52,43 @@ Matching is exact and case-sensitive, on Unicode word boundaries (letters of any
 and `_`) except Hebrew letters: `5` does not count as present because `503` is, `COLE` is not in
 `ÉCOLE`, a bare number does not count as present inside a time or a grouped number (`10` is not in
 `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still counts (`בv2.14.0`,
-`ב-v2.1`). Text is compared in Unicode NFC, so a name saved with combining accents (NFD) matches.
+`ב-v2.1`). Text is compared in Unicode NFC, so a name saved with combining accents (NFD) matches,
+and a combining mark NFC cannot fold into its letter (`a` with U+0331) is part of the word; a
+Hebrew point is not, nor is a variation selector or a keycap mark (`✔️v2.1` holds `v2.1`, `5️⃣`
+holds `5`). Emphasis marks (`**v2.1**`, `_API_`, `*ab.txt*`), also across the lines of one
+paragraph, are dropped before the scan, so they neither hide nor extend a token. A pair does not
+span a blank line, a line that starts a list item, heading, quote or code fence (`- `, `1. `,
+`# `, `>`, a fence of three backticks or tildes) or a table cell separator `|`. A mark inside an
+inline code span pairs only with a mark in the same span (`` `*.o` `` and a later `ab.txt*` are
+no pair); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
+An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
+(`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
+are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
+or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks), glued to a word that
+holds an `_` itself (`_private_var_`; of `_v2.1 adds max_retries_` only the closing `_` stays,
+so `v2.1` is still a token), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold), or a
+lone edge mark (`_private_name`, `snake_case_`).
 A token the source writes on its own is not present where a rendering only extends it, on either
-side: `a.txt` in `a.txt.bak`, `a.txt~` or `old/a.txt`, `report.pdf` in `old-report.pdf`,
+side: `ab.txt` in `ab.txt.bak`, `ab.txt~`, `ab.txt=1` or `old/ab.txt`, `report.pdf` in `old-report.pdf`,
 `Jean-Luc` in `Jean-Luc-Picard` or `Marie-Jean-Luc`, `14:30` in `14:30:15`, `notes/a` in
-`notes/a/` or `/notes/a`, `API` in `API#x`. A URL is looked up as the rendering's whole URL, so
+`notes/a/` or `/notes/a`, `API` in `API#x`, `API(x)` or `#API`, `v2.1` in `+v2.1`. Both sides
+share one set of joiners; markup and plain punctuation (`(API)`, `API,` before a space) do not
+extend. A token the source itself writes only glued by a joiner (`v2.1,v2.2`, `MODE=fast`,
+`API(x)`) is present on its own or glued by the same joiner on the same side, not extended any
+other way (`v2.1-rc,v2.2`, `MODE-X=fast` fail); a `*` (or another joiner that extends even
+before a space) at the end of the token and one glued onward differ (`v2.1*` and `v2.1*-rc`). A date stays present inside an ISO timestamp (`2026-10-25T10:00Z`), but not inside a bad
+or extended one (`2026-10-25T99`, `2026-10-25T10:00.bak`). A URL holds the characters RFC 3986
+allows plus letters (`https://x.io/Zürich`); markup, quotes and dashes glued after it (`**`, `”`,
+`—`, `…`) are not part of it. A URL is looked up as the rendering's whole URL, so
 `https://e.com` is not in `https://e.com@evil.io` and `?x=1` is not in `?x=1&debug=1`. The one
 exception is a pair or range of two tokens of one family joined by `-` or `/`: times, dates and
 versions (`14:30-15:00`, `2026-10-25-2026-10-27`, `v2.1/v2.3`), and names with `/`
 (`Postgres/MySQL`, `API/SDK`). A hyphen also joins the parts of one name (`Jean-Luc-Picard`,
 `S3-IA`, `Paris-Nord`), so between names it counts as a pair only for month and weekday names
-(`Monday-Friday`, `Mon-Fri`). A path, file name, hash or number never pairs. Markdown list numbers of
-one or two digits (`1. `, `12) `) are not facts and are skipped; `2024. Done` keeps `2024`. Proper nouns are extracted
+(`Monday-Friday`, `Mon-Fri`); in the source such a pair is two tokens, so `Monday to Friday`
+renders it. A path, file name, hash or number never pairs. Markdown list numbers of
+one or two digits (`1. `, `12) `) are not facts and are skipped when content follows them on the
+line; `2024. Done` keeps `2024`, and so does `12.  ` with only a hard break after it. Proper nouns are extracted
 when they are not ordinary sentence furniture (`stack: Postgres via Prisma` checks `Postgres`
 and `Prisma`; so does `- **Stack:** Postgres`). A month or weekday name may appear in its Hebrew
 form (`Monday` as `יום שני`, `October` as `אוקטובר`). Hedges are checked by class, so `could`
@@ -87,7 +112,8 @@ python keyline_lint.py notes/*.txt
 ```
 
 - Furniture: a line starting with a bullet (`- `, `* `, `+ `), a numbered item of one or two digits
-  (`1. `, `12) `; `2024. ` is a year, not an item) or a header (`#` to `######`), or any `**` or backtick.
+  (`1. `, `12) `; `2024. ` is a year, not an item), each with content after it (`12.  ` alone is
+  not an item), or a header (`#` to `######`), or any `**` or backtick.
 - Abbreviations: a lowercase ASCII word that is not one o200k_base token (with its leading space)
   AND has the shape of an invented abbreviation: a numeronym (k8s, i18n, a11y), 2-5 letters with
   no vowel (rst, mgmt), or 4-5 letters with one vowel (alrt, srvc). Words of 6+ letters, anything
@@ -209,7 +235,10 @@ Two panel claims do not reproduce exactly:
 - A time with `:00` seconds matches with or without them (`14:30` and `14:30:00`); other seconds
   must be written. `May` is the month when a number, `:` or the line end follows, or a closing
   `**` followed by `:`, a number or the line end (`**May**: 3`, `## **May**`), or when it is not at
-  a sentence start; `May I help?`, `**May** we ship?` and `## Risks. May we ship?` are the modal
+  a sentence start, or when a month name joined by `,`, `&`, `and`, `or`, `to`, `through`,
+  `until` or `till` follows (`May, June and July`), or `is`, `was`, `has`, `had`, `will` or a
+  period (`May was busy.`); `May I help?`, `May, I ask, ...`, `May the tests pass.`,
+  `**May** we ship?` and `## Risks. May we ship?` are the modal
   verb (a header line is no exception of its own). An all-caps `MAY` is the modal only in an
   all-caps line, `_MAY_` emphasis included.
 - The extension rule fails closed on some faithful English: `Postgres-based` for `Postgres`
@@ -219,8 +248,15 @@ Two panel claims do not reproduce exactly:
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted. A
   negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation,
-  except at a sentence start (`Up? No. 5 are down.`, or a line that starts `No.`), where it is
-  the negation; the number must follow on the same line.
+  only after a word on the same line, emphasis marks aside (`Ticket No. 5`, `Ticket **No. 5**`);
+  anywhere else (`Up? No. 5 are down.`, `A: No. 5 fail`, `(no. 3 ...)`, a line that starts
+  `No.`) it is the negation. A lowercase `no.` is a number sign only after a digit
+  (`Item 3 no. 5`); after a word it is the answer (`I'd say no. 3 fail`), so `ticket no. 5`
+  counts as a negation (fails closed). Each of these "No. N" negations counts in the rendering
+  only as often as the source has one, so it cannot stand in for a dropped negation
+  (`Do not deploy. Ticket No. 5.` to `Deploy. ticket no. 5.`, `Deploy. Ticket: No. 5.` or
+  `Deploy (No. 5).` fails). The number must
+  follow on the same line. `Ticket No 5` without the period counts as a negation (fails closed).
 - Lowercase kebab names such as `checkout-api`, and two-word lowercase paths such as `src/auth`,
   are not extracted as invariants. Nor are hex hashes without a digit (`deadbeef`), lowercase
   words without a digit (`utf`, `prisma`) or a one-letter acronym plural (`Qs`); `PRs`, `sha256`,

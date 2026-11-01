@@ -35,11 +35,14 @@ TOKEN_KEYS = (
 
 
 def _int(value):
-    """A token count; anything else (text, null, NaN, Infinity: json reads both) counts 0."""
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError, OverflowError):
+    """A token count: a JSON number that is a whole number from 0 to 2**63 - 1 (12.0 is 12).
+    Anything else (text such as "12", true, null, NaN, Infinity: json reads both, a negative,
+    fractional or larger number) counts 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0
+    if isinstance(value, float) and not value.is_integer():     # NaN and Infinity are not
+        return 0
+    return int(value) if 0 <= value < 2 ** 63 else 0
 
 
 def _cache_writes(usage):

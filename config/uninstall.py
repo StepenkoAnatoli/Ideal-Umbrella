@@ -50,12 +50,7 @@ def _without_our_hooks(entries):
     return kept
 
 
-def has_our_hook(settings):
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        return False
-    return any(install._is_ours(entry) for entries in hooks.values() if isinstance(entries, list)
-               for entry in entries)
+has_our_hook = install.has_our_hook
 
 
 def undo_settings(settings, template, record, evidence=None):
@@ -155,7 +150,7 @@ def undo_settings(settings, template, record, evidence=None):
     return changes, notices, left
 
 
-SETTINGS_FIELDS = ("added_keys", "replaced", "installed", "deny_added", "created", "settings_created")
+SETTINGS_FIELDS = install.SETTINGS_FIELDS
 
 
 def _leftover_record(record, left, claude_md_left, settings_missing=False):
@@ -445,6 +440,9 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     template_md = install._read_text(install.CLAUDE_MD)
     evidence = paths["hook"].exists() or (settings is not None and has_our_hook(settings))
 
+    # Before the undo takes what the install wrote out of it (see delete_settings).
+    created_file = isinstance(record, dict) and record.get("settings_created") is True \
+        and install.holds_install(settings, record)
     left, setting_changes = [], []
     if settings is not None:
         setting_changes, notices, left = undo_settings(settings, template, record, evidence)
@@ -452,18 +450,19 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
     # folder not linked yet) had nothing undone, so the record keeps what a later run needs.
     settings_missing = settings is None and isinstance(record, dict) and any(
         record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
-    if settings_missing and record.get("settings_created") is True and not record.get("replaced"):
+    if settings_missing and record.get("settings_created") is True:
         # The file the install created is gone (often deleted by an earlier run that then
-        # stopped) and held nothing of the user's to put back: its part of the record goes, so a
-        # settings.json made later is not undone against it.
+        # stopped): its part of the record goes, so a settings.json made later is not undone
+        # against it. A value a --force install replaced in it went with the file.
         settings_missing = False
         notices.append("settings.json not found; the install created it, so nothing in it is left to undo")
     elif settings_missing:
         notices.append("settings.json not found; settings left for a later run")
     # A settings.json the install created and the undo leaves empty is deleted, not left as {}.
-    # A record that does not say (from before the field, or a file that was there) keeps it.
-    delete_settings = settings == {} and isinstance(record, dict) and record.get("settings_created") is True \
-        and not install._is_link(paths["settings"])
+    # A record that does not say (from before the field, or a file that was there) keeps it, and
+    # so does a file that held nothing the install wrote: the user's own, made after the
+    # created one was deleted.
+    delete_settings = settings == {} and created_file and not install._is_link(paths["settings"])
     settings_written = bool(setting_changes) and not delete_settings
 
     if not dry_run:
@@ -628,6 +627,15 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         backup = install.replace_json(paths["settings"], settings, progress)
         changes.append(f"settings backup: {backup.name}")
         progress.append("settings.json written")
+    if settings == {} and not delete_settings and isinstance(record, dict) \
+            and record.get("settings_created") is True and not created_file:
+        # The record says the install created settings.json, but the file held nothing the
+        # install wrote: the user's own, or the created one the user emptied of it. Content
+        # cannot tell these apart, so the file stays; say so rather than leave {} unexplained.
+        written = settings_written and not dry_run
+        notices.append("settings.json left as {}: the install created a settings.json, but this one held "
+                       "nothing the install wrote, so it may be yours; delete it if not"
+                       + (f" (the file as it was is in {backup.name})" if written else ""))
     if paths["hook"].exists():
         if dry_run:
             changes.append("hook deleted")
