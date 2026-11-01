@@ -46,6 +46,10 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
     - leaves CLAUDE.md as is when the backup name is unusable;
     - deletes a settings.json the install created (new record field `settings_created`).
   - A failed settings write no longer leaves an orphan backup.
+  - A fresh-context self-review of these fixes found 6 medium and 15 low defects, all fixed:
+    - config: an uninstall stopped after deleting a created settings.json no longer leaves a stale record, and an install while settings.json is away keeps the values from before the first install;
+    - keyline: a token extended on either side fails, while a range or pair of one family (14:30-15:00, Postgres/MySQL) passes; a URL is looked up by extraction; "No. 5" at a sentence start counts as a negation;
+    - also: May hedges in bold, linear-time URL trimming and lookup, ratio-based timing tests, tests for surviving mutations, `--watch` validation, Infinity in usage_breakdown, NFC input.
 - Merging main into the marker-section branch: `config/add_to_repo.py` takes `--handoff-at` together with the learnings copy and the git checks, and keeps this branch's dangling-folder, read-only and unreadable-file checks; `tests/test_source_rules.py` accepts an `except` on a module-level tuple of exception types (`BAD_RECORD`) and `errors=` chosen by `os.name`, `backslashreplace` on Windows and `surrogateescape` elsewhere.
 - Review 48 of the marker-section branch (`research/review-findings-graphify-e83f8d5.md`): no code defect. The Review 47 line named a refused shape no row held; the stdout rule's self-test now refuses `stream.buffer.reconfigure(...)` and `proc.stdout.reconfigure(...)` inside the loop too, and the Review 47 line names every refused receiver and the tuple target.
 - Review 47 of the marker-section branch (`research/review-findings-graphify-9029b94.md`): no code defect. The stdout rule's self-test refuses a loop over a name or a call (the rule sees only a tuple or list literal holding `sys.stdout`), a tuple target, and `.reconfigure(...)` on any other receiver inside the loop (`proc.stream`, `stream.buffer`, `proc.stdout`).

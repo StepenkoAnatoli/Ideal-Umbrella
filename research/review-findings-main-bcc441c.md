@@ -360,3 +360,27 @@ Two fresh-context reviewers read the fix diff: one read the config commit 74a334
 
 - **Other hits:** a whole-repo search for reads that treat a missing file as `{}` or None finds only install.py:1040 (now handled) and uninstall.py:426. A missing CLAUDE.md is the documented design.
 - **Prevention:** a record field that describes a file is checked against the file being away, not only absent from the start.
+
+### Keyline and scripts (bcc441c..51f97b8): 4 medium, 9 low, all fixed in ccad14c
+
+I reproduced the mediums with `python -I` before the fix and re-ran them after it. Each finding has a test that failed before the fix; the S9 tests were confirmed by applying each mutation.
+
+| # | Finding | Class | Fixed |
+|---|---|---|---|
+| S1 medium | A token extended on the left (`old/notes/a.txt`, `old-report.pdf`, `Marie-Jean-Luc`), or on the right with `~ @ # + %`, still counted as present. | incomplete fix of medium 2 | One function, `_unextended`, decides "alone" for both the source and the rendering, and refuses an extension on either side. |
+| S2 medium | A URL extended with `@ & # % ,` passed. | new fail-open | A URL is looked up by extraction, as a number is. |
+| S3 medium | R_ALONE made ranges and pairs false-fail (14:30-15:00, Postgres/MySQL, Monday-Friday, v2.1/v2.3, date ranges). | regression | Pair rule (`PAIR_FAMILY`): "/" joins two tokens of one family (names, when, version); "-" joins when and version tokens, and calendar names. Paths, files, URLs, hashes and numbers never pair. Two known limits are documented in keyline/README.md: "Postgres-based" fails closed, and "Luc" passes inside "Jean/Luc". |
+| S4 medium | "No. 5 ..." at a sentence start no longer counted as a negation, so dropping it passed; `\s*` crossed a line break. | regression | "No." before a number is a number sign only when it is not at a sentence start, and the pattern uses `[ \t]*`. |
+| S5 low | A dropped May hedge passed in bold or on a header line, and `_MAY_` was not counted as all-caps. | regression | The bold branch is narrowed, the header rule removed, and the caps check uses Unicode word boundaries. |
+| S6 low | `_trim_url` was quadratic: 100k `)` took 12 s. | regression | Brackets are counted once and the URL is trimmed by index: 0.13 s. |
+| S7 low | `present()` ran one search per token: 100 KB took 15 s. | predates the diff | A word-run index tries only matching positions: 1.7 s. A differential check over 6000 pairs found 0 differences from plain search. |
+| S8 low | The linear-time test used an absolute 1 s limit. | flaky test | The test compares a doubled input by ratio. |
+| S9 low | 14 mutations survived the tests. | fix without test | One targeted test per mutation. |
+| S10 low | `notes_for` checked data.json.he.txt against data.json, but not the reverse. | one direction | A sibling counts only when its suffix is a note suffix. |
+| S11 low | `--watch --print-config` and a blank pattern were accepted. | validation | Both are refused. |
+| S12 low | An Infinity token count crashed usage_breakdown. | incomplete fix of #18 | `OverflowError` is caught. |
+| S13 low | Docs had drifted (ASCII boundaries, May rules, url kind), and NFD text false-failed. | docs contradict code | Docs updated, and input is normalized to NFC in `read()` and `check()`. |
+
+- **Self-pass check:** 0 failures over 3 × 4000 token-level and 20000 character-level fuzzed sources.
+- **Final runs:** pyflakes clean; pytest 1512 passed, 14 skipped; keyline 35/35.
+- **Noted, not fixed:** in keyline_lint, `int()` on the cache header could hit Python's digit limit, but only with a corrupt cache it wrote itself.
