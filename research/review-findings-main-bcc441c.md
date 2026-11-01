@@ -344,3 +344,19 @@ The table gives, per finding, the fix (in `keyline_check.py` unless the line nam
 | 44 | Install records `settings_created: true`; uninstall deletes such a settings.json when the undo leaves `{}` and the file is not a link. A record without the field keeps `{}`. | `test_a_settings_file_the_install_created_is_deleted`, `test_a_record_that_does_not_say_who_made_settings_json_keeps_it` | CLAUDE.md already has `created`. | A file the install creates is recorded as created. |
 | 45 | Tests only. | `test_a_symlinked_hook_stays_a_link_and_its_target_is_updated` (add_to_repo and install) | install.py had the same gap. Fixed. | Each written file has a symlink test. |
 | 46 | `install.replace_json` deletes its own backup when the write fails, and drops it from the progress list. | `assert_undone` in `tests/test_failed_writes.py` | The uninstall settings write uses the same helper. | A backup the record does not name is removed when its write fails. |
+
+## Self-review of the PR diff
+
+Two fresh-context reviewers read the fix diff: one read the config commit 74a3343, the other bcc441c..51f97b8 for keyline/ and scripts/. I reproduced every medium with `python -I` before fixing it.
+
+### Config (74a3343): 2 medium, 2 low, all fixed in fa46c9a
+
+| # | Finding | Class | Fixed | Test (failed before) |
+|---|---|---|---|---|
+| C1 medium | An uninstall that failed after deleting the settings.json the install created (for example, a folder where the hook file is) kept every settings field in the record. Each rerun then said "settings.json not found; settings left for a later run", and a settings.json the user made later was undone and deleted. | halfway state | When settings.json is missing, the record says the install created it, and nothing was replaced, its part of the record is dropped, with a note. | `test_an_uninstall_stopped_after_deleting_the_created_settings_json_finishes` |
+| C2 medium | An install run while settings.json was away read it as `{}`, set `settings_created`, and moved the values kept from before the first install into `added_keys`. Once the file was back, uninstall removed the user's value and deleted the file. | absent is not empty | A missing settings.json that the record holds changes to is "away": no `settings_created`, `replaced` is kept (`_merge_record(settings_away=True)`), and a note is printed. | `test_an_install_while_settings_json_is_away_keeps_the_value_from_before`, `test_an_install_after_an_uninstall_with_settings_away_keeps_the_value_from_before` |
+| C3 low | `"settings_created": false` stopped install and uninstall with a field-type error. | absent is not empty | Any bool is accepted; false reads as missing. | `test_settings_created_false_in_a_record_is_read_as_missing` |
+| C4 low | The README said a second uninstall always says "Nothing to undo", which contradicts the settings-missing path. | docs contradict code | README qualified, and the C1 and C2 behaviour documented. | n/a (docs) |
+
+- **Other hits:** a whole-repo search for reads that treat a missing file as `{}` or None finds only install.py:1040 (now handled) and uninstall.py:426. A missing CLAUDE.md is the documented design.
+- **Prevention:** a record field that describes a file is checked against the file being away, not only absent from the start.
