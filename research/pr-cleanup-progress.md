@@ -1,6 +1,6 @@
 # Ideal-Umbrella review follow-up: resume point
 
-Updated 2026-11-01. The eighth full review of main bcc441c is reported in the draft PR on branch `ccr-review8-bcc441c`. No fixes are made yet; they wait for the user.
+Updated 2026-11-01. The eighth full review of main bcc441c is reported in draft PR #32 (branch `ccr-review8-bcc441c`). On "yes, fix all of them then check your work and merge" the fixes are in progress on that branch.
 
 ## Request (user)
 
@@ -37,6 +37,19 @@ Earlier rounds, in order:
   - The `quote()` escape stays documented.
   - A record without a `claude_md` entry keeps the user's file.
   - Merges use a merge commit.
+
+## Fix progress (in progress)
+
+- **Done:** config findings 23-28 and 44-46 (37 = 24) are committed as 74a3343. A new record field, `settings_created`, lets uninstall delete a settings.json the install created; a record without the field keeps today's `{}`. The per-finding Fixed/Test/Other hits/Prevention notes are in the session scratchpad `review8/fix-config-notes.md`; they still need copying into the report.
+- **Not fixed on purpose:**
+  - S45, a read-only `~/.claude` folder: `os.access` on folders is unreliable, and a check would change install and add_to_repo too.
+  - A missing CLAUDE.md drops its record entry: this is the documented design, and a notice names the backups.
+- **Running:** a fixer agent on keyline/ and scripts/: mediums 1-4 and lows 5-22, 29-35 and 38-43. Its work is uncommitted in the working tree.
+- **Next:**
+  1. Commit the keyline fixes.
+  2. Add Fixed/Other hits/Prevention to each finding in the report, and update CHANGELOG.md.
+  3. Run a fresh-context self-review of the fix diff (`git diff bcc441c..HEAD -- . ':!research'`), and fix what it finds.
+  4. Merge PR #32 with a merge commit once CI is green.
 
 ## Open items
 
