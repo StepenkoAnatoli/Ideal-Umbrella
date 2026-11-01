@@ -138,3 +138,60 @@ None.
 7. Informational notes at the user's discretion.
 
 After the fixes, run a fresh-context self-review of the diff before merging, as the routine requires: this round's mediums are all neighbours of the last round's fixes.
+
+## Fixes (PR #33, on "yes, fix all of them then check your work and merge")
+
+- 18025a0: config/hooks/tests (B1-B7, I-1, I-2, the `uninstalled` part of I-3, the 8 mutations).
+- ae22a1c: keyline/scripts (A1-A9, the old #4, #10 and #15 neighbours, A10's ISO and `_int` items) and CHANGELOG.
+- **Not fixed on purpose:**
+  - **Fail-open risk or no gain:** "Ticket No 5" without a period, since a fix would let "are no 5 servers" lose its negation. "Postgres/MySQL", since splitting at "/" lets a changed path pass. The 64-character `_token_before` window, which only fails closed.
+  - **Would lose a value from before the first install:** the general form of B3 (skip the away check for every uninstalled record).
+  - **Would turn a note into a stop:** I-3's `claude_md` subfields.
+
+## Self-review of the PR diff (two fresh-context reviewers)
+
+The mediums were reproduced in the main session with `python -I`.
+
+### Keyline and scripts: 2 medium, 6 low, 6 fixes without test (SA)
+- **SA1 (medium, regression)**
+  - **Defect:** the A6 joiner set (`, = & * $ (`) now applies to the source too. A source token glued by one of these characters is "not alone", so any extended rendering passes.
+  - **Repro:** `v2.1,v2.2` against `v2.1-rc,v2.2`; `MODE=fast` against `MODE-X=fast`; `Paris,London`, `14:30,15:00`, `v2.1*`, `API(x)`, and `**at\n14:30**` against `14:30:15`.
+  - **Where:** keyline_check.py:133-135.
+  - **Class:** neighbour of a previous fix.
+  - **Fix:** accept an extended rendering occurrence only in a joiner context the source token had, or drop `,` and `*`.
+- **SA2 (medium, regression)**
+  - **Defect:** `_plain()` strips emphasis inside URLs, paths and identifiers.
+  - **Repro:** `https://x.io/_api_/v1` against `https://x.io/api/v1`; `/srv/_data_/x.txt`; `__init_subclass__` against `init_subclass`; `_private_var_`.
+  - **Where:** keyline_check.py:388-390.
+  - **Class:** neighbour of a previous fix (A3).
+  - **Fix:** an emphasis open must not follow `[\w*/\\.:~@=-]`, and a close must not precede `[\w*/\\]`. A dunder starts with a letter.
+- **SA3 (low, regression):** variation selectors and keycap U+20E3 joined MARK, so `✔️v2.1` and `5️⃣` fail closed. Fix: leave U+FE00-FE0F, U+E0100-E01EF and Me out of MARK.
+- **SA4 (low):** `_plain` resets emphasis pairing at every newline (:407), so multi-line `**…**` fails closed. Reset only at a blank line.
+- **SA5 (low):** `__12__` and `__v2__` (bold) are kept as dunders. Fixed with SA2.
+- **SA6 (low, halfway state):** a file argument to measure.py that cannot be read still exits 1. A8 fixed only folders.
+- **SA7 (low):** `usage_breakdown._int` takes negative, fractional and huge values: -5 gives "-17%", 1e308 gives "nan%", and a 401-digit int raises OverflowError. Accept only finite values with 0 <= v < 2**63.
+- **SA8 (low, pre-existing):** a lowercase "no." after a word ("I'd say no. 3 fail") is read as a number sign. Only "No."/"NO." after a word, or "no." after a digit, is a number sign.
+- **SA9 (fix without test):** each of these mutants passes every test:
+  - the A4 `TOKEN_REACH` bound removed, which makes `'Monday-'*20000` take 226 s;
+  - the time-form order swapped;
+  - the ISO word check removed;
+  - `*` removed from EXT_ALWAYS_RIGHT;
+  - MARK removed from the path class;
+  - the newline reset (SA4).
+- **Info:** `test_extraction_and_hedges_are_linear_on_100_kb` is flaky under CPU load (it predates this diff). A URL in `~~strike~~` fails closed. The README's extension examples use `a.txt`, which is never extracted.
+
+### Config: 1 medium, 1 fix-without-test, 2 info (SB)
+- **SB1 (medium, regression)**
+  - **Defect:** a reinstall treats a created settings.json the user edited as one the user wrote. install.py:1093-1096 drops the whole settings part of the record when the file fails `holds_install`. `holds_install` (:204-222) checks only `added_keys`, not `replaced`.
+  - **Repro:**
+    1. Install with no settings.json.
+    2. The user sets both keys (123, 0.5).
+    3. `install --force`.
+    4. The user removes the hook and `Artifact`.
+    5. Install, then uninstall.
+  - **Observed:** 123 and 0.5 are not restored, and 5 of the installer's deny tools stay. 7377502 restored both values and removed all six tools.
+  - **Class:** neighbour of a previous fix (B1).
+  - **Fix:** (a) `holds_install` also checks `replaced` keys against `installed`. (b) A file that fails the check drops only `settings_created`, `deny_added` and `created`, and keeps `added_keys`, `replaced` and `installed`, which uninstall compares by value. Document that the deny tools of such a file stay.
+- **SB2 (fix without test):** mutants that remove the hook check (:212), the value check (:217) or the `bool(added)` guard (:222) pass every test.
+- **SB3 (info):** the installer's own file, emptied by the user of everything it wrote, is left as `{}` with a backup and no note. Add a note.
+- **SB4 (info):** a user file holding an installer value (`{"autoCompactWindow":250000}`) after the created one was deleted counts as created. A check based on content cannot tell these cases apart; document it.
