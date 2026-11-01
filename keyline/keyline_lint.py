@@ -1,6 +1,7 @@
 """keyline_lint.py - fail a machine-notes file on markdown furniture and invented abbreviations.
 
-Furniture: a line starting with a bullet ('- ', '* ', '+ '), a numbered item ('1. ', '2) '),
+Furniture: a line starting with a bullet ('- ', '* ', '+ '), a numbered item of one or two digits
+('1. ', '12) '; '2024. ' is a year, not an item),
 or a header ('# ' to '###### '), or any line containing '**' or a backtick.
 Abbreviations: a lowercase ASCII word that is not a single o200k_base token (with its leading
 space, as it appears mid-line) AND has the shape of an invented abbreviation:
@@ -15,8 +16,8 @@ Identifiers, paths and capitalised names are skipped.
 The single-token word list is built once with tiktoken and cached in cache/.
 
 Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
-keyline-allow.txt, one word per line; every keyline-allow.txt in the file's folder or any parent
-folder is read.
+keyline-allow.txt, one or more words per line (split on spaces; '#' starts a comment); every
+keyline-allow.txt in the file's folder or any parent folder is read.
 
 Usage:
   python keyline_lint.py FILE [FILE ...]
@@ -38,7 +39,7 @@ ALLOW_NAME = "keyline-allow.txt"
 
 FURNITURE = [
     (re.compile(r"^\s*[-*+]\s"), "bullet"),
-    (re.compile(r"^\s*\d+[.)]\s"), "numbered item"),
+    (re.compile(r"^\s*\d{1,2}[.)]\s"), "numbered item"),   # "2024. ..." is a year, not a list
     (re.compile(r"^\s*#{1,6}\s"), "header"),
     (re.compile(r"\*\*"), "bold '**'"),
     (re.compile(r"`"), "backtick"),
@@ -90,7 +91,11 @@ def read(path):
 
 def build_cache():
     tiktoken = _tiktoken()
-    enc = tiktoken.get_encoding("o200k_base")
+    try:
+        enc = tiktoken.get_encoding("o200k_base")
+    except Exception as e:
+        # Offline on first use, a proxy, a corrupt cache: a read error for the callers' handlers.
+        raise OSError(f"tiktoken could not load o200k_base: {e}") from None
     words = set()
     pat = re.compile(rb"^ [a-z]+$")
     for i in range(enc.n_vocab):
@@ -153,9 +158,7 @@ def load_allow(path, extra, use_files=True):
                 files.append(f)
     for f in files:
         for line in read(f).splitlines():
-            w = line.split("#", 1)[0].strip().lower()
-            if w:
-                allow.add(w)
+            allow.update(line.split("#", 1)[0].lower().split())
     return allow
 
 

@@ -16,6 +16,7 @@ file cannot be read or written, 2 for bad arguments.
 import argparse
 import datetime
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -105,11 +106,18 @@ def previous_entry(path):
 
 
 def _is_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """A count to compare: NaN and infinity (which json reads from a hand edit) are not."""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _show(value):
-    return f"{value:,}" if _is_number(value) else str(value)
+    if _is_number(value):
+        return f"{value:,}"
+    if value is None or isinstance(value, float):
+        return json.dumps(value)               # null, NaN, Infinity: as written in the file
+    return str(value)
 
 
 def delta_lines(old, new):

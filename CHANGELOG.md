@@ -19,6 +19,37 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- Review 8 of main bcc441c (`research/review-findings-main-bcc441c.md`): all 4 medium and 42 low findings are fixed, except a Windows-only junction note.
+  - keyline_check:
+    - a date and time written with a space now matches the ISO form, and `:00` seconds are optional;
+    - a rendering that only extends a path, file or name now fails;
+    - sha256 to sha512 digests, URLs with their scheme, and Unicode names are now extracted;
+    - only a one- or two-digit number is a list marker;
+    - fixes to the Hebrew forms of months, `No. 5`, `May` as a label, and hedges in `_emphasis_`;
+    - the camel-case and all-caps scans now take linear time.
+  - keyline_hook:
+    - `.he.md` and `.he.keyline` renderings are checked against every note with the same stem, in any case;
+    - dotfiles are skipped;
+    - a bad `--watch` is refused;
+    - the header and read-error messages say what actually failed.
+  - measure: exit codes, the change line, and the FIFO message are fixed.
+  - The transcript and plugin scripts:
+    - open files with `utf-8-sig`;
+    - check field types;
+    - give a one-line error for a failed write or tiktoken load;
+    - count hidden plugins;
+    - read YAML block descriptions.
+  - uninstall:
+    - keeps the settings fields when settings.json is missing;
+    - names a replaced key you deleted;
+    - refuses read-only files before its first write;
+    - leaves CLAUDE.md as is when the backup name is unusable;
+    - deletes a settings.json the install created (new record field `settings_created`).
+  - A failed settings write no longer leaves an orphan backup.
+  - A fresh-context self-review of these fixes found 6 medium and 15 low defects, all fixed:
+    - config: an uninstall stopped after deleting a created settings.json no longer leaves a stale record, and an install while settings.json is away keeps the values from before the first install;
+    - keyline: a token extended on either side fails, while a range or pair of one family (14:30-15:00, Postgres/MySQL) passes; a URL is looked up by extraction; "No. 5" at a sentence start counts as a negation;
+    - also: May hedges in bold, linear-time URL trimming and lookup, ratio-based timing tests, tests for surviving mutations, `--watch` validation, Infinity in usage_breakdown, NFC input.
 - Merging main into the marker-section branch: `config/add_to_repo.py` takes `--handoff-at` together with the learnings copy and the git checks, and keeps this branch's dangling-folder, read-only and unreadable-file checks; `tests/test_source_rules.py` accepts an `except` on a module-level tuple of exception types (`BAD_RECORD`) and `errors=` chosen by `os.name`, `backslashreplace` on Windows and `surrogateescape` elsewhere.
 - Review 48 of the marker-section branch (`research/review-findings-graphify-e83f8d5.md`): no code defect. The Review 47 line named a refused shape no row held; the stdout rule's self-test now refuses `stream.buffer.reconfigure(...)` and `proc.stdout.reconfigure(...)` inside the loop too, and the Review 47 line names every refused receiver and the tuple target.
 - Review 47 of the marker-section branch (`research/review-findings-graphify-9029b94.md`): no code defect. The stdout rule's self-test refuses a loop over a name or a call (the rule sees only a tuple or list literal holding `sys.stdout`), a tuple target, and `.reconfigure(...)` on any other receiver inside the loop (`proc.stream`, `stream.buffer`, `proc.stdout`).

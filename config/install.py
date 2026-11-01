@@ -12,15 +12,17 @@ being on PATH.
 Usage:
   python -I config/install.py [--home PATH] [--force] [--verify-only]
 
-What it does:
-  1. Merges config/user-settings.json into <home>/.claude/settings.json
-  2. Adds config/CLAUDE.md to <home>/.claude/CLAUDE.md as a marked section, or
-     updates that section (the text outside it is left as it is)
-  3. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
-  4. Verifies the files and prints a command to run in a new session.
-
-What it changed is recorded in <home>/.claude/ballast/install-record.json, so
-config/uninstall.py can put back the values that were there before.
+What it does, in this order (everything is read and checked before the first write):
+  1. Records what it is about to change in <home>/.claude/ballast/install-record.json
+     (keeping the record it replaces as "pending" until the last write lands), so
+     config/uninstall.py can put back the values that were there before even when a
+     write fails part way
+  2. Copies hooks/context_check.py to <home>/.claude/ballast/context_check.py
+  3. Backs up <home>/.claude/CLAUDE.md, then adds config/CLAUDE.md to it as a marked
+     section, or updates that section (the text outside it is left as it is)
+  4. Backs up <home>/.claude/settings.json, then merges config/user-settings.json into it
+  5. Writes the final record, and verifies the files and prints a command to run in a
+     new session.
 """
 import argparse
 import datetime
@@ -563,6 +565,31 @@ def _write_json(path, data):
     _write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
 
 
+def replace_json(path, data, progress, label="settings"):
+    """Back path up (when it exists), then write data to it whole; return the backup's path or
+    None. The backup is named in progress as soon as it is made. When the write fails, a backup
+    this call made is a copy of the file as it still is, which no record names and no uninstall
+    removes: it is deleted again (and dropped from progress) before the error goes on."""
+    backup = line = None
+    if path.exists():
+        backup = _backup_name(path)
+        fresh = not backup.exists()
+        _backup(path, backup)
+        line = f"{label} backup: {backup.name}"
+        progress.append(line)
+    try:
+        _write_json(path, data)
+    except OSError:
+        if backup is not None and fresh:
+            try:
+                remove(backup)
+                progress.remove(line)
+            except OSError:
+                pass   # still named in progress, so the error output names it
+        raise
+    return backup
+
+
 def _read_text(path):
     """Read a UTF-8 file with its line ends as they are; any failure is a ValueError naming
     the file."""
@@ -873,6 +900,7 @@ _RECORD_FIELDS = {
     "installed": ("an object", lambda v: isinstance(v, dict)),
     "pending": ("an object", lambda v: isinstance(v, dict)),
     "claude_md": ("an object or null", lambda v: v is None or isinstance(v, dict)),
+    "settings_created": ("true or false", lambda v: isinstance(v, bool)),
 }
 
 
@@ -925,7 +953,7 @@ def settle_record(record, settings, claude_md_text):
     return settled
 
 
-def _merge_record(old, new):
+def _merge_record(old, new, settings_away=False):
     """Fold this run's record into the saved one.
 
     What was there before the first install wins, so a second install never overwrites it,
@@ -945,6 +973,10 @@ def _merge_record(old, new):
         if key in added:
             added.remove(key)
     for key in new.get("added_keys", []):
+        if settings_away and key in replaced:
+            # Absent is not empty: with settings.json away the key is missing because the file
+            # is, not because it was deleted, so the value from before the first install stays.
+            continue
         # This run found the key missing, so a value kept from before the first install was
         # deleted by hand since: uninstall must remove the key, not bring that value back.
         replaced.pop(key, None)
@@ -973,6 +1005,11 @@ def _merge_record(old, new):
         merged["claude_md"] = new["claude_md"]
     elif "claude_md" in old:
         merged["claude_md"] = old["claude_md"]
+    # Written only as true: a missing field says nothing (a record from before it existed, or
+    # a settings.json that was there), and the uninstall then keeps the file. After an uninstall
+    # only this run's finding counts, as for "created".
+    if new.get("settings_created") is True or (old.get("settings_created") is True and not old.get("uninstalled")):
+        merged["settings_created"] = True
     return merged
 
 
@@ -1016,6 +1053,17 @@ def install(home, force=False, progress=None, config_dir=None):
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)
+    # A missing settings.json the record holds changes to is away (moved, a dotfiles folder not
+    # linked yet), not new: the file this run writes is not marked as created, and what the
+    # record keeps from before the first install stays for the uninstall once it is back.
+    settings_away = not paths["settings"].exists() and any(
+        old_record.get(k) for k in ("added_keys", "replaced", "deny_added", "installed"))
+    if settings_away:
+        notices.append("settings.json not found, though the install record holds changes to it: "
+                       "a new one is written, and the values from before the first install stay recorded")
+    elif setting_changes and not paths["settings"].exists():
+        # So that uninstall deletes the file instead of leaving {} behind.
+        record["settings_created"] = True
 
     hook_changed = current_hook != hook_bytes
     md_backup = None
@@ -1049,7 +1097,7 @@ def install(home, force=False, progress=None, config_dir=None):
     # "pending": a change it names that never landed is then undone by the earlier description
     # (settle_record), or is harmless to undo (a key that still holds its value from before the
     # first install is skipped, a backup that equals the file is deleted).
-    merged = _merge_record(old_record, record)
+    merged = _merge_record(old_record, record, settings_away)
     changing = hook_changed or md_plan is not None or setting_changes
     # A read-only file is refused before the first write, not at its own write after others.
     for path, written in ((paths["record"], changing or "pending" in raw_record),
@@ -1078,11 +1126,9 @@ def install(home, force=False, progress=None, config_dir=None):
         progress.append(changes[-1])
 
     if setting_changes:
-        if paths["settings"].exists():
-            backup = _backup(paths["settings"])
+        backup = replace_json(paths["settings"], existing, progress)
+        if backup is not None:
             setting_changes.append(f"settings backup: {backup.name}")
-            progress.append(setting_changes[-1])
-        _write_json(paths["settings"], existing)
         progress.append("settings.json written")
     if changing and old_record:
         _write_json(paths["record"], merged)   # every write landed: nothing is pending

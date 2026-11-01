@@ -261,3 +261,34 @@ def test_a_link_into_a_folder_that_cannot_be_searched_says_cannot_read(usage_bre
     with pytest.raises(SystemExit) as exit_:
         usage_breakdown.main([str(tmp_path)])
     assert f"cannot read {tmp_path / 'b.jsonl'}" in str(exit_.value.code), exit_.value.code
+
+
+# ---- review 8 (main bcc441c) ----
+
+def test_malformed_usage_fields_and_a_bom_neither_crash_nor_lose_the_first_line(usage_breakdown, tmp_path):
+    # Review 8, low 18: usage as a list or "x", a list message id, text null raised
+    # AttributeError or TypeError; a BOM dropped the first line.
+    path = write_jsonl(tmp_path / "t.jsonl", [
+        {"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 7},
+                                          "content": [{"type": "text", "text": "hi"}]}},
+        {"type": "assistant", "message": {"id": "m2", "usage": [1, 2]}},
+        {"type": "assistant", "message": {"id": "m3", "usage": "x"}},
+        {"type": "assistant", "message": {"id": ["m4"], "usage": {"output_tokens": 1}}},
+        {"type": "assistant", "message": {"id": "m5", "usage": {"output_tokens": 2}, "content": [
+            {"type": "text", "text": None}, {"type": "thinking", "thinking": 5}]}},
+        {"type": "assistant", "message": {"id": "m6", "content": 5}},
+    ])
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    tot, out_chars, turns = usage_breakdown.summarize([str(path)])
+    assert turns == 2 and tot["output_tokens"] == 9
+    assert out_chars["visible text"] == 2
+
+
+@pytest.mark.parametrize("raw", ["Infinity", "-Infinity", "NaN", "1e400"])
+def test_a_token_count_of_infinity_counts_zero_not_a_traceback(usage_breakdown, tmp_path, raw):
+    # Self-review S12: int(float("inf")) raises OverflowError, which _int did not catch.
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"type":"assistant","message":{"id":"m1","usage":{"input_tokens":%s,'
+                    '"output_tokens":7},"content":[]}}\n' % raw, encoding="utf-8")
+    totals, _chars, turns = usage_breakdown.summarize([path])
+    assert totals["input_tokens"] == 0 and totals["output_tokens"] == 7 and turns == 1

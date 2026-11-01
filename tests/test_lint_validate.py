@@ -59,3 +59,30 @@ def test_a_corpus_path_through_a_file_is_not_a_folder(lint_validate, tmp_path, c
     assert lint_validate.main([str(old), str(tmp_path / "a_file" / "x")]) == 1
     err = capsys.readouterr().err
     assert "is not a folder" in err and "cannot read" not in err, err
+
+
+# ---- review 8 (main bcc441c) ----
+
+@pytest.mark.parametrize("content", [b"caf\xe9 = 1\n", b"def broken(:\n", b"x = 1\n"],
+                         ids=["not-utf8", "syntax-error", "no-lint-text"])
+def test_an_old_lint_that_cannot_be_loaded_is_one_line_not_a_traceback(lint_validate, tmp_path, capsys, content):
+    # Review 8, low 42: load_old was unguarded.
+    old = tmp_path / "old.py"
+    old.write_bytes(content)
+    assert lint_validate.main([str(old), str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"Error: cannot load {old}") and err.count("\n") == 1, err
+
+
+def test_a_word_cache_that_cannot_be_read_is_one_line_not_a_traceback(lint_validate, tmp_path, capsys, monkeypatch):
+    # Review 8, low 42: load_words was unguarded (a missing tiktoken, a non-UTF-8 cache).
+    monkeypatch.syspath_prepend(str(ROOT / "keyline"))
+    import keyline_lint
+
+    def failing():
+        raise OSError("cache/o200k_single_token_words.txt is not UTF-8")
+    monkeypatch.setattr(keyline_lint, "load_words", failing)
+    old = ROOT / "keyline" / "keyline_lint.py"
+    assert lint_validate.main([str(old), str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert err == "Error: cache/o200k_single_token_words.txt is not UTF-8\n", err

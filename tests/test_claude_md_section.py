@@ -373,7 +373,9 @@ def test_a_missing_or_unusable_legacy_backup_keeps_the_file(install_module, unin
     changes, notices = uninstall_module.uninstall(home)
     assert read_md(home) == SECTION
     assert not any("CLAUDE.md" in c for c in changes), changes
-    assert any("left as is" in n and "missing" in n for n in notices), notices
+    # Review 8, low 27 other hit: a name backup_of rejects is "not usable", not "missing".
+    why = "missing" if legacy == OLD_BACKUP else "not usable"
+    assert any("left as is" in n and why in n for n in notices), notices
     assert read_record(home)["claude_md"]["legacy_backup"] == legacy
 
 

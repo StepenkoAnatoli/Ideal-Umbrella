@@ -16,7 +16,7 @@ marks = [("evidence-rule hook", "EVIDENCE RULE"), ("compaction summary", "being 
 c, n = collections.Counter(), collections.Counter()
 for path in sys.argv[1:]:
     try:
-        f = open(path, encoding="utf-8", errors="replace")
+        f = open(path, encoding="utf-8-sig", errors="replace")   # -sig: a BOM would lose line 1
     except OSError as e:
         sys.exit(f"error: {e}")
     for line in f:
@@ -24,9 +24,10 @@ for path in sys.argv[1:]:
         except (ValueError, RecursionError): continue
         m = e.get("message") if isinstance(e, dict) else None
         if not isinstance(e, dict) or e.get("isSidechain") or not isinstance(m, dict) or m.get("role") != "user": continue
-        parts = [m["content"]] if isinstance(m.get("content"), str) else [b.get("text", "") for b in m.get("content") or [] if isinstance(b, dict) and b.get("type") == "text"]
+        mc = m.get("content")
+        parts = [mc] if isinstance(mc, str) else [b.get("text") for b in mc if isinstance(b, dict) and b.get("type") == "text"] if isinstance(mc, list) else []
         for t in parts:
-            if not t: continue
+            if not isinstance(t, str) or not t: continue   # a malformed text field (null, a number)
             k = next((name for name, s in marks if s in t), "typed by user / other")
             c[k] += len(t); n[k] += 1
 tot = sum(c.values())

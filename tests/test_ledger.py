@@ -302,3 +302,20 @@ def test_a_file_name_that_is_not_utf8_is_printed_not_a_traceback(tmp_path):
     assert result.returncode == 0, result.stderr
     assert b"Traceback" not in result.stderr and b"appended to" in result.stdout
     assert lines(folder / "m.jsonl") == [{"date": lines(folder / "m.jsonl")[0]["date"], "tools": 3}]
+
+
+# ---- review 8 (main bcc441c) ----
+
+@pytest.mark.parametrize("raw, shown", [
+    ("NaN", "fixed_tokens: NaN -> 5"),
+    ("Infinity", "fixed_tokens: Infinity -> 5"),
+    ("-Infinity", "fixed_tokens: -Infinity -> 5"),
+    ("null", "fixed_tokens: null -> 5"),
+])
+def test_a_hand_edited_nan_inf_or_null_is_shown_as_written_without_a_change(ledger, tmp_path, capsys, raw, shown):
+    # Review 8, low 43: these printed as "nan", "+inf%" or "None -> 5".
+    path = tmp_path / "m.jsonl"
+    path.write_text('{"date": "2026-10-19", "fixed_tokens": ' + raw + '}\n', encoding="utf-8")
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "5", "--date", "2026-10-27"]) == 0
+    out = capsys.readouterr().out
+    assert f"  {shown}" in out.splitlines(), out

@@ -223,3 +223,32 @@ def test_a_linked_folder_argument_and_a_linked_transcript_are_followed(unused_to
     assert unused_tools.main([str(tmp_path / "linked")]) == 0
     out = capsys.readouterr().out
     assert out.startswith("2 transcripts, 2 tool calls, 2 distinct tools"), out
+
+
+# ---- review 8 (main bcc441c) ----
+
+def test_a_bom_does_not_lose_the_first_tool_call(unused_tools, tmp_path):
+    # Review 8, low 18: a BOM gave 0 tool calls.
+    path = write_jsonl(tmp_path / "t.jsonl", _calls("Bash"))
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert unused_tools.tool_calls(tmp_path) == (1, {"Bash": 1})
+
+
+@pytest.mark.parametrize("settings", ['[1]', '{"permissions": []}', '{"permissions": {"deny": "Bash"}}',
+                                      '﻿{"permissions": {"deny": ["Bash"]}}',
+                                      '{"permissions": {"deny": ["Bash", 7]}}'])   # self-review S9
+def test_a_settings_file_of_another_shape_is_one_line_not_a_traceback(unused_tools, tmp_path, capsys, monkeypatch,
+                                                                       settings):
+    # Review 8, low 18 other hit: .get on a list raised AttributeError, a deny string was
+    # read letter by letter, and a BOM was a read error.
+    write_jsonl(tmp_path / "t.jsonl", _calls("Bash"))
+    user_settings = tmp_path / "user-settings.json"
+    user_settings.write_text(settings, encoding="utf-8")
+    monkeypatch.setattr(unused_tools, "USER_SETTINGS", user_settings)
+    code = unused_tools.main([str(tmp_path)])
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    if settings.startswith("﻿"):
+        assert code == 0 and "Bash: called 1 time(s)" in captured.out, captured
+    else:
+        assert code == 1 and captured.err.startswith("error:") and captured.err.count("\n") == 1, captured

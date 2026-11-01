@@ -136,3 +136,183 @@ def test_a_path_holding_a_nul_byte_passes_silently(keyline_hook, tmp_path, monke
     event = {"tool_name": "Write", "cwd": str(tmp_path), "tool_input": {"file_path": str(tmp_path / "x\0.md")}}
     assert run_main(keyline_hook, monkeypatch, event) == 0
     assert capsys.readouterr().err == ""
+
+
+# ---- review 8 (main bcc441c) ----
+
+WORDS = {"please", "wait", "deploy", "today", "buy", "milk", "ignore", "list"}
+
+
+def notes_project(keyline_hook, tmp_path, monkeypatch):
+    """A project with a notes/ folder; the lint's word list is a fixed set (no tiktoken)."""
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    monkeypatch.setattr(keyline_hook.keyline_lint, "load_words", lambda: set(WORDS))
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    return notes
+
+
+def edit(keyline_hook, monkeypatch, path, argv=()):
+    return run_main(keyline_hook, monkeypatch, {"tool_name": "Write", "tool_input": {"file_path": str(path)}}, argv)
+
+
+def test_a_note_that_is_not_utf8_is_named_once_without_a_stray_colon(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 8, low 5: "cannot read: <path> is not UTF-8".
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_bytes(b"caf\xe9\n")
+    assert edit(keyline_hook, monkeypatch, note) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"keyline hook: {note} is not UTF-8") and "read:" not in err
+    assert err.count(str(note)) == 1
+
+
+def test_a_rendering_that_is_not_utf8_is_not_blamed_on_the_note(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 8, low 5: "cannot read <note>: <rendering> is not UTF-8".
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    (notes / "c.he.txt").write_bytes(b"\xff\n")
+    assert edit(keyline_hook, monkeypatch, note) == 1
+    err = capsys.readouterr().err
+    assert "c.he.txt is not UTF-8" in err and str(note) not in err
+
+
+@pytest.mark.parametrize("name, data", [
+    (".gitignore", b"# Ignore list\n"),
+    (".DS_Store", b"\xff\x00\n"),
+    (".obsidian/workspace.md", b"# please wait\n"),
+])
+def test_a_dotfile_under_notes_is_not_a_note(keyline_hook, tmp_path, monkeypatch, capsys, name, data):
+    # Review 8, low 11: .gitignore failed on "furniture: header", .DS_Store on "cannot read".
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    path = notes / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    assert edit(keyline_hook, monkeypatch, path) == 0
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("argv", [["--watch"], ["--watch", ""], ["--wacth", "PROGRESS.md"], ["extra"]])
+def test_a_bad_hook_argument_is_reported_not_ignored(keyline_hook, tmp_path, monkeypatch, capsys, argv):
+    # Review 8, low 12: these fell back to the notes rule without a word.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("please wait\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note, argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("keyline hook:") and err.count("\n") == 1 and "Traceback" not in err
+
+
+def test_an_inconclusive_rendering_alone_does_not_say_the_note_breaks_the_rules(keyline_hook, tmp_path, monkeypatch,
+                                                                               capsys):
+    # Review 8, low 13.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("please wait\n", encoding="utf-8")
+    (notes / "c.he.txt").write_text("נא להמתין\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note) == 2
+    err = capsys.readouterr().err
+    assert "INCONCLUSIVE" in err and "breaks the Keyline rules" not in err
+
+
+def test_a_lint_finding_still_says_the_note_breaks_the_rules(keyline_hook, tmp_path, monkeypatch, capsys):
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("- please wait\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note) == 2
+    assert "breaks the Keyline rules" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("suffix", [".he.md", ".he.keyline"])
+def test_a_rendering_in_markdown_or_keyline_is_checked_not_linted(keyline_hook, tmp_path, monkeypatch, capsys,
+                                                                  suffix):
+    # Review 8, low 14: only .he.txt counted, so b.he.md was linted as a note and never checked.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "b.md"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    rendering = notes / ("b" + suffix)
+    rendering.write_text("**לפרוס** v2 היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, rendering) == 0, capsys.readouterr().err
+    rendering.write_text("לפרוס היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note) == 2
+    assert "FAIL" in capsys.readouterr().err
+
+
+def test_a_rendering_is_checked_against_every_note_with_its_stem(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 8, low 14: c.he.txt was checked against c.txt only, so a mismatch with c.md passed.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    (notes / "c.txt").write_text("deploy v2 today\n", encoding="utf-8")
+    (notes / "c.md").write_text("deploy v3 today\n", encoding="utf-8")
+    rendering = notes / "c.he.txt"
+    rendering.write_text("לפרוס v2 היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, rendering) == 2
+    err = capsys.readouterr().err
+    assert "c.md" in err and "v3" in err
+
+
+def test_a_rendering_named_in_capitals_is_found_from_its_note(keyline_hook, tmp_path, monkeypatch, capsys):
+    # Review 8, low 40: is_rendering ignored case, the sibling lookup did not.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    (notes / "c.HE.TXT").write_text("לפרוס היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note) == 2
+    assert "c.HE.TXT" in capsys.readouterr().err
+
+
+# ---- self-review of the review 8 fixes ----
+
+@pytest.mark.parametrize("stem", ["data.json", "v1.2"])
+def test_a_rendering_is_not_checked_against_a_file_that_is_not_a_note(keyline_hook, tmp_path, monkeypatch, capsys,
+                                                                      stem):
+    # S10: editing data.json.he.txt checked it against data.json (exit 2), while editing
+    # data.json checked nothing: a file is a note only with a note suffix, in both directions.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    other = notes / stem
+    other.write_text("deploy v9 today\n", encoding="utf-8")
+    rendering = notes / (stem + ".he.txt")
+    rendering.write_text("לפרוס היום\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, other) == 0
+    assert edit(keyline_hook, monkeypatch, rendering) == 0
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("argv", [["--watch", "--print-config"], ["--watch", " "], ["--watch", "--watch"]])
+def test_a_watch_pattern_that_is_an_option_or_blank_is_refused(keyline_hook, tmp_path, monkeypatch, capsys, argv):
+    # S11: "--watch --print-config" took --print-config as a pattern and exited 0.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("please wait\n", encoding="utf-8")
+    assert edit(keyline_hook, monkeypatch, note, argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("keyline hook:") and err.count("\n") == 1
+
+
+def test_a_rendering_that_cannot_be_opened_is_named_with_the_reason(keyline_hook, tmp_path, monkeypatch, capsys):
+    # S9: the e.filename branch of the read-error message had no test.
+    import errno
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    rendering = notes / "c.he.txt"
+    rendering.write_text("לפרוס v2 היום\n", encoding="utf-8")
+    real_read = keyline_hook.keyline_check.read
+
+    def read(path):
+        if path == rendering:
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real_read(path)
+    monkeypatch.setattr(keyline_hook.keyline_check, "read", read)
+    assert edit(keyline_hook, monkeypatch, note) == 1
+    assert capsys.readouterr().err == f"keyline hook: cannot read {rendering}: Permission denied\n"
+
+
+def test_a_folder_named_like_a_rendering_is_not_a_rendering(keyline_hook, tmp_path, monkeypatch, capsys):
+    # S9: the is_file() check in _siblings had no test.
+    notes = notes_project(keyline_hook, tmp_path, monkeypatch)
+    note = notes / "c.txt"
+    note.write_text("deploy v2 today\n", encoding="utf-8")
+    (notes / "c.he.txt").mkdir()
+    assert edit(keyline_hook, monkeypatch, note) == 0
+    assert capsys.readouterr().err == ""

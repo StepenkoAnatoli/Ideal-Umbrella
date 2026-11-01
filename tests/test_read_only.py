@@ -180,8 +180,8 @@ def test_a_read_only_file_with_nothing_to_write_does_not_stop_add_to_repo(add_to
 @pytest.mark.parametrize("name", ["CLAUDE.md", "settings.json", "ballast/install-record.json"])
 def test_an_uninstall_stopped_by_a_read_only_file_is_finished_once_it_is_writable(
         install_module, uninstall_module, windows_read_only, tmp_path, name):
-    # Uninstall checks no write access up front (it cannot tell which files it will leave as
-    # they are before it works through them); a stop part way must still be finished by a rerun.
+    # Uninstall now refuses a read-only file before its first write (review 8, low 25); a stop
+    # at the file must still be finished by a rerun once it is writable.
     home = tmp_path / "home"
     claude(home).mkdir(parents=True)
     (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
@@ -406,3 +406,36 @@ def test_a_symlink_whose_delete_is_refused_never_has_its_target_chmodded(install
     with pytest.raises(PermissionError):
         install_module.remove(link)
     assert link.is_symlink() and target.stat().st_mode == mode
+
+
+@pytest.mark.parametrize("name", ["CLAUDE.md", "settings.json", "ballast/install-record.json"])
+def test_a_read_only_file_stops_uninstall_before_any_write(install_module, uninstall_module, windows_read_only,
+                                                           tmp_path, name):
+    # Review 8, low 25 (old #6, the uninstall side): uninstall had no read-only check before its
+    # first write, so a read-only settings.json stopped it after CLAUDE.md was reverted and a
+    # settings backup written. Halfway state; the neighbour of install's check.
+    home = tmp_path / "home"
+    claude(home).mkdir(parents=True)
+    (claude(home) / "CLAUDE.md").write_bytes(b"mine\n")
+    (claude(home) / "settings.json").write_text('{"model": "opus"}\n', encoding="utf-8")
+    install_module.install(home)
+    (claude(home) / "ballast" / "context_check.log").write_text("a line\n", encoding="utf-8")   # deleted first
+    read_only(claude(home) / name)
+    before = snapshot(home)
+    with pytest.raises(PermissionError, match="read-only"):
+        uninstall_module.uninstall(home)
+    assert snapshot(home) == before
+
+
+def test_a_read_only_claude_md_uninstall_leaves_as_is_does_not_stop_it(install_module, uninstall_module,
+                                                                      windows_read_only, tmp_path):
+    # Only a file the run would change is refused: a CLAUDE.md with no section of ours stays.
+    home = tmp_path / "home"
+    claude(home).mkdir(parents=True)
+    install_module.install(home)
+    md = claude(home) / "CLAUDE.md"
+    md.write_bytes(b"my own file now\n")
+    read_only(md)
+    uninstall_module.uninstall(home)
+    assert md.read_bytes() == b"my own file now\n"
+    assert not (claude(home) / "ballast" / "context_check.py").exists()

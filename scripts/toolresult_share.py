@@ -20,22 +20,30 @@ def size(c):
             if not isinstance(b, dict):
                 continue
             if b.get("type") == "text":
-                n += len(b.get("text", ""))
+                n += text_len(b.get("text"))
             elif b.get("type") != "image":
                 n += len(json.dumps(b))
         return n
     return len(json.dumps(c)) if c is not None else 0
 
+def text_len(t):
+    return len(t) if isinstance(t, str) else 0     # a malformed text field (null, a number) counts 0
+
+def key(v):
+    return v if isinstance(v, str) else None       # a list id is unhashable; a number is no tool id
+
 def short(name):
-    if name and name.startswith("mcp__"):
+    if not isinstance(name, str) or not name:
+        return "?"
+    if name.startswith("mcp__"):
         return "mcp:" + name.split("__")[-1]
-    return name or "?"
+    return name
 
 names, res, cnt, other = {}, collections.Counter(), collections.Counter(), collections.Counter()
 big = collections.Counter()
 for path in sys.argv[1:]:
     try:
-        f = open(path, encoding="utf-8", errors="replace")
+        f = open(path, encoding="utf-8-sig", errors="replace")   # -sig: a BOM would lose line 1
     except OSError as e:
         sys.exit(f"error: {e}")
     with f:
@@ -49,7 +57,8 @@ for path in sys.argv[1:]:
             m = e.get("message")
             if not isinstance(m, dict):
                 continue
-            role, c = m.get("role", "?"), m.get("content")
+            role, c = m.get("role"), m.get("content")
+            role = role if isinstance(role, str) else "?"
             if isinstance(c, str):
                 other[role + "_text"] += len(c)
                 continue
@@ -60,19 +69,20 @@ for path in sys.argv[1:]:
                     continue
                 t = b.get("type")
                 if t == "tool_use":
-                    names[b.get("id")] = b.get("name")
+                    if key(b.get("id")) is not None:
+                        names[b.get("id")] = b.get("name")
                     other["tool_use_input"] += len(json.dumps(b.get("input")))
                 elif t == "tool_result":
-                    n = short(names.get(b.get("tool_use_id")))
+                    n = short(names.get(key(b.get("tool_use_id"))))
                     s = size(b.get("content"))
                     res[n] += s
                     cnt[n] += 1
                     if s > 10000:
                         big[n] += s
                 elif t == "text":
-                    other[role + "_text"] += len(b.get("text", ""))
+                    other[role + "_text"] += text_len(b.get("text"))
                 elif t == "thinking":
-                    other["thinking(not counted)"] += len(b.get("thinking", ""))
+                    other["thinking(not counted)"] += text_len(b.get("thinking"))
 
 tr = sum(res.values())
 total = tr + sum(v for k, v in other.items() if not k.startswith("thinking"))

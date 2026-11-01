@@ -62,7 +62,8 @@ def tool_calls(folder):
     called = collections.Counter()
     files = sorted(transcripts(folder))
     for path in files:
-        with open(path, encoding="utf-8", errors="replace") as f:
+        # utf-8-sig: a BOM would otherwise make the first line unreadable JSON.
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
             for line in f:
                 try:
                     event = json.loads(line)
@@ -107,10 +108,15 @@ def main(argv=None):
         print(f"  ... and {len(called) - args.top} more")
 
     try:
-        with open(USER_SETTINGS, encoding="utf-8") as f:
-            denied = json.load(f).get("permissions", {}).get("deny", [])
+        with open(USER_SETTINGS, encoding="utf-8-sig") as f:
+            settings = json.load(f)
     except (OSError, ValueError, RecursionError) as e:
         print(f"error: cannot read {USER_SETTINGS}: {e}", file=sys.stderr)
+        return 1
+    permissions = settings.get("permissions", {}) if isinstance(settings, dict) else None
+    denied = permissions.get("deny", []) if isinstance(permissions, dict) else None
+    if not isinstance(denied, list) or not all(isinstance(t, str) for t in denied):
+        print(f"error: {USER_SETTINGS}: permissions.deny is not a list of tool names", file=sys.stderr)
         return 1
     print("\nDenied in config/user-settings.json:")
     for tool in denied:

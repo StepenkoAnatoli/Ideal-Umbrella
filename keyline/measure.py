@@ -2,10 +2,15 @@
 
 Usage:
   python measure.py FILE_OR_FOLDER [FILE_OR_FOLDER ...]
-A folder is walked recursively (hidden folders, cache/, __pycache__/ and node_modules/ skipped).
-With exactly two files, a change line is printed. Files are counted exactly as stored (a UTF-8
-BOM is dropped; line endings and a trailing newline are counted). These are OpenAI tokenizers:
-a proxy for Claude's tokenizer, which is not public.
+A folder is walked recursively. Hidden files and folders, cache/, __pycache__/ and node_modules/
+are skipped, and a symlinked sub-folder is not followed (its files would be counted twice); a
+symlinked file in the folder, and a symlink named as an argument, are followed.
+With exactly two file arguments that were both counted, a change line is printed. Files are
+counted exactly as stored (a UTF-8 BOM is dropped; line endings and a trailing newline are
+counted). These are OpenAI tokenizers: a proxy for Claude's tokenizer, which is not public.
+Exit: 0 every argument was counted; 1 an argument produced no row (a skipped file, an empty
+folder); 2 usage error, an encoding tiktoken cannot load, or an argument that is missing,
+cannot be read or is not a regular file or folder.
 """
 import os
 import stat
@@ -27,6 +32,10 @@ def _unlisted(e):
     print(f"skip (cannot read: {e.strerror or e}): {e.filename}", file=sys.stderr)
 
 
+class NotRegular(OSError):
+    """An argument that exists but is neither a regular file nor a folder (a FIFO, a socket)."""
+
+
 def files_in(arg):
     # os.stat, not is_file()/is_dir(): on Python 3.14 those say False for a path that cannot be
     # looked at (in a folder that cannot be searched), which read as "no such file or folder".
@@ -38,9 +47,10 @@ def files_in(arg):
         out = []
         for root, dirs, names in os.walk(p, onerror=_unlisted):
             dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in SKIP_DIRS)
-            out += [Path(root) / n for n in sorted(names)]
+            out += [Path(root) / n for n in sorted(names) if not n.startswith(".")]
         return out
-    raise FileNotFoundError(arg)
+    raise NotRegular(arg)
+
 
 
 def count(text, encs):
@@ -53,18 +63,29 @@ def main(argv):
     if not argv or argv[0].startswith("-"):
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    encs = [tiktoken.get_encoding("o200k_base"), tiktoken.get_encoding("cl100k_base")]
-    rows = []
+    encs = []
+    for name in ("o200k_base", "cl100k_base"):
+        try:
+            encs.append(tiktoken.get_encoding(name))
+        except Exception as e:   # offline on first use, a proxy, a corrupt cache: any of them
+            print(f"error: tiktoken could not load {name}: {e}", file=sys.stderr)
+            return 2
+    rows, counted, file_args = [], [], 0      # counted: per argument, the number of rows it produced
     for arg in argv:
         try:
             paths = files_in(arg)
         except (FileNotFoundError, NotADirectoryError):
             print(f"error: no such file or folder: {arg}", file=sys.stderr)
             return 2
+        except NotRegular:
+            print(f"error: not a regular file or folder: {arg}", file=sys.stderr)
+            return 2
         except OSError as e:
             # The argument itself cannot be stat'ed (a file in a folder that cannot be searched).
             print(f"error: cannot read {arg}: {e.strerror or e}", file=sys.stderr)
             return 2
+        before = len(rows)
+        file_args += paths == [Path(arg)]          # a walked folder's paths are below it
         for p in paths:
             try:
                 # A named pipe or socket in a walked folder would block the read; a symlink to
@@ -90,19 +111,25 @@ def main(argv):
                 print(f"skip (cannot read: {e.strerror or e}): {p}", file=sys.stderr)
                 continue
             rows.append((p, len(text), *count(text, encs)))
+        counted.append(len(rows) - before)
     print(f"{'o200k':>7} {'cl100k':>7} {'chars':>7}  file")
     for p, chars, o, c in rows:
         print(f"{o:>7} {c:>7} {chars:>7}  {p}")
     if len(rows) > 1:
         print(f"{sum(r[2] for r in rows):>7} {sum(r[3] for r in rows):>7} "
               f"{sum(r[1] for r in rows):>7}  total ({len(rows)} files)")
-    if len(argv) == 2 and len(rows) == 2:
+    # Two file arguments, each counted: a folder holding two files, or a skipped second file,
+    # is not a before/after pair.
+    if len(argv) == 2 and counted == [1, 1] and file_args == 2:
         (_, _, o1, c1), (_, _, o2, c2) = rows
 
         def pct(a, b):
             return f"{(b - a) / a * 100:+.0f}%" if a else "n/a"
         print(f"change: o200k {o1} -> {o2} ({pct(o1, o2)}), cl100k {c1} -> {c2} ({pct(c1, c2)})")
-    return 0
+    empty = [a for a, n in zip(argv, counted) if not n]
+    for arg in empty:
+        print(f"nothing counted for {arg}", file=sys.stderr)
+    return 1 if empty else 0
 
 
 if __name__ == "__main__":
