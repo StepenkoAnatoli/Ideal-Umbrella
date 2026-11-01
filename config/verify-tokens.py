@@ -143,7 +143,10 @@ def main(argv=None):
             print(f"Error counting {path.name}: {e}", file=sys.stderr)
             anth = None
 
-        if anth is not None:
+        if anth == 0:
+            # No ratio to a count of 0 (an empty file, or an API that counts it so).
+            print(f"{path.name:30} {o200k:>7} {cl100k:>7} {anth:>10} {'n/a':>11} {'n/a':>11}")
+        elif anth is not None:
             ratio_o = o200k / anth
             ratio_c = cl100k / anth
             ratios_o200k.append(ratio_o)
@@ -159,10 +162,12 @@ def main(argv=None):
         print(f"{'AVERAGE':30} {'':>7} {'':>7} {'':>10} {avg_o:>10.2f}x {avg_c:>10.2f}x")
         print(f"\nInterpretation: tiktoken o200k_base is ~{avg_o:.0%} of Claude tokens")
         print(f"                tiktoken cl100k_base is ~{avg_c:.0%} of Claude tokens")
-        print(f"\nSo multiply o200k counts by ~{1/avg_o:.2f} to estimate Claude tokens.")
-        print(f"   Multiply cl100k counts by ~{1/avg_c:.2f} to estimate Claude tokens.")
+        if avg_o and avg_c:   # 0 when tiktoken counted nothing (empty files)
+            print(f"\nSo multiply o200k counts by ~{1/avg_o:.2f} to estimate Claude tokens.")
+            print(f"   Multiply cl100k counts by ~{1/avg_c:.2f} to estimate Claude tokens.")
         return 0
-    print("Error: no file was counted by the API; see the errors above", file=sys.stderr)
+    print("Error: no file was counted by the API (see the errors above), or every count was 0",
+          file=sys.stderr)
     return 1
 
 

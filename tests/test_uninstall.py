@@ -2531,3 +2531,277 @@ def test_settings_created_false_in_a_record_is_read_as_missing(install_module, u
     install_module.install(home)
     uninstall_module.uninstall(home)
     assert read_settings(home) == {}
+
+
+# Review 9, B1-B4 and B6-B7: a settings.json counts as created by the install only while it is
+# the file the install created: one that still holds something the install wrote (its hook
+# entry, or a key it added with the value it wrote). A file that was gone or that the user
+# wrote is not undone against, or deleted for, a "settings_created" kept from before.
+
+def _record(home):
+    return json.loads((home / ".claude" / "ballast" / "install-record.json").read_text(encoding="utf-8"))
+
+
+def _write_settings(home, data):
+    settings_file(home).write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_a_settings_json_the_user_wrote_after_deleting_the_created_one_is_kept(install_module, uninstall_module, tmp_path):
+    # Review 9, B1: the second install kept "settings_created" from the first, so uninstall
+    # deleted the user's file ("the install created it"), and the first-wins deny list took the
+    # user's own Artifact deny for the installer's.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).unlink()
+    mine = {"permissions": {"deny": ["Artifact"]}}
+    _write_settings(home, mine)
+    install_module.install(home)
+    assert "settings_created" not in _record(home)
+    changes, _ = uninstall_module.uninstall(home)
+    assert read_settings(home) == mine, changes
+    assert "settings.json deleted (the install created it)" not in changes
+    assert any(c.startswith("settings backup: ") for c in changes), changes
+
+
+def test_a_settings_json_the_user_made_after_a_failed_first_install_is_kept(install_module, uninstall_module, tmp_path,
+                                                                            monkeypatch):
+    # Review 9, B1 variant: the first install stopped at its settings write, so its record said
+    # "settings_created"; the user then made the file.
+    home = tmp_path / "home"
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    with monkeypatch.context() as m:
+        m.setattr(install_module, "replace_json", fail)
+        with pytest.raises(OSError):
+            install_module.install(home)
+    assert _record(home).get("settings_created") is True
+    mine = {"permissions": {"deny": ["Artifact"]}}
+    _write_settings(home, mine)
+    install_module.install(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == mine
+
+
+def test_an_install_after_a_failed_first_install_says_nothing_of_a_settings_json_away(install_module, uninstall_module,
+                                                                                      tmp_path, monkeypatch):
+    # Review 9, B6: the rerun said "settings.json not found, though the install record holds
+    # changes to it", of a file that was never written, and did not mark the file it then wrote.
+    home = tmp_path / "home"
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    with monkeypatch.context() as m:
+        m.setattr(install_module, "replace_json", fail)
+        with pytest.raises(OSError):
+            install_module.install(home)
+    _, notices = install_module.install(home)
+    assert not any("not found" in n for n in notices), notices
+    assert _record(home).get("settings_created") is True
+    changes, _ = uninstall_module.uninstall(home)
+    assert not settings_file(home).exists(), changes
+
+
+def test_a_users_own_empty_settings_json_is_not_deleted(install_module, uninstall_module, tmp_path):
+    # Review 9, B7: the user replaced the created file with their own {}; uninstall deleted it.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).unlink()
+    _write_settings(home, {})
+    changes, _ = uninstall_module.uninstall(home)
+    assert read_settings(home) == {}, changes
+    assert "settings.json deleted (the install created it)" not in changes
+
+
+def test_a_created_settings_json_an_uninstall_deleted_is_dropped_also_with_a_replaced_value(
+        install_module, uninstall_module, tmp_path):
+    # Review 9, B2 (M6): the record part of a created settings.json that is gone was kept when
+    # it held a value a --force install replaced, so a settings.json the user made later was
+    # undone against it and deleted.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 123
+    _write_settings(home, settings)
+    install_module.install(home, force=True)
+    settings = read_settings(home)
+    del settings["autoCompactWindow"]
+    _write_settings(home, settings)
+    hook = home / ".claude" / "ballast" / "context_check.py"
+    hook.unlink()
+    hook.mkdir()
+    with pytest.raises(OSError):
+        uninstall_module.uninstall(home)
+    assert not settings_file(home).exists()
+    hook.rmdir()
+    _, notices = uninstall_module.uninstall(home)
+    assert "settings.json not found; the install created it, so nothing in it is left to undo" in notices, notices
+    mine = {"permissions": {"deny": ["Artifact"]}, "skillListingBudgetFraction": 0.005}
+    _write_settings(home, mine)
+    assert uninstall_module.uninstall(home) == ([], [])
+    assert read_settings(home) == mine
+
+
+def test_an_install_after_the_created_settings_json_was_left_and_deleted_marks_the_new_one(
+        install_module, uninstall_module, tmp_path):
+    # Review 9, B3: uninstall left a created settings.json holding a value the user changed; the
+    # user deleted it; the next install read the leftover record as a settings.json away, did
+    # not mark the file it wrote as created, and the next uninstall left {} and a backup.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 123
+    _write_settings(home, settings)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 123}
+    settings_file(home).unlink()
+    _, notices = install_module.install(home)
+    assert not any("not found" in n for n in notices), notices
+    assert _record(home).get("settings_created") is True
+    changes, _ = uninstall_module.uninstall(home)
+    assert not settings_file(home).exists(), changes
+    assert not any(c.startswith("settings backup") for c in changes), changes
+
+
+def test_an_install_on_the_users_file_after_an_uninstall_does_not_keep_settings_created(
+        install_module, uninstall_module, tmp_path):
+    # Review 9, B4 (M2): after an uninstall only this run's finding counts; the leftover
+    # "settings_created" of a file the uninstall left must not mark the user's later file.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 123
+    _write_settings(home, settings)
+    uninstall_module.uninstall(home)
+    assert _record(home).get("settings_created") is True
+    _write_settings(home, {})
+    install_module.install(home)
+    assert "settings_created" not in _record(home)
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {}
+
+
+def test_an_install_while_settings_json_is_away_sees_a_record_without_added_keys(install_module, tmp_path):
+    # Review 9, B4 (M7): a record whose keys were all there already holds only the deny list.
+    home = tmp_path / "home"
+    seed(home, {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005})
+    install_module.install(home)
+    assert _record(home)["added_keys"] == []
+    settings_file(home).rename(tmp_path / "settings.json")
+    _, notices = install_module.install(home)
+    assert any(n.startswith("settings.json not found, though the install record holds changes") for n in notices), notices
+    assert "settings_created" not in _record(home)
+
+
+def test_settings_missing_at_uninstall_after_an_install_without_force_are_kept(install_module, uninstall_module, tmp_path):
+    # Review 9, B4 (M13): a record with no replaced value still holds changes to a file away.
+    home = tmp_path / "home"
+    seed(home, {"mine": 1})
+    install_module.install(home)
+    away = tmp_path / "settings.json"
+    settings_file(home).rename(away)
+    _, notices = uninstall_module.uninstall(home)
+    assert "settings.json not found; settings left for a later run" in notices, notices
+    away.rename(settings_file(home))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == {"mine": 1}
+
+
+def test_settings_missing_at_uninstall_keep_which_containers_were_there(install_module, uninstall_module, tmp_path):
+    # Review 9, B4 (M15): the leftover record must keep "created", or the later run takes the
+    # user's own empty permissions object for one the install made.
+    home = tmp_path / "home"
+    before = {"autoCompactWindow": 123, "permissions": {}}
+    seed(home, before)
+    install_module.install(home, force=True)
+    away = tmp_path / "settings.json"
+    settings_file(home).rename(away)
+    uninstall_module.uninstall(home)
+    away.rename(settings_file(home))
+    uninstall_module.uninstall(home)
+    assert read_settings(home) == before
+
+
+def test_a_backup_delete_is_not_a_claude_md_change(uninstall_module):
+    # Review 9, B4 (M8): deleting a backup of CLAUDE.md leaves CLAUDE.md as it is, so a
+    # read-only CLAUDE.md must not stop that run.
+    assert uninstall_module._changes_claude_md("CLAUDE.md deleted")
+    assert not uninstall_module._changes_claude_md(
+        "CLAUDE.md backup CLAUDE.md.bak-20250101-000000 deleted (CLAUDE.md holds the same bytes)")
+
+
+def test_a_failed_settings_write_takes_back_its_new_backup(install_module, tmp_path, monkeypatch):
+    # Review 9, B4 (M10): the backup this call made is deleted and no longer named in progress.
+    path = tmp_path / "settings.json"
+    path.write_text("{}", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(install_module, "_write_json", fail)
+    progress = []
+    with pytest.raises(OSError):
+        install_module.replace_json(path, {"a": 1}, progress)
+    assert progress == []
+    assert list(tmp_path.glob("settings.json.bak-*")) == []
+
+
+def test_a_failed_settings_write_keeps_an_earlier_backup_it_reused(install_module, tmp_path, monkeypatch):
+    # Review 9, B4 (M14): a backup an earlier run made, holding the same bytes, is reused; it is
+    # not this call's to delete.
+    path = tmp_path / "settings.json"
+    path.write_text("{}", encoding="utf-8")
+    earlier = tmp_path / "settings.json.bak-20250101-000000"
+    earlier.write_text("{}", encoding="utf-8")
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(install_module, "_write_json", fail)
+    progress = []
+    with pytest.raises(OSError):
+        install_module.replace_json(path, {"a": 1}, progress)
+    assert earlier.read_text(encoding="utf-8") == "{}"
+    assert progress == [f"settings backup: {earlier.name}"]
+
+
+@pytest.mark.parametrize("value", ['"false"', "0", "[]"])
+def test_an_uninstalled_field_that_is_not_true_or_false_is_refused(install_module, uninstall_module, tmp_path, capsys,
+                                                                   value):
+    # Review 9, I-3: "uninstalled" was read for its truth value, so "false" (a hand edit) read as
+    # true and the next install treated the record as one an uninstall left.
+    home = tmp_path / "home"
+    install_module.install(home)
+    path = home / ".claude" / "ballast" / "install-record.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(dict(record, uninstalled=json.loads(value))), encoding="utf-8")
+    for module in (install_module, uninstall_module):
+        assert module.main(["--home", str(home)]) == 1
+        err = capsys.readouterr().err
+        assert '"uninstalled" must be true or false' in err, err
+
+
+def test_a_created_settings_json_without_the_hook_entry_is_still_the_installers(install_module, uninstall_module, tmp_path):
+    # Review 9, B1 fix: the file is the one the install created while it holds a key the install
+    # added with its value, also with the hook entry and deny list taken out by hand; started
+    # afresh, the record would forget the keys and uninstall would leave them.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    del settings["hooks"], settings["permissions"]
+    _write_settings(home, settings)
+    install_module.install(home)
+    assert _record(home).get("settings_created") is True
+    changes, _ = uninstall_module.uninstall(home)
+    assert not settings_file(home).exists(), changes
+
+
+def test_an_install_after_an_uninstall_keeps_what_the_uninstall_left(install_module, uninstall_module, tmp_path):
+    # Review 9, B1 fix: after an uninstall the file holds nothing the install wrote (the undo took
+    # it out), so that is no sign of a file the user wrote; the leftover record part stays.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 123
+    _write_settings(home, settings)
+    uninstall_module.uninstall(home)
+    install_module.install(home)
+    assert "autoCompactWindow" in _record(home)["added_keys"]

@@ -192,6 +192,40 @@ def _is_ours(entry):
                for h in _hook_entries(entry))
 
 
+def has_our_hook(settings):
+    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry."""
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return any(_is_ours(entry) for entries in hooks.values() if isinstance(entries, list)
+               for entry in entries)
+
+
+def holds_install(settings, record):
+    """True when settings still holds something an install wrote: its hook entry, a key the
+    record says it added with the value it wrote, or every tool it added to permissions.deny.
+    A settings.json the record marks as created is that file only while this holds; one with
+    none of them is a file the user wrote since (the created one was deleted), and is neither
+    deleted nor marked as created on its account."""
+    if not isinstance(settings, dict) or not isinstance(record, dict):
+        return False
+    if has_our_hook(settings):
+        return True
+    installed = record.get("installed")
+    if isinstance(installed, dict) and any(
+            key in installed and key in settings and settings[key] == installed[key]
+            for key in record.get("added_keys", [])):
+        return True
+    permissions = settings.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    added = record.get("deny_added")
+    return bool(added) and isinstance(deny, list) and all(tool in deny for tool in added)
+
+
+# The record fields that describe settings.json (uninstall keeps them all while the file is away).
+SETTINGS_FIELDS = ("added_keys", "replaced", "installed", "deny_added", "created", "settings_created")
+
+
 def _template_hook(entries):
     for entry in entries:
         for hook in _hook_entries(entry):
@@ -901,6 +935,7 @@ _RECORD_FIELDS = {
     "pending": ("an object", lambda v: isinstance(v, dict)),
     "claude_md": ("an object or null", lambda v: v is None or isinstance(v, dict)),
     "settings_created": ("true or false", lambda v: isinstance(v, bool)),
+    "uninstalled": ("true or false", lambda v: isinstance(v, bool)),
 }
 
 
@@ -1050,6 +1085,15 @@ def install(home, force=False, progress=None, config_dir=None):
     hook_bytes = _read_bytes(HOOK_SRC)
     hook_exists = paths["hook"].exists()
     current_hook = _read_bytes(paths["hook"]) if hook_exists else None
+    # The settings.json the record marks as created is gone (deleted, or never written by a
+    # first install that stopped at it), or replaced by one the user wrote: the record's part
+    # for it describes no file there is, so this run starts that part afresh. Kept, it would mark
+    # the user's file as created (uninstall deletes it) or count their deny entries as ours;
+    # and a missing file it describes is not one that is away.
+    if old_record.get("settings_created") is True and (
+            not paths["settings"].exists()
+            or (not old_record.get("uninstalled") and not holds_install(existing, old_record))):
+        old_record = {k: v for k, v in old_record.items() if k not in SETTINGS_FIELDS}
     setting_changes, setting_notices = merge_settings(existing, template, home, force, record,
                                                       old_record.get("installed"), config_dir)
     notices.extend(setting_notices)

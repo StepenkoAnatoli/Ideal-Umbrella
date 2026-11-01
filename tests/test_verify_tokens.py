@@ -25,6 +25,7 @@ def test_unreadable_file_is_reported_not_raised(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setattr(module, "anthropic", type("A", (), {"Anthropic": Client}))
     monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))   # without tiktoken too
     bad = tmp_path / "latin.txt"
     bad.write_bytes(b"caf\xe9\n")
     folder = tmp_path / "folder"
@@ -74,6 +75,7 @@ def test_no_api_count_at_all_is_exit_1(tmp_path, capsys, monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(module, "count_anthropic", fail)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))   # without tiktoken too
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
     assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
@@ -115,6 +117,7 @@ def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys,
     module = load_module("verify_tokens", "config/verify-tokens.py")
     _client(module, monkeypatch)
     monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 1)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))   # without tiktoken too
     hidden = tmp_path / "blocked" / "hidden.txt"
     hidden.parent.mkdir()
     hidden.write_text("hello\n", encoding="utf-8")
@@ -127,3 +130,29 @@ def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys,
     out = capsys.readouterr()
     assert "Traceback" not in out.err and "not found" not in out.err, out.err
     assert "Error reading" in out.err and "hidden.txt" in out.err and "good.txt" in out.out
+
+
+def test_an_api_count_of_0_is_not_a_division_by_zero(tmp_path, capsys, monkeypatch):
+    # Review 9, I-2: the ratio divided by the API count, so 0 raised ZeroDivisionError.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 0)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
+    out = capsys.readouterr()
+    assert "n/a" in out.out and "no file was counted" in out.err, out
+
+
+def test_a_tiktoken_count_of_0_is_not_a_division_by_zero(tmp_path, capsys, monkeypatch):
+    # Review 9, I-2 other hit: "multiply by 1/average" divided by an average ratio of 0 (empty files).
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    _client(module, monkeypatch)
+    monkeypatch.setattr(module, "count_anthropic", lambda client, text, model: 3)
+    monkeypatch.setattr(module, "count_tiktoken", lambda text: (0, 0))
+    good = tmp_path / "good.txt"
+    good.write_text("fine\n", encoding="utf-8")
+    assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 0
+    out = capsys.readouterr()
+    assert "AVERAGE" in out.out and "Traceback" not in out.err, out

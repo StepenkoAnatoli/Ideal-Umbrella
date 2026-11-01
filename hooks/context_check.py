@@ -133,7 +133,12 @@ def parse_int(name, default):
     if raw is None or not raw.strip():
         return default
     fallback = "ignoring it" if default == 0 else f"using {default}"
+    # ASCII digits only, as add_to_repo.py's --handoff-at: int() alone also takes "1_000" and
+    # other scripts' digits. Spaces around the number (a value read from a file) are fine.
+    digits = raw.strip().lstrip("+-")
     try:
+        if not (digits.isascii() and digits.isdigit()):
+            raise ValueError(raw)
         value = int(raw)
     except ValueError:
         warn(f"{name}={raw!r} is not an integer; {fallback}")
