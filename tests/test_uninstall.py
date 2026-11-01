@@ -2805,3 +2805,156 @@ def test_an_install_after_an_uninstall_keeps_what_the_uninstall_left(install_mod
     uninstall_module.uninstall(home)
     install_module.install(home)
     assert "autoCompactWindow" in _record(home)["added_keys"]
+
+
+# Review 9 self-review, SB1-SB3: a created settings.json whose added keys the user set and a
+# --force install then took back holds its installed values as replaced keys; and one that no
+# longer holds anything the install wrote keeps the values the uninstall compares by value.
+
+def _forced_over_users_values(install_module, home):
+    """Install with no settings.json; the user sets both keys; install --force takes them back."""
+    install_module.install(home)
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 123
+    settings["skillListingBudgetFraction"] = 0.5
+    _write_settings(home, settings)
+    install_module.install(home, force=True)
+    assert _record(home)["replaced"] == {"autoCompactWindow": 123, "skillListingBudgetFraction": 0.5}
+
+
+def test_a_created_settings_json_holding_replaced_keys_is_still_the_installers(install_module, uninstall_module,
+                                                                              tmp_path):
+    # SB1: holds_install checked only added_keys, so the reinstall dropped the settings part of the
+    # record; the uninstall then left 123 and 0.5 unrestored and five of the installer's deny tools.
+    home = tmp_path / "home"
+    _forced_over_users_values(install_module, home)
+    settings = read_settings(home)
+    del settings["hooks"]
+    settings["permissions"]["deny"].remove("Artifact")
+    _write_settings(home, settings)
+    install_module.install(home)
+    record = _record(home)
+    assert record["replaced"] == {"autoCompactWindow": 123, "skillListingBudgetFraction": 0.5}, record
+    assert record.get("settings_created") is True, record
+    changes, _ = uninstall_module.uninstall(home)
+    assert read_settings(home) == {"autoCompactWindow": 123, "skillListingBudgetFraction": 0.5}, changes
+
+
+def test_a_created_settings_json_holding_nothing_installed_keeps_the_values_to_compare(install_module,
+                                                                                      uninstall_module, tmp_path):
+    # SB1 (b): a created file that fails holds_install drops only settings_created, deny_added and
+    # created from the record; the keys and values uninstall compares by value stay, so a value the
+    # user puts back is still undone. The deny tools of such a file stay (README, Undo).
+    home = tmp_path / "home"
+    _forced_over_users_values(install_module, home)
+    settings = read_settings(home)
+    del settings["hooks"]
+    settings["permissions"]["deny"].remove("Artifact")
+    settings["autoCompactWindow"] = 7
+    settings["skillListingBudgetFraction"] = 0.7
+    _write_settings(home, settings)
+    install_module.install(home)
+    record = _record(home)
+    assert "settings_created" not in record, record
+    assert record["replaced"] == {"autoCompactWindow": 123, "skillListingBudgetFraction": 0.5}, record
+    assert record["installed"] == {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005}, record
+    assert record["deny_added"] == ["Artifact"], record
+    # Not missing, which reads as a record from before the field (any container emptied goes).
+    assert record["created"] == ["hooks", "hooks.UserPromptSubmit"], record
+    settings = read_settings(home)
+    settings["autoCompactWindow"] = 250000
+    _write_settings(home, settings)
+    changes, _ = uninstall_module.uninstall(home)
+    after = read_settings(home)
+    assert after["autoCompactWindow"] == 123, changes
+    assert after["skillListingBudgetFraction"] == 0.7, changes
+    assert after["permissions"]["deny"] == ["ScheduleWakeup", "ReportFindings", "SearchPlugins",
+                                            "SuggestPluginInstall", "SuggestSkills"], changes
+
+
+def test_holds_install_counts_the_hook_entry_alone(install_module):
+    # SB2: kills a mutant without the hook check.
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "python3 context_check.py"}]}]}}
+    assert install_module.holds_install(settings, {}) is True
+    assert install_module.holds_install({"hooks": {"UserPromptSubmit": []}}, {}) is False
+
+
+def test_holds_install_counts_an_added_key_only_with_its_installed_value(install_module):
+    # SB2: kills a mutant without the value check.
+    record = {"added_keys": ["autoCompactWindow"], "installed": {"autoCompactWindow": 250000}}
+    assert install_module.holds_install({"autoCompactWindow": 250000}, record) is True
+    assert install_module.holds_install({"autoCompactWindow": 1}, record) is False
+
+
+def test_holds_install_counts_a_replaced_key_with_its_installed_value(install_module):
+    # SB1 (a).
+    record = {"added_keys": [], "replaced": {"autoCompactWindow": 123},
+              "installed": {"autoCompactWindow": 250000}}
+    assert install_module.holds_install({"autoCompactWindow": 250000}, record) is True
+    assert install_module.holds_install({"autoCompactWindow": 123}, record) is False
+
+
+def test_holds_install_needs_a_deny_tool_the_install_added(install_module):
+    # SB2: kills a mutant without the bool(added) guard: all() of no tools is true.
+    assert install_module.holds_install({"permissions": {"deny": []}}, {"deny_added": []}) is False
+    assert install_module.holds_install({"permissions": {"deny": ["X"]}}, {}) is False
+    assert install_module.holds_install({"permissions": {"deny": ["X", "Y"]}}, {"deny_added": ["X"]}) is True
+
+
+def test_a_created_settings_json_the_user_emptied_is_left_empty_with_a_note(install_module, uninstall_module,
+                                                                           tmp_path):
+    # SB3: the user took out everything the install wrote; the undo then takes out the rest of
+    # the deny list and leaves {} and a backup. Content alone cannot tell it from a {} of the
+    # user's, so it stays, with a note naming the backup.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = read_settings(home)
+    del settings["hooks"], settings["autoCompactWindow"], settings["skillListingBudgetFraction"]
+    settings["permissions"]["deny"].remove("Artifact")
+    _write_settings(home, settings)
+    changes, notices = uninstall_module.uninstall(home)
+    assert read_settings(home) == {}, changes
+    backups = list((home / ".claude").glob("settings.json.bak-*"))
+    assert len(backups) == 1, backups
+    note = [n for n in notices if n.startswith("settings.json left as {}")]
+    assert len(note) == 1 and backups[0].name in note[0], notices
+
+
+def test_a_users_own_empty_settings_json_gets_the_note_without_a_backup(install_module, uninstall_module, tmp_path):
+    # SB3: nothing is written, so no backup is named.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).unlink()
+    _write_settings(home, {})
+    _, notices = uninstall_module.uninstall(home)
+    note = [n for n in notices if n.startswith("settings.json left as {}")]
+    assert len(note) == 1 and "bak-" not in note[0], notices
+
+
+def test_a_linked_created_settings_json_left_empty_gets_no_note_that_it_held_nothing(install_module,
+                                                                                     uninstall_module, tmp_path):
+    # SB3: a created file that is a link is emptied rather than deleted; it held the install,
+    # so the note for a file that held nothing the install wrote is not given.
+    home = tmp_path / "home"
+    install_module.install(home)
+    dotfiles = tmp_path / "dotfiles"
+    dotfiles.mkdir()
+    settings_file(home).rename(dotfiles / "settings.json")
+    try:
+        settings_file(home).symlink_to(dotfiles / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    _, notices = uninstall_module.uninstall(home)
+    assert json.loads((dotfiles / "settings.json").read_text(encoding="utf-8")) == {}
+    assert not any(n.startswith("settings.json left as {}") for n in notices), notices
+
+
+def test_a_users_own_settings_json_with_content_gets_no_empty_note(install_module, uninstall_module, tmp_path):
+    # SB3: the note is for a file left as {} only.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings_file(home).unlink()
+    _write_settings(home, {"mine": 1})
+    _, notices = uninstall_module.uninstall(home)
+    assert read_settings(home) == {"mine": 1}
+    assert not any(n.startswith("settings.json left as {}") for n in notices), notices

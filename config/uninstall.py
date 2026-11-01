@@ -627,6 +627,15 @@ def uninstall(home, dry_run=False, progress=None, config_dir=None):
         backup = install.replace_json(paths["settings"], settings, progress)
         changes.append(f"settings backup: {backup.name}")
         progress.append("settings.json written")
+    if settings == {} and not delete_settings and isinstance(record, dict) \
+            and record.get("settings_created") is True and not created_file:
+        # The record says the install created settings.json, but the file held nothing the
+        # install wrote: the user's own, or the created one the user emptied of it. Content
+        # cannot tell these apart, so the file stays; say so rather than leave {} unexplained.
+        written = settings_written and not dry_run
+        notices.append("settings.json left as {}: the install created a settings.json, but this one held "
+                       "nothing the install wrote, so it may be yours; delete it if not"
+                       + (f" (the file as it was is in {backup.name})" if written else ""))
     if paths["hook"].exists():
         if dry_run:
             changes.append("hook deleted")
