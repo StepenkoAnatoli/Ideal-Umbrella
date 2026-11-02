@@ -1,31 +1,29 @@
-# Ideal-Umbrella review follow-up: resume point
+# Resume point: keyline_check `_plain` fix (PR #35)
 
-Updated 2026-11-01. Review 9 of main 7adc485 (the merge of PR #32) is reported in `research/review-findings-main-7adc485.md`; all findings and three rounds of self-review findings are fixed and merged (PR #33, merge cd9ea0e).
+Updated 2026-11-02. This file is replaced at each task boundary, not appended to.
 
-## Request (user)
-
-1. "Review the repo for correctness, errors and bugs then report in summary". Reviews 1-6 followed, each fixed and merged (PRs #12-#22). Review 7 (PR #25) was closed unfinished. Review 8 (PR #32) was fixed, self-reviewed and merged.
-2. 2026-11-01, scheduled task: a fresh full review at main 7adc485, report only, change no code, open a draft PR, never merge.
+## Task
+User: "review the emphasis stripper in keyline_check", then "fix all of them then check your work and merge".
+- Branch: `ccr-review-plain`, draft PR #35.
+- Merge with a merge commit (repo convention) once CI is green and a fresh self-review finds nothing medium or worse.
 
 ## State
+- 4d57131: review report `research/review-findings-plain-2829343.md` (M1-M3, lows L1-L4 and C1-C5).
+- d27ac81: round 1 fix. Edge-free second scan, code spans verbatim. Fixes M1-M3, L1, L3, L4, C1, C3 (Hebrew) and C4.
+- 038739b: round 2. Fixes F1-F4 from the first self-review: the code-token extension check, blockquote resets, the NUL marker, and the linear token index in `present()`. CI green.
+- b08ce20: round 3. Fixes G1-G4 from the second self-review.
+  - `present()` uses whichever is cheaper per token, the first-run walk or `str.find`; memory is O(input).
+  - Nested quotes pair only at the same `>` depth.
+  - pytest 1912/14, run_tests 35/35, pyflakes clean, self-pass 0 failures.
+  - Self-review rounds are stopped: only lows remain, recorded in the review report.
+- Left on purpose, as documented design limits: L2, C2, C3 (CJK) and C5.
 
-- **Main:** cd9ea0e. Baseline: pytest 1838 passed, 14 skipped; keyline 35/35.
-- **Review 9:** 0 high, 4 medium, 12 low, 7 informational.
-  - Mediums: A1 (URL token swallows glued `**`, quotes, bidi marks; fails closed; regression), A2 ("No. 5" after ":", "**", "-", "#" loses the negation; fails open; regression of S4), A3 (`_x_` underscore emphasis hides invariants; fails open; predates review 8), B1 (stale `settings_created` survives `_merge_record`, so uninstall deletes a settings.json the user wrote).
-  - All four reproduced in the main session with `python -I`; keyline ones also run against bcc441c to confirm which are regressions.
-- **Baseline at 7adc485:** pytest 1512 passed, 14 skipped; keyline 35/35; pyflakes clean; JSON parses.
-- **Probes:** session scratchpad `review9/a/` and `review9/b/` (lost with the container; the repros are written out in the report).
-
-## Decisions and why
-
-- **B1 graded medium** (reviewer B said low): it deletes a user-written file with a message claiming the installer created it; recoverable only from an install-time backup that uninstall does not mention.
-- **Not fixed on purpose (still stand):** 36 (Windows junction), S45 (read-only `~/.claude` folder), a missing CLAUDE.md drops its record entry, keyline_lint's cache-header `int()` limit.
-- **Earlier decisions still stand:** `|| exit 0` stays in the hook command; a missing uninstall backup keeps the file and the record entry; the `quote()` escape stays documented; merges use a merge commit; `settings_created` lets uninstall delete a file the install created; keyline's `_unextended` decides standalone tokens for both sides; `PAIR_FAMILY` is a closed allow-list.
+## Decisions
+- Structural fix (edge-free scan) instead of per-case regex patches. Earlier rounds kept producing neighbours.
+- Code spans are compared verbatim. Accepted cost: a rendering that drops backticks around code with marks fails a little more often (fail-closed).
+- Self-review rounds stop when only lows remain. The lows are recorded in the review report.
 
 ## Open items
-
-- **Done (2026-11-01):** the user said "yes, fix all of them then check your work and merge". PR #33 merged as cd9ea0e: review 9 fixes, then three fresh self-reviews (SA/SB, M1-M3, third round), each medium reproduced and fixed with a test. Final: pytest 1838 passed, 14 skipped; keyline 35/35; pyflakes clean; CI green on all 5 jobs.
-- **For the next review:** the emphasis stripper in keyline_check (`_plain`) produced new neighbours in each self-review round, each smaller; review it first. Accepted fail-closed leftovers are listed in the report's "Third self-review" section.
-- If restarting: re-run `python -m pytest -q`, `python -I keyline/tests/run_tests.py` and pyflakes before committing.
-- **Recurring classes:** every medium this round is a *neighbour of a previous fix*; mutation runs found *fixes without tests* (6 in keyline_check.py, 8 in install/uninstall). Other classes to watch: absent is not empty (B3, A8), halfway state (B2, A7), stale record field (B1).
-- **Routine:** after any fix, run a fresh-context self-review of the diff before merging, and a mutation pass over the changed guards.
+- Wait for CI on b08ce20. Then mark PR #35 ready and merge it with a merge commit.
+- Remote branch `wip-plain-round2` is a WIP backup and must be deleted by the user. The proxy refuses branch deletion (403).
+- After the merge, this file is on main. A later task replaces it.

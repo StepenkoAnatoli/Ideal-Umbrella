@@ -56,11 +56,20 @@ and `_`) except Hebrew letters: `5` does not count as present because `503` is, 
 and a combining mark NFC cannot fold into its letter (`a` with U+0331) is part of the word; a
 Hebrew point is not, nor is a variation selector or a keycap mark (`✔️v2.1` holds `v2.1`, `5️⃣`
 holds `5`). Emphasis marks (`**v2.1**`, `_API_`, `*ab.txt*`), also across the lines of one
-paragraph, are dropped before the scan, so they neither hide nor extend a token. A pair does not
-span a blank line, a line that starts a list item, heading, quote or code fence (`- `, `1. `,
-`# `, `>`, a fence of three backticks or tildes) or a table cell separator `|`. A mark inside an
-inline code span pairs only with a mark in the same span (`` `*.o` `` and a later `ab.txt*` are
-no pair); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
+paragraph, are dropped before the scan, so they neither hide nor extend a token; runs of up to
+three marks pair as CommonMark pairs them (`___Paris___`, `_**Paris**_`, `_27%_,` between
+punctuation, `ב_Paris_` after a Hebrew prefix). A pair does not span a blank line (also with
+`\r\n` line ends), a line that starts a list item, heading, quote or code fence (`- `, `1. `,
+`# `, `>`, a fence of three backticks or tildes; the next line of the same quote, at the same
+depth (`>`, `> >`), continues it, unless it is a blank quote line or starts one of those blocks
+after its `>` marks)
+or a table cell separator `|`. A mark
+inside an inline code span is code, compared as written: `` `__FILE__` ``, `` `_Config_` `` and
+`` `*API*` `` are the tokens `__FILE__`, `_Config_` and `*API*`, so a rendering that drops those
+marks fails, and one that extends them fails as any token does (`` `_v2.1_-rc` ``,
+`` `/x/__FILE__` ``); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
+A rendering that drops the backticks and puts emphasis around such a token
+(`` `__FILE__` `` as `**__FILE__**`) fails too: the `*` glued to it extends it.
 An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
 (`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
 are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
@@ -68,6 +77,10 @@ or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks), glued to
 holds an `_` itself (`_private_var_`; of `_v2.1 adds max_retries_` only the closing `_` stays,
 so `v2.1` is still a token), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold), or a
 lone edge mark (`_private_name`, `snake_case_`).
+A mark the first scan keeps hides no token: a second scan drops every `*` or `_` run at a word
+edge outside URLs and code (`~_20_`, `14:30-_15:00_`, `measured=__True__` give `20`, `15:00`,
+`True`), and a token only it finds is looked up in the rendering's copy with the same runs
+dropped. A token the first scan finds is judged by the first scan alone.
 A token the source writes on its own is not present where a rendering only extends it, on either
 side: `ab.txt` in `ab.txt.bak`, `ab.txt~`, `ab.txt=1` or `old/ab.txt`, `report.pdf` in `old-report.pdf`,
 `Jean-Luc` in `Jean-Luc-Picard` or `Marie-Jean-Luc`, `14:30` in `14:30:15`, `notes/a` in
