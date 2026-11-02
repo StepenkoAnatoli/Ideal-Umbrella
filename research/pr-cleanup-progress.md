@@ -1,4 +1,4 @@
-# Resume point: keyline_check `_plain` fix (PR #35)
+# Resume point: keyline_check `_plain` fix (PR #35, merged)
 
 Updated 2026-11-02. This file is replaced at each task boundary, not appended to.
 
@@ -24,6 +24,6 @@ User: "review the emphasis stripper in keyline_check", then "fix all of them the
 - Self-review rounds stop when only lows remain. The lows are recorded in the review report.
 
 ## Open items
-- Wait for CI on b08ce20. Then mark PR #35 ready and merge it with a merge commit.
-- Remote branch `wip-plain-round2` is a WIP backup and must be deleted by the user. The proxy refuses branch deletion (403).
-- After the merge, this file is on main. A later task replaces it.
+- None for this task. PR #35 merged as 1cd10bb on 2026-11-02 (merge commit).
+- Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
+- Possible later work: the documented lows in `research/review-findings-plain-2829343.md` (L2, C2, C3 for CJK, C5, G4).
