@@ -60,13 +60,16 @@ paragraph, are dropped before the scan, so they neither hide nor extend a token;
 three marks pair as CommonMark pairs them (`___Paris___`, `_**Paris**_`, `_27%_,` between
 punctuation, `ב_Paris_` after a Hebrew prefix). A pair does not span a blank line (also with
 `\r\n` line ends), a line that starts a list item, heading, quote or code fence (`- `, `1. `,
-`# `, `>`, a fence of three backticks or tildes; the next line of the same quote continues it,
-unless it is a blank `>` line or starts one of those blocks after the `>`)
+`# `, `>`, a fence of three backticks or tildes; the next line of the same quote, at the same
+depth (`>`, `> >`), continues it, unless it is a blank quote line or starts one of those blocks
+after its `>` marks)
 or a table cell separator `|`. A mark
 inside an inline code span is code, compared as written: `` `__FILE__` ``, `` `_Config_` `` and
 `` `*API*` `` are the tokens `__FILE__`, `_Config_` and `*API*`, so a rendering that drops those
 marks fails, and one that extends them fails as any token does (`` `_v2.1_-rc` ``,
 `` `/x/__FILE__` ``); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
+A rendering that drops the backticks and puts emphasis around such a token
+(`` `__FILE__` `` as `**__FILE__**`) fails too: the `*` glued to it extends it.
 An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
 (`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
 are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
