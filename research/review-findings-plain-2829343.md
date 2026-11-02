@@ -212,3 +212,20 @@ See `proto.py` (scratch only). `check2` = `check` plus the edge-free discovery p
 - Self-pass on the 3,554 repo paragraphs: 0 new failures.
 
 It does not address M3 (needs verbatim code spans) or the fail-closed C items.
+
+## 5. Fixes (PR #35)
+
+Fixed in `keyline/keyline_check.py`, tests in `tests/test_keyline_check.py` (each fails on 2829343), README updated. Design: the recommendation above (edge-free second scan, code spans verbatim).
+
+| Finding | Status |
+|---|---|
+| M1, M2, M3 | fixed; repros now `ok=False`, identical text still passes |
+| L1, L3, L4 | fixed |
+| C1, C3 (Hebrew), C4 | fixed |
+| L2 | left: glob `*` in prose is emphasis per CommonMark; indented code not parsed (design limit) |
+| C2 | left: lowercase `__word__` kept as a dunder to protect `__init__` (fail-closed) |
+| C3 (CJK), C5 | left: fail-closed and rare |
+
+Known cost: renderings that strip backticks from code holding marks fail a little more often (111 against 106 of 1,929 repo paragraphs), since code is now compared as written; fail-closed. In the fail-open fuzz, passes of a changed token fell from 273 to 10, all one `___tools___`-in-code case that 2829343 also passes (no invariant kind is extracted from a plain lowercase word).
+
+Checks: pytest 1886 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures over 1,862 repo paragraphs and files, linear to 800 kB, 25 of 28 mutants killed and the other 3 argued equivalent.

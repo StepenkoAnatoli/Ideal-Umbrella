@@ -1272,11 +1272,10 @@ def test_emphasis_does_not_pair_across_code_or_table_cells(keyline_check, source
 
 @pytest.mark.parametrize("text, plain", [
     ("**use `x` for v2.1**", "use `x` for v2.1"),
-    ("`_v2.1_` and `*a*`", "`v2.1` and `a`"),
     ("a ` b *c* d", "a ` b c d"),
     ("*a `b\n\nc` d*", "*a `b\n\nc` d*"),
 ])
-def test_emphasis_around_or_inside_code_is_still_dropped(keyline_check, text, plain):
+def test_emphasis_around_code_is_still_dropped(keyline_check, text, plain):
     assert keyline_check._plain(text) == plain
 
 
@@ -1289,3 +1288,129 @@ def test_a_url_span_ends_where_the_url_token_ends(keyline_check, source, renderi
     # L-a: URL_SPAN uses the url token's characters, so marks after a glued "—" are emphasis.
     result = keyline_check.check(source, rendering)
     assert not result.ok and result.missing, result
+
+
+# --- review of _plain at 2829343: M1-M3, L1-L4, C1, C3, C4 -----------------------------------
+# The fail-open findings are fixed by a second scan (see _edge_free): a token an emphasis mark
+# hides from the strict scan is still found, and looked up in the rendering's edge-free copy.
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Cache writes were _27%_, reads 58% at 14:30.", "Cache writes were _57%_, reads 58% at 14:30."),
+    ("Meet in _Paris (FR)_, at 14:30.", "Meet in _Berlin (FR)_, at 14:30."),
+    ('So _Paris said "yes"_. Owner: Dana at 14:30.', 'So _Berlin said "yes"_. Owner: Dana at 14:30.'),
+    ("Load **_97%_**. Owner: Dana at 14:30.", "Load **_27%_**. Owner: Dana at 14:30."),
+])
+def test_a_mark_run_between_punctuation_does_not_hide_a_token(keyline_check, source, rendering):
+    # M1: "%_," and ")_," were read as openers, so the "_" stayed and hid the token.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("rendering", [
+    "Meet in ___Berlin___ at 14:30.", "Meet in **Berlin** at 14:30.", "Meet in Berlin at 14:30.",
+])
+def test_triple_underscore_emphasis_does_not_hide_a_token(keyline_check, rendering):
+    # M2: "___" never opened, so "___Paris___" hid "Paris".
+    result = keyline_check.check("Meet in ___Paris___ at 14:30.", rendering)
+    assert not result.ok and result.missing == ["Paris"], result
+
+
+@pytest.mark.parametrize("text", [
+    "See `x*HISTORY.md*` now.",                     # the token is "HISTORY.md*", as written
+    "Write into `a__.claude/settings.json/`, so.",   # "__.claude/..." is no token of its own
+    "Run `__tests__/` and `__init__.py` at 14:30.",
+])
+def test_code_with_marks_passes_against_itself(keyline_check, text):
+    assert keyline_check.check(text, text).ok, keyline_check.check(text, text)
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Use `__FILE__` since v2.1.", "Use `FILE` since v2.1."),
+    ("Use `__FILE__` and `__LINE__` since v2.1.", "Use `FILE` and `LINE` since v2.1."),
+    ("Set `_Config_` in v2.1.", "Set `Config` in v2.1."),
+    ("Set `*API*` in v2.1.", "Set `API` in v2.1."),
+    ("Set `_27%_` in v2.1.", "Set `27%` in v2.1."),
+])
+def test_marks_inside_a_code_span_are_compared_verbatim(keyline_check, source, rendering):
+    # M3: marks inside a code span were paired and dropped, so a changed identifier passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(source, f"**{source}**").ok      # emphasis around code still drops
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Retries: ~_20_ at 14:30.", "Retries: ~_50_ at 14:30."),
+    ("Window 14:30-_15:00_ for v2.1.", "Window 14:30-_16:00_ for v2.1."),
+    ("Set measured=__True__ in v2.1.", "Set measured=__False__ in v2.1."),
+    ("Ticket SA1-_SA9_ at 14:30.", "Ticket SA1-_SA8_ at 14:30."),
+    ("Use UTF-_8_ at 14:30.", "Use UTF-_16_ at 14:30."),
+    ("Ship ב_Paris_ at 14:30", "Ship ב_Berlin_ at 14:30"),               # L4
+    ("Ship _Paris_ב at 14:30", "Ship _Berlin_ב at 14:30"),
+    ("Ship ב_20 hosts at 14:30.", "Ship ב_21 hosts at 14:30."),           # a Hebrew letter is no
+    ("Ship ב__Paris at 14:30.", "Ship ב__Berlin at 14:30."),             # word edge for a run
+    ("Ship Paris_ב at 14:30.", "Ship Berlin_ב at 14:30."),
+])
+def test_a_mark_run_that_is_no_emphasis_does_not_hide_a_token(keyline_check, source, rendering):
+    # L1, L4: a run the strict pass keeps ("~_", "-_", "=__", after a Hebrew letter) hid the token.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_crlf_blank_line_ends_the_block(keyline_check):
+    # L3: "\n[ \t]*\n" did not allow "\r", so pairing ran past a CRLF blank line.
+    source = "Delete *.log files.\r\n\r\nKeep ab.txt at 14:30."
+    result = keyline_check.check(source, source.replace("ab.txt", "ab.txt*"))
+    assert not result.ok and result.missing == ["ab.txt"], result
+    assert keyline_check._plain("_a\r\n\r\nb_") == "_a\r\n\r\nb_"
+    assert keyline_check._code_spans("`a\r\n\r\nb`") == []
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Meet in **Paris** at 14:30.", "Meet in _**Paris**_ at 14:30."),        # C1
+    ("Needs Python 3.10 or later.", "Needs __*Python*__ 3.10 or later."),
+    ("Meet in Paris at 14:30.", "Meet in **_Paris_** at 14:30."),
+    ("פגישה בParis ב-14:30", "פגישה ב**Paris** ב-14:30"),                   # C3
+    ("פגישה בParis ב-14:30", "פגישה ב_Paris_ ב-14:30"),
+    ("> **Deploy at 14:30** in Paris", "> **Deploy at\n> 14:30** in Paris"),  # C4
+    ("Meet in Paris at 14:30.", "Meet in ___Paris___ at 14:30."),           # M2, other way
+    ("Coverage is 50% for Paris (FR) at 14:30.", "Coverage is _50%_, for _Paris (FR)_, at 14:30."),
+])
+def test_a_rendering_that_only_adds_or_removes_emphasis_passes(keyline_check, source, rendering):
+    assert keyline_check.check(source, rendering).ok, keyline_check.check(source, rendering)
+    assert keyline_check.check(rendering, source).ok, keyline_check.check(rendering, source)
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("_**a**_ and __*b*__", "a and b"),
+    ("x_**a**_ y", "x_**a**_ y"),                    # an "_" glued to a word opens nothing
+    ("x____*a* y", "x____*a* y"),                    # nor does a "*" after a longer "_" run
+    ('"_(a)_" y', '"(a)" y'),                        # between punctuation, an "_" with none open opens
+    ("y **a**_x", "y **a**_x"),
+    ("ב**a** ו_b_", "בa וb"),
+    ("> **a\n> b**", "> a\n> b"),
+    ("**a\n> b**", "**a\n> b**"),                    # a quote that starts still ends the block
+    ("___a___ and _a%_, b", "a and a%, b"),
+    ("`_v2.1_` and `*a*`", "`_v2.1_` and `*a*`"),    # code is verbatim
+])
+def test_plain_pairs_underscore_and_star_runs_as_commonmark_does(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+def test_a_source_whose_only_token_a_mark_hid_is_checked(keyline_check):
+    # The edge-free scan's tokens count: "~_20_" alone is one invariant, not an inconclusive source.
+    result = keyline_check.check("Ping ~_20_ hosts.", "Ping ~_20_ hosts.")
+    assert result.ok and not result.inconclusive and result.n_invariants == 1, result
+    assert keyline_check.check("Ping ~_20_ hosts.", "Ping ~_21_ hosts.").missing == ["20"]
+
+
+@pytest.mark.parametrize("text, scan, raw", [
+    ("x__y ~_z_ a_", "x__y ~z a", "x__y ~z a"),     # a whole run at a word edge, none inside a word
+    ("ב_20 ~**v2**", "ב20 ~v2", "ב20 ~v2"),         # a Hebrew letter is no word edge
+    ("`__a_` b_", "`\0\0a\0` b", "`__a_` b"),        # in code: kept in raw, CODE_MARK in scan
+    ("https://x.io/?_k_=1 _b_", "https://x.io/?_k_=1 b", "https://x.io/?_k_=1 b"),
+])
+def test_the_edge_free_copy_drops_only_whole_runs_at_a_word_edge(keyline_check, text, scan, raw):
+    assert keyline_check._edge_free(text) == (scan, raw)

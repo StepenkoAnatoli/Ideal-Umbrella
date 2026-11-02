@@ -401,26 +401,47 @@ NOT_EXTENDED = (None, None)
 
 # Emphasis marks ("_Paris_", "__14:30__", "*API*", "**https://x.io/a**"): "_" is a word
 # character, so it would hide the token inside it, and a "*" glued after a token is a joiner
-# ("ab.txt*", see JOIN). An opening run of one or two "_" or one to three "*" (before a
-# non-space) is paired with the next closing run of the same marks in the block (after a
-# non-space), and both are dropped from source and rendering alike; a blank line, a line that
-# starts a list item, heading, quote or code fence, and a table cell separator "|" end the block.
-# A mark inside an inline code span pairs only with one in the same span ("`*.o`" and a later
-# "ab.txt*" are no pair; "**use `x`**" is emphasis). A mark run inside a URL (URL_SPAN, all of
-# it but the marks and punctuation that end it: "?_k_=1", "#_frag_"), path or identifier is no
-# emphasis: an opening run does not follow a word character or one of "*/\\.:~@=" or a "-"
-# glued to a word ("/srv/_data_/x", "a-_b_"; "ל-_Paris_" is emphasis, a Hebrew letter is no word
-# character here), a closing run does not follow "/" or "\\" ("**/*.py and docs/**") nor come
-# before a word character, "/" or "\\", and a "*" run no "*" on either side ("**_Paris_**" is
-# two emphases). A lone edge mark ("_private", "snake_case_", "ab.txt*") has no partner and
-# stays, and so does an "_" or "__" glued to word characters that hold a "_" ("_private_var_";
-# of "_v2.1 adds max_retries_" only the closing "_", so "v2.1" is still a token) and a dunder
-# pair ("__init__", "__init_subclass__"; "__12__" is bold).
-_GLUED_DASH = r"(?<![^\W\u0590-\u05ff\ufb1d-\ufb4f]-)"
-EMPHASIS = re.compile(rf"(?P<open>(?<![\w*/\\.:~@=]){_GLUED_DASH}\*{{1,3}}(?=[^\s*])"
-                      rf"|(?<![\w/\\.:~@=]){_GLUED_DASH}_{{1,2}}(?=[^\s_]))"
-                      r"|(?P<close>(?<=[^\s*/\\])\*{1,3}(?![\w*/\\])|(?<=[^\s_/\\])_{1,2}(?![\w/\\]))"
-                      r"|\n[ \t]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|>|```|~~~))|\|")
+# ("ab.txt*", see JOIN). Two scans read them, and a token either finds is checked:
+#
+# 1. The strict scan (_plain): an opening run of one to three "_" or "*" (before a non-space)
+# is paired with the next closing run of the same marks in the block (after a non-space), and
+# both are dropped from source and rendering alike; a blank line, a line that starts a list
+# item, heading, quote or code fence (a quote's own continuation lines aside), and a table cell
+# separator "|" end the block. An "_" run between two punctuation marks ("_27%_,") closes an
+# open "_" run, as in CommonMark. Code is verbatim: a mark inside an inline code span is no
+# emphasis and pairs with nothing ("`*.o`" and a later "ab.txt*" are no pair; "**use `x`**" is
+# emphasis). A mark run inside a URL (URL_SPAN, all of it but the marks and punctuation that end
+# it: "?_k_=1", "#_frag_"), path or identifier is no emphasis: an opening run does not follow a
+# letter or digit, an "_" glued to one, or one of "*/\\.:~@=", or a "-" glued to a word
+# ("/srv/_data_/x", "a-_b_", "x_**a**"; "ל-_Paris_" and "ב**Paris**" are emphasis, a Hebrew
+# letter is no word character here); a closing run does not follow "/" or "\\" ("**/*.py and
+# docs/**") nor come before a letter or digit, "/" or "\\", or an "_" run glued to one; and a "*"
+# run has no "*" on either side ("_**Paris**_" is two emphases). A lone edge mark ("_private",
+# "snake_case_", "ab.txt*") has no partner and stays, and so does an "_" run glued to word
+# characters that hold a "_" ("_private_var_"; of "_v2.1 adds max_retries_" only the closing
+# "_") and a dunder pair ("__init__", "__init_subclass__"; "__12__" is bold).
+#
+# 2. The edge-free scan (_edge_free) catches what the strict one keeps: every "*" or "_" run at
+# a word edge (a letter or digit, Hebrew aside, missing on one side) is dropped outside URLs
+# and code, so "~_20_", "14:30-_15:00_", "measured=__True__" and "ב_Paris_" give 20, 15:00, True
+# and Paris. A token only this scan finds is looked up in the rendering's edge-free copy, so a
+# mark the strict scan misreads hides no token, whatever the mark, and identical text passes as
+# both sides go through the same functions. The copy cannot tell "_private" from "private" or
+# "ab.txt*" from "ab.txt"; a token the strict scan finds is judged by it. Inside a code span the
+# runs are kept: a token glued to them is taken with its marks ("`__FILE__`" is checked as
+# "__FILE__", "`_Config_`" as "_Config_"), so a rendering that drops them fails.
+_GLUED_DASH = r"(?<![^\W֐-׿יִ-ﭏ]-)"
+_NO_OPEN = rf"[{_ALNUMS}*/\\.:~@=]"             # what an opening run may not follow
+EMPHASIS = re.compile(
+    rf"(?P<open>(?<!{_NO_OPEN})(?<!{_NO_OPEN}_)(?<!{_NO_OPEN}__)(?<!{_NO_OPEN}___)(?<!____)"
+    rf"{_GLUED_DASH}\*{{1,3}}(?=[^\s*])"
+    rf"|(?<![{_ALNUMS}_/\\.:~@=]){_GLUED_DASH}_{{1,3}}(?=[^\s_]))"
+    rf"|(?P<close>(?<=[^\s*/\\])\*{{1,3}}(?!\*|_*[{_ALNUMS}/\\])|(?<=[^\s_/\\])_{{1,3}}(?![{_ALNUMS}_/\\]))"
+    r"|\n[ \t\r]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|```|~~~))|(?P<quote>\n(?=[ \t]*>))|\|")
+# An "_" run that may close (after a non-space, before no word character): one that EMPHASIS
+# reads as opening ("%_," after punctuation) closes an open run of the same marks.
+UNDERSCORE_CLOSE = re.compile(rf"(?<=[^\s_/\\])_{{1,3}}(?![{_ALNUMS}_/\\])")
+QUOTE_LINE = re.compile(r"[ \t]*>")
 DUNDER_BODY = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 # A URL as _plain() masks it: its marks are no emphasis. The scheme and the characters are as
 # in INVARIANT's url, so a URL ends where its token does ("https://x.io/a—_Paris_").
@@ -428,7 +449,16 @@ URL_SPAN = re.compile(rf"[A-Za-z][A-Za-z0-9+.-]{{0,30}}://(?:{WORD}|[-.~:/?\#\[\
 # What ends a URL span but is not masked: sentence punctuation, closing brackets and the closing
 # marks of an emphasis around the URL ("**https://x.io/a**,").
 URL_TAIL = "*_.,;:!?)]}"
-BACKTICKS, BLANK_LINE = re.compile("`+"), re.compile(r"\n[ \t]*\n")
+BACKTICKS, BLANK_LINE = re.compile("`+"), re.compile(r"\n[ \t\r]*\n")
+# A run of marks at a word edge (see _edge_free): the whole run, no letter or digit before it or
+# none after it.
+EDGE_RUN = re.compile(rf"(?<![*_])(?:(?<!{ALNUM})[*_]+|[*_]+(?![*_]|{ALNUM}))")
+CODE_MARK = "\0"     # stands in for an edge run inside a code span in the scanned edge-free copy
+
+
+def _url_spans(text):
+    """The (start, end) of each URL of text, the marks and punctuation that end it aside."""
+    return [(u.start(), u.start() + len(u.group().rstrip(URL_TAIL))) for u in URL_SPAN.finditer(text)]
 
 
 def _code_spans(text):
@@ -454,15 +484,25 @@ def _code_spans(text):
     return spans
 
 
+class _Spans:
+    """Whether positions, asked in increasing order, fall inside sorted (start, end) spans."""
+
+    def __init__(self, spans, edge):
+        self.spans, self.i, self.edge = spans, 0, edge   # edge: a span's start counts as inside
+
+    def holds(self, pos):
+        spans = self.spans
+        while self.i < len(spans) and spans[self.i][1] <= pos:
+            self.i += 1
+        return self.i < len(spans) and (spans[self.i][0] < pos or self.edge and spans[self.i][0] == pos)
+
+
 def _plain(text):
     """text without the marks of emphasis (see EMPHASIS). Linear: each run is pushed and popped
-    at most once, and whether a word glued to a mark holds a "_" is counted, not scanned (nested
-    pairs would scan the same text again)."""
-    drop, opened, inner, edges = [], {}, {}, None
-    urls = [(u.start(), u.start() + len(u.group().rstrip(URL_TAIL))) for u in URL_SPAN.finditer(text)]
-    codes = _code_spans(text)
-    url = code = 0
-    in_code = None                            # the code span inner pairs belong to
+    at most once, whether a word glued to a mark holds a "_" is counted, not scanned (nested
+    pairs would scan the same text again), and a quote line looks back over one line only."""
+    drop, opened, edges = [], {}, None
+    urls, codes = _Spans(_url_spans(text), False), _Spans(_code_spans(text), True)
 
     def glued_identifier(a, b, forward):
         """Whether the word characters glued to a (forward) or to b (backward) within text[a:b]
@@ -480,33 +520,29 @@ def _plain(text):
         return bisect.bisect_left(unders, b) > bisect.bisect_left(unders, a)
 
     for m in EMPHASIS.finditer(text):
-        while url < len(urls) and urls[url][1] <= m.start():
-            url += 1
-        if url < len(urls) and urls[url][0] < m.start():
-            continue                          # a mark inside a URL ("?_k_=1") is part of it
-        while code < len(codes) and codes[code][1] <= m.start():
-            code += 1
-        if code < len(codes) and codes[code][0] <= m.start():
-            if in_code != code:               # a mark inside a code span pairs only inside it
-                in_code, inner = code, {}
-            pairs = inner
-        else:
-            pairs = opened
-        if m.lastgroup == "open":
-            pairs.setdefault(m.group(), []).append(m)
-        elif m.lastgroup == "close":
-            stack = pairs.get(m.group())
+        if urls.holds(m.start()) or codes.holds(m.start()):
+            continue                          # a mark inside a URL ("?_k_=1") or code is no emphasis
+        kind, run = m.lastgroup, m.group()
+        if kind == "open" and run[0] == "_" and opened.get(run) and UNDERSCORE_CLOSE.match(text, m.start()):
+            kind = "close"                    # "_27%_,": between punctuation, it closes (an opening
+                                              # run is a whole run of at most three, so is the match)
+        if kind == "open":
+            opened.setdefault(run, []).append(m)
+        elif kind == "close":
+            stack = opened.get(run)
             if stack:
                 o = stack.pop()
-                if m.group()[0] != "_":
+                if run[0] != "_":
                     drop += [o.span(), m.span()]
-                elif not (m.group() == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start())):
+                elif not (run == "__" and DUNDER_BODY.fullmatch(text, o.end(), m.start())):
                     if not glued_identifier(o.end(), m.start(), True):
                         drop.append(o.span())
                     if not glued_identifier(o.end(), m.start(), False):
                         drop.append(m.span())
+        elif kind == "quote" and QUOTE_LINE.match(text, text.rfind("\n", 0, m.start()) + 1):
+            continue                          # the next line of the same quote
         else:
-            pairs.clear()                     # emphasis does not run past a blank line, into a
+            opened.clear()                    # emphasis does not run past a blank line, into a
                                               # list item, heading, quote or fence, or past a "|"
     if not drop:
         return text
@@ -519,12 +555,51 @@ def _plain(text):
     return "".join(out)
 
 
-def _scan(text):
+def _edge_free(text):
+    """(scan, raw): text without the mark runs at a word edge (see EMPHASIS, scan 2), outside
+    URLs and code spans. Inside a code span raw keeps them and scan has CODE_MARK for each mark,
+    so the two are as long as each other and _scan(scan, raw) can take a token glued to them
+    with its marks."""
+    urls, codes = _Spans(_url_spans(text), False), _Spans(_code_spans(text), True)
+    scan, raw, pos = [], [], 0
+    for m in EDGE_RUN.finditer(text):
+        a, b = m.span()
+        if urls.holds(a):
+            continue
+        scan.append(text[pos:a])
+        raw.append(text[pos:a])
+        if codes.holds(a):
+            scan.append(CODE_MARK * (b - a))
+            raw.append(m.group())
+        pos = b
+    scan.append(text[pos:])
+    raw.append(text[pos:])
+    return "".join(scan), "".join(raw)
+
+
+def _cut(text, spans):
+    """text without the sorted, disjoint spans."""
+    out, pos = [], 0
+    for a, b in spans:
+        out.append(text[pos:a])
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _scan(text, raw=None):
     """Return ({token: kind}, {token: extensions}): the fact-bearing tokens of text in order of
     appearance, and for each token but a URL or a number the set of the ways text writes it
     (see _extension); NOT_EXTENDED in it means the text writes the token on its own at least
-    once (see EXT_RIGHT). text has been through _plain()."""
-    text = LIST_MARKER.sub("", text)
+    once (see EXT_RIGHT). text has been through _plain(), or is the scan copy of _edge_free()
+    and raw its raw copy: then a token glued to a CODE_MARK is taken from raw with the marks
+    glued to it, of kind "code", and every extension is read in raw, where present() looks."""
+    code = raw is not None
+    if not code:
+        text = raw = LIST_MARKER.sub("", text)
+    else:
+        markers = [m.span() for m in LIST_MARKER.finditer(text)]
+        text, raw = _cut(text, markers), _cut(raw, markers)
     found, extensions = {}, {}
     for m in INVARIANT.finditer(text):
         kind = m.lastgroup
@@ -550,16 +625,36 @@ def _scan(text):
                     parts.append((at, n))
                     at += len(n) + 1
         for start, part in parts:
-            if kind not in ("url", "number"):
-                extensions.setdefault(part, set()).add(_extension(text, start, start + len(part), kind, part))
+            end, how = start + len(part), kind
+            if code and (text.startswith(CODE_MARK, end) or start and text[start - 1] == CODE_MARK):
+                while start and text[start - 1] == CODE_MARK:
+                    start -= 1
+                while text.startswith(CODE_MARK, end):
+                    end += 1
+                if not (LEFT_AT.match(raw, start) and RIGHT_AT.match(raw, end)):
+                    continue        # "`__tests__/`": the "/" in "\0\0/" is no token of its own
+                part, how = raw[start:end], "code"      # "`__FILE__`": the marks are code
+            if how not in ("url", "number", "code"):
+                extensions.setdefault(part, set()).add(_extension(raw, start, end, how, part))
             if part not in found:
-                found[part] = kind
+                found[part] = how
     return found, extensions
 
 
+def _hidden(strict, edge_free):
+    """[(token, kind)] of the edge-free scan's tokens (see EMPHASIS) the strict scan does not
+    find, nor finds with marks at its edges ("_private_key", "https://x.io/a_" are judged by
+    the strict scan, and their edge-free forms are no other token)."""
+    known = set(strict).union(t.strip("*_") for t in strict)
+    return [(t, k) for t, k in edge_free.items() if t not in known]
+
+
 def invariants(text):
-    """Return {token: kind} for every fact-bearing token in text, in order of appearance."""
-    return _scan(_plain(text))[0]
+    """Return {token: kind} for every fact-bearing token in text, in order of appearance: those
+    of the strict scan, then those only the edge-free scan finds (see EMPHASIS)."""
+    found = _scan(_plain(text))[0]
+    found.update(_hidden(found, _scan(*_edge_free(text))[0]))
+    return found
 
 
 class _Lines:
@@ -796,13 +891,30 @@ def check(source, rendering):
     missing = [t for t, k in inv.items()
                if not present(t, k, plain, rendered, NOT_EXTENDED in extensions.get(t, (NOT_EXTENDED,)),
                               index, extensions.get(t))]
+    # The edge-free scan (see EMPHASIS): a token a mark hid from the strict one is looked up in
+    # the rendering's edge-free copy, through the same functions.
+    inv2, extensions2 = _scan(*_edge_free(source))
+    extra = _hidden(inv, inv2)
+    if extra:
+        scan, raw = _edge_free(rendering)
+        rendered2, index2, verbatim = _scan(scan, raw)[0], word_index(raw), None
+        for t, k in extra:
+            if k == "code":
+                # Code is compared as written: "__FILE__" anywhere in the rendering, in code or not.
+                verbatim = word_index(rendering) if verbatim is None else verbatim
+                found = present(t, k, rendering, alone=False, index=verbatim)
+            else:
+                found = present(t, k, raw, rendered2, NOT_EXTENDED in extensions2.get(t, (NOT_EXTENDED,)),
+                                index2, extensions2.get(t))
+            if not found:
+                missing.append(t)
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)
     missing_hedges = [group for group in source_hedges if group not in rendering_hedges]
     ns, nr = negations(source), negations(rendering, rendering_of=source)
     # An empty source has nothing to check either: INCONCLUSIVE, never a vacuous PASS.
-    inconclusive = not inv and not source_hedges
+    inconclusive = not inv and not extra and not source_hedges
     ok = not missing and not missing_hedges and nr >= ns and not inconclusive
-    return CheckResult(ok, missing, missing_hedges, ns, nr, len(inv), inconclusive)
+    return CheckResult(ok, missing, missing_hedges, ns, nr, len(inv) + len(extra), inconclusive)
 
 
 def read(path):
