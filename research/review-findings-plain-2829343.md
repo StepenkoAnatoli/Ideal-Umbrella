@@ -233,3 +233,11 @@ Checks: pytest 1886 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-p
 ### Self-review of the fix (round 2)
 
 A fresh reviewer of d27ac81 found F1 (medium, fail-open regression: code tokens with edge marks skipped the extension check), F2 (low, fail-open: blockquote blank/list/heading/fence lines no longer reset pairing), F3 (low, fail-closed: a real NUL read as the code marker) and F4 (medium, pre-existing: `present()` quadratic over many tokens sharing a first run; 35 kB adversarial input 25 s against the hook's 30 s timeout). All four are fixed with tests that fail first. F4: a differential search over 140,934 pairs shows 0 result differences from the old walk; the repros take 0.25 s. Checks: pytest 1905 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures over 1,867 repo paragraphs and files.
+
+### Second self-review (round 3)
+
+A fresh reviewer of 038739b found G1 (medium: the F4 index was quadratic in time and memory for tokens starting with a non-word character, 33 s / 1.4 GB at 200 kB, past the hook's 30 s timeout), G2 (medium: still quadratic for a shared first run with many lengths), G3 (low, fail-open: nested `> >` quotes did not reset pairing) and G4 (low, fail-closed: `` `__FILE__` `` rendered as `**__FILE__**` fails, documented in the README).
+
+Fixes: `present()` now walks the first-run index or uses `str.find`, whichever is cheaper per token (FIND_COST=1024), with no per-token position lists, so memory is O(input). Over 181,090 pairs the two paths give 0 differences. G1 and G2 at 200 kB take about 1 s or less and 34 MB. The adversarial F4 shape can reach about 4 s at its worst size, well under the 30 s timeout; this is accepted. Nested quotes pair only at the same `>` depth, and a blank line or block start ends the pairing. Against 038739b, 14 quote pairs now pass and 5 now fail, nearly all because the old code paired marks across a paragraph break.
+
+Checks: pytest 1912 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures. Self-review rounds stop here; the remaining items are lows recorded above.

@@ -441,10 +441,22 @@ EMPHASIS = re.compile(
 # An "_" run that may close (after a non-space, before no word character): one that EMPHASIS
 # reads as opening ("%_," after punctuation) closes an open run of the same marks.
 UNDERSCORE_CLOSE = re.compile(rf"(?<=[^\s_/\\])_{{1,3}}(?![{_ALNUMS}_/\\])")
-QUOTE_LINE = re.compile(r"[ \t]*>")
-# The next line of a quote that starts a block of its own inside the quote: a blank quote line
-# (">"), a list item, heading or fence after the ">", as EMPHASIS resets outside a quote.
-QUOTE_BREAK = re.compile(r"[ \t]*>[ \t]*(?:\r?(?:\n|\Z)|(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|```|~~~)")
+# The ">" marks that start a quote line, nested ones too ("> >", ">>").
+QUOTE_MARKS = re.compile(r"(?:[ \t]*>)+")
+# After its marks, a quote line that starts a block of its own inside the quote: a blank quote
+# line (">", "> >"), a list item, heading or fence, as EMPHASIS resets outside a quote.
+QUOTE_BREAK = re.compile(r"[ \t]*(?:\r?(?:\n|\Z)|(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|```|~~~)")
+
+
+def _same_quote(text, end):
+    """Whether the quote line at end (after its newline) goes on the paragraph of the line
+    before: that line is a quote line of the same depth, and this one starts no block. A line
+    one level deeper starts a nested quote; one level less is taken as a new block too."""
+    before = QUOTE_MARKS.match(text, text.rfind("\n", 0, end - 1) + 1)
+    here = QUOTE_MARKS.match(text, end)
+    return (before is not None and here is not None
+            and before.group().count(">") == here.group().count(">")
+            and not QUOTE_BREAK.match(text, here.end()))
 DUNDER_BODY = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
 # A URL as _plain() masks it: its marks are no emphasis. The scheme and the characters are as
 # in INVARIANT's url, so a URL ends where its token does ("https://x.io/a—_Paris_").
@@ -542,8 +554,7 @@ def _plain(text):
                         drop.append(o.span())
                     if not glued_identifier(o.end(), m.start(), False):
                         drop.append(m.span())
-        elif (kind == "quote" and QUOTE_LINE.match(text, text.rfind("\n", 0, m.start()) + 1)
-              and not QUOTE_BREAK.match(text, m.end())):
+        elif kind == "quote" and _same_quote(text, m.end()):
             continue                          # the next line of the same quote paragraph
         else:
             opened.clear()                    # emphasis does not run past a blank line, into a
@@ -758,77 +769,21 @@ RIGHT_DATE_AT = re.compile(rf"(?=T\d{{1,2}}:\d{{2}})|{R}")   # the date of an IS
 # The runs of word characters of a rendering, by text, so present() tries a token only where
 # its first run starts instead of searching the whole rendering once per distinct token.
 WORD_RUN = re.compile(rf"{L}{WORD}+")
-WORD_RUN_ANY = re.compile(rf"{WORD}+")
-DIGIT_START = re.compile(r"(?<!\d)\d")
-
-
-class _WordIndex(dict):
-    """{run: [start, ...]} for every maximal run of word characters in text. present() asks it
-    for the starts of a token's forms only (see starting, digit_starts): each group of starts by
-    the text of one length there is built once, so many distinct tokens that share a first run
-    ("src/f1.py", "src/f2.py", ...) do not each walk every "src" of the text."""
-
-    SLICE = 64                                # longer forms are grouped by a hash (see _key)
-    MOD, BASE = (1 << 61) - 1, 1_000_003
-
-    def __init__(self, text):
-        super().__init__()
-        self.text, self.by, self.prefix = text, {}, None
-        for m in WORD_RUN.finditer(text):
-            self.setdefault(m.group(), []).append(m.start())
-
-    def _hash(self, s):
-        h = 0
-        for c in s:
-            h = (h * self.BASE + ord(c)) % self.MOD
-        return h
-
-    def _key(self, n):
-        """(key of the n characters at pos, key of a form of length n). A slice for a short form;
-        for a long one a rolling hash, as n slices of every start would be quadratic ("x/x/..."
-        as one 100 kB token). A hash collision only adds a start that present() refuses."""
-        text = self.text
-        if n <= self.SLICE:
-            return (lambda pos: text[pos:pos + n]), (lambda form: form)
-        if self.prefix is None:
-            self.prefix = h = [0]
-            for c in text:
-                h.append((h[-1] * self.BASE + ord(c)) % self.MOD)
-        h, p, mod, end = self.prefix, pow(self.BASE, n, self.MOD), self.MOD, len(text) - n
-        return (lambda pos: (h[pos + n] - h[pos] * p) % mod if pos <= end else None), self._hash
-
-    def _groups(self, key, starts, n, forms):
-        at, of = self._key(n)
-        groups = self.by.get((key, n))
-        if groups is None:
-            groups = {}
-            for pos in starts():
-                groups.setdefault(at(pos), []).append(pos)
-            self.by[(key, n)] = groups
-        out = []
-        for form in forms:
-            if len(form) == n:
-                out += groups.get(of(form), ())
-        return out
-
-    def starting(self, run, forms, off=0):
-        """Every pos where a form starts and run starts at pos + off (and a few more on a hash
-        collision): a form whose first run is run, off characters into it, starts nowhere else."""
-        out = []
-        for n in {len(form) for form in forms}:
-            out += self._groups((run, off), lambda: (p - off for p in self.get(run, ()) if p >= off),
-                                n, forms)
-        return out
-
-    def digit_starts(self, prefix):
-        """Every pos where prefix starts and no digit is before it (and more on a collision)."""
-        return self._groups(None, lambda: (m.start() for m in DIGIT_START.finditer(self.text)),
-                            len(prefix), (prefix,))
+# present() tries a token at each start of its first run, or at each place text.find() finds
+# it, whichever costs less: a Python step per start, or a C scan of the text. FIND_COST is how
+# many characters the scan passes in the time of one step. With many distinct tokens sharing a
+# run (paths under one "src/", at many depths or lengths), a run that repeats is scanned for
+# instead of walked once per token. Both try every place a match can start, so the result is
+# the same; neither keeps anything per token.
+FIND_COST = 1024
 
 
 def word_index(text):
-    """{run: [start, ...]} for every maximal run of word characters in text (a _WordIndex)."""
-    return _WordIndex(text)
+    """{run: [start, ...]} for every maximal run of word characters in text."""
+    index = {}
+    for m in WORD_RUN.finditer(text):
+        index.setdefault(m.group(), []).append(m.start())
+    return index
 
 
 def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=None):
@@ -877,6 +832,7 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
         return how == NOT_EXTENDED or not alone and how in extensions
 
     first = WORD_RUN.match(tok)
+    positions = None
     if kind != "time" and first:
         # left is L here: a match starts where a run of word characters starts, and that run
         # is the token's own first run (the token goes on with a non-word character or ends,
@@ -884,39 +840,20 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
         if index is None:
             index = word_index(text)
         positions = index.get(first.group(), ())
-        if isinstance(index, _WordIndex) and index.text is text:
-            positions = index.starting(first.group(), forms)    # only where a form starts
+        if len(positions) * FIND_COST > len(text):
+            positions = None                    # a scan for the token costs less (FIND_COST)
+    if positions is not None:
         if any(found(match(pos)) for pos in positions):
             return True
     else:
-        prefix = os.path.commonprefix(forms)
-        inner = WORD_RUN_ANY.search(prefix)
-        if index is None:
-            index = word_index(text)
-        if not isinstance(index, _WordIndex) or index.text is not text:
-            positions = None
-        elif kind == "time":
-            # A time starts after "...T" or no word character, so no digit is before it.
-            positions = index.digit_starts(prefix) if DIGIT_START.match(prefix) else None
-        elif inner and len(forms) == 1:
-            # "/a1": the token starts with no word character, so its first run ("a1") starts a
-            # run of text too (the same character is before it), and ends where it ends (a
-            # character that is no word character, or R, is after it).
-            positions = index.starting(inner.group(), forms, inner.start())
-        else:
-            positions = None
-        if positions is not None:
-            if any(found(match(pos)) for pos in positions):
+        prefix, pos = os.path.commonprefix(forms), 0
+        while True:                         # every match, overlapping ones too
+            pos = text.find(prefix, pos)
+            if pos < 0:
+                break
+            if found(match(pos)):
                 return True
-        else:
-            pos = 0
-            while True:                         # every match, overlapping ones too
-                pos = text.find(prefix, pos)
-                if pos < 0:
-                    break
-                if found(match(pos)):
-                    return True
-                pos += 1
+            pos += 1
     # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
     # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
     # a capitalised name or a full name in capitals is a month or weekday: "DEC" and "SAT" are

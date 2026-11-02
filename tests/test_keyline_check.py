@@ -1476,18 +1476,51 @@ def test_many_distinct_tokens_sharing_a_first_run_take_linear_time(keyline_check
     assert time.perf_counter() - start < 3
 
 
-def test_a_hash_collision_in_the_word_index_changes_no_result(keyline_check, monkeypatch):
-    # F4: a form longer than SLICE is grouped by a hash; a collision only adds a start that
-    # present() refuses. Forcing every form onto the hash, with 7 values, must change nothing.
+def test_the_walk_and_the_find_give_the_same_result(keyline_check, monkeypatch):
+    # G1, G2: present() tries a token at each start of its first run, or at each place text.find
+    # finds it, whichever is cheaper (FIND_COST). Both try every place a match can start.
     pairs = [("Keep src/f1.py and src/f2.py at 14:30 on 2026-10-25.", "Keep src/f2.py at 14:30."),
              ("Ship v2.1 and v2.10, `__FILE__` and `_v2.1_`.", "Ship v2.10, `__FILE__.c` and `_v2.1_`."),
              ("x/" * 300, "x/" * 299 + "y/"), ("__/a1 __/a2 /a3", "__ /a3 __/a1"),
-             ("At 14:30-15:00 or 2026-10-25T14:30.", "At 14:30 or 2026-10-25.")]
-    expected = [keyline_check.check(s, r) for s, r in pairs]
-    monkeypatch.setattr(keyline_check._WordIndex, "SLICE", 1)
-    monkeypatch.setattr(keyline_check._WordIndex, "MOD", 7)
-    for (source, rendering), want in zip(pairs, expected):
-        got = keyline_check.check(source, rendering)
-        assert (got.ok, got.missing) == (want.ok, want.missing), (source, rendering)
-    assert [want.missing for want in expected] == [
-        ["src/f1.py", "2026-10-25"], ["v2.1", "__FILE__"], ["x/" * 300], ["__/a2"], ["15:00", "2026-10-25T14:30"]]
+             ("At 14:30-15:00 or 2026-10-25T14:30.", "At 14:30 or 2026-10-25."),
+             ("Use ab.txt and ab.txt.bak, v2.1,v2.2.", "Use ab.txt.bak and xab.txt, v2.1-rc,v2.2.")]
+    results = []
+    for cost in (0, 10 ** 9):                   # always walk; always find
+        monkeypatch.setattr(keyline_check, "FIND_COST", cost)
+        results.append([(r.ok, r.missing) for r in (keyline_check.check(s, r) for s, r in pairs)])
+    assert results[0] == results[1]
+    assert [missing for _, missing in results[0]] == [
+        ["src/f1.py", "2026-10-25"], ["v2.1", "__FILE__"], ["x/" * 300], ["__/a2"],
+        ["15:00", "2026-10-25T14:30"], ["ab.txt", "v2.1"]]
+
+
+def test_tokens_at_many_depths_or_lengths_sharing_a_run_take_linear_time(keyline_check):
+    # G1: tokens that start with no word character ("../../a.py") at many distinct depths
+    # walked every "a" of the rendering once per depth. G2: tokens of many distinct lengths
+    # sharing a first run ("src/a.py", "src/aa.py", ...) walked every "src" once per length.
+    import time
+    start = time.perf_counter()
+    source = " ".join("../" * i + "a.py" for i in range(1, 251)) + "."
+    assert not keyline_check.check(source, "a " * 50000).ok
+    source = " ".join("src/" + "a" * i + ".py" for i in range(1, 301)) + "."
+    assert not keyline_check.check(source, "src " * 25000).ok
+    assert time.perf_counter() - start < 3
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("> > Delete *.log files.\n> >\n> > Keep ab.txt at 14:30.", "> > Delete *.log files.\n> >\n> > Keep ab.txt* at 14:30."),
+    ("> Delete *.log files.\n> > Keep ab.txt at 14:30.", "> Delete *.log files.\n> > Keep ab.txt* at 14:30."),
+    ("> > Delete *.log files.\n> Keep ab.txt at 14:30.", "> > Delete *.log files.\n> Keep ab.txt* at 14:30."),
+    (">> Delete *.log files.\n>>\n>> Keep ab.txt at 14:30.", ">> Delete *.log files.\n>>\n>> Keep ab.txt* at 14:30."),
+    ("> > Delete *.log files.\n> > - Keep ab.txt at 14:30.", "> > Delete *.log files.\n> > - Keep ab.txt* at 14:30."),
+])
+def test_a_nested_quote_blank_line_or_start_ends_the_block(keyline_check, source, rendering):
+    # G3: QUOTE_BREAK read one ">" only, so "> >" and a nested quote's start continued it.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing == ["ab.txt"], result
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_nested_quote_paragraph_still_pairs_across_its_lines(keyline_check):
+    assert keyline_check._plain("> > **a\n> > b**") == "> > a\n> > b"
+    assert keyline_check._plain(">> **a\n> > b**") == ">> a\n> > b"
