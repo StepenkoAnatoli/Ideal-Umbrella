@@ -1413,4 +1413,81 @@ def test_a_source_whose_only_token_a_mark_hid_is_checked(keyline_check):
     ("https://x.io/?_k_=1 _b_", "https://x.io/?_k_=1 b", "https://x.io/?_k_=1 b"),
 ])
 def test_the_edge_free_copy_drops_only_whole_runs_at_a_word_edge(keyline_check, text, scan, raw):
-    assert keyline_check._edge_free(text) == (scan, raw)
+    mask = "".join("\0" if a != b else " " for a, b in zip(raw, scan))    # where code marks are
+    assert keyline_check._edge_free(text) == (scan, raw, mask)
+
+
+# --- self-review of d27ac81: F1-F4 ---------------------------------------------------------------
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Set `_v2.1_` now.", "Set `_v2.1_-rc` now."),
+    ("Use `__FILE__` since v2.1.", "Use `/x/__FILE__` since v2.1."),
+    ("Set `_Config_` in v2.1.", "Set `_Config_.old` in v2.1."),
+])
+def test_a_code_token_with_marks_is_not_present_where_a_rendering_extends_it(keyline_check, source, rendering):
+    # F1: a token taken from code with its marks was looked up with no extension test.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_code_token_the_source_extends_is_present_extended_the_same_way(keyline_check):
+    source = "Run `__FILE__.c` and `__FILE__` at 14:30."
+    assert keyline_check.check(source, source).ok
+    assert keyline_check.check(source, "Run `__FILE__.c` and `__FILE__.h` at 14:30.").ok is False
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("> Delete *.log files.\n>\n> Keep ab.txt at 14:30.", "> Delete *.log files.\n>\n> Keep ab.txt* at 14:30."),
+    ("> See _notes\n>\n> Keep v2.1 at 14:30.", "> See _notes\n>\n> Keep v2.1_ at 14:30."),
+    ("> - Delete *.log files.\n> - Keep ab.txt at 14:30.", "> - Delete *.log files.\n> - Keep ab.txt* at 14:30."),
+    ("> Delete *.log files.\n> # Keep ab.txt at 14:30.", "> Delete *.log files.\n> # Keep ab.txt* at 14:30."),
+    ("> Delete *.log files.\n> ~~~\n> Keep ab.txt at 14:30.", "> Delete *.log files.\n> ~~~\n> Keep ab.txt* at 14:30."),
+    ("> Delete *.log files.\r\n>\r\n> Keep ab.txt at 14:30.", "> Delete *.log files.\r\n>\r\n> Keep ab.txt* at 14:30."),
+])
+def test_a_blank_line_list_heading_or_fence_inside_a_quote_ends_the_block(keyline_check, source, rendering):
+    # F2: inside a quote, the line after "> " is what starts a block, as outside one.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+def test_a_quote_paragraph_still_pairs_across_its_lines(keyline_check):
+    assert keyline_check._plain("> **a\n> b**") == "> a\n> b"
+    assert keyline_check._plain("> **a\n>\n> b**") == "> **a\n>\n> b**"
+
+
+@pytest.mark.parametrize("text", [",9\x00_", "Ship v2.1\x00_ at 14:30.", "`_a_` and Paris\x00__ now", "\x00_v2.1_",
+                                  "b.__FILE__\x00.-*a\x00`.1-1",        # a NUL after the token
+                                  "\x00 a\x00_v2.1*__FILE__b"])         # a NUL before it
+def test_a_nul_in_the_text_is_no_code_mark(keyline_check, text):
+    # F3: a real NUL was read as the stand-in for a mark in code, so identical text failed.
+    assert keyline_check.check(text, text).ok, keyline_check.check(text, text)
+
+
+def test_many_distinct_tokens_sharing_a_first_run_take_linear_time(keyline_check):
+    # F4: present() walked every position of a token's first word run for every token.
+    import time
+    text = " ".join(f"src/f{i}.py" for i in range(4000)) + "."
+    start = time.perf_counter()
+    assert keyline_check.check(text, text).ok
+    source = " ".join(f"__/a{i}" for i in range(4000))
+    keyline_check.check(source, "__ " * (len(source) // 3))
+    assert time.perf_counter() - start < 3
+
+
+def test_a_hash_collision_in_the_word_index_changes_no_result(keyline_check, monkeypatch):
+    # F4: a form longer than SLICE is grouped by a hash; a collision only adds a start that
+    # present() refuses. Forcing every form onto the hash, with 7 values, must change nothing.
+    pairs = [("Keep src/f1.py and src/f2.py at 14:30 on 2026-10-25.", "Keep src/f2.py at 14:30."),
+             ("Ship v2.1 and v2.10, `__FILE__` and `_v2.1_`.", "Ship v2.10, `__FILE__.c` and `_v2.1_`."),
+             ("x/" * 300, "x/" * 299 + "y/"), ("__/a1 __/a2 /a3", "__ /a3 __/a1"),
+             ("At 14:30-15:00 or 2026-10-25T14:30.", "At 14:30 or 2026-10-25.")]
+    expected = [keyline_check.check(s, r) for s, r in pairs]
+    monkeypatch.setattr(keyline_check._WordIndex, "SLICE", 1)
+    monkeypatch.setattr(keyline_check._WordIndex, "MOD", 7)
+    for (source, rendering), want in zip(pairs, expected):
+        got = keyline_check.check(source, rendering)
+        assert (got.ok, got.missing) == (want.ok, want.missing), (source, rendering)
+    assert [want.missing for want in expected] == [
+        ["src/f1.py", "2026-10-25"], ["v2.1", "__FILE__"], ["x/" * 300], ["__/a2"], ["15:00", "2026-10-25T14:30"]]

@@ -229,3 +229,7 @@ Fixed in `keyline/keyline_check.py`, tests in `tests/test_keyline_check.py` (eac
 Known cost: renderings that strip backticks from code holding marks fail a little more often (111 against 106 of 1,929 repo paragraphs), since code is now compared as written; fail-closed. In the fail-open fuzz, passes of a changed token fell from 273 to 10, all one `___tools___`-in-code case that 2829343 also passes (no invariant kind is extracted from a plain lowercase word).
 
 Checks: pytest 1886 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures over 1,862 repo paragraphs and files, linear to 800 kB, 25 of 28 mutants killed and the other 3 argued equivalent.
+
+### Self-review of the fix (round 2)
+
+A fresh reviewer of d27ac81 found F1 (medium, fail-open regression: code tokens with edge marks skipped the extension check), F2 (low, fail-open: blockquote blank/list/heading/fence lines no longer reset pairing), F3 (low, fail-closed: a real NUL read as the code marker) and F4 (medium, pre-existing: `present()` quadratic over many tokens sharing a first run; 35 kB adversarial input 25 s against the hook's 30 s timeout). All four are fixed with tests that fail first. F4: a differential search over 140,934 pairs shows 0 result differences from the old walk; the repros take 0.25 s. Checks: pytest 1905 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures over 1,867 repo paragraphs and files.
