@@ -258,15 +258,20 @@ NUMBER_SIGN = re.compile(r"\.[ \t]*\d")
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
 # לא/אין/ללא/בלי and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו,
 # שאינו), and the imperative אל ("don't"), only before a second-person future verb (אל תפרסו):
-# elsewhere אל is "to" (אל הבית), and so it is before the ת-words that are not verbs, תוך ("into"),
-# תחת ("under") and תל (Tel Aviv). A noun in the construct state after אל (אל תחנת) is still
-# taken for the verb, which the check cannot tell apart; such a count in a rendering can hide a
-# lost negation, so the words that are common after אל are listed.
+# elsewhere אל is "to" (אל הבית), and so it is before the ת-words in AL_TO, which are not verbs:
+# תוך ("into"), תחת ("under"), תל (Tel Aviv) and the nouns docs put after "to" (אל תיקיית הפרויקט,
+# אל תפריט ההגדרות). Any other ת-noun after אל is still taken for the verb, which the check cannot
+# tell apart; such a count in a rendering can hide a lost negation, so add common ones here.
+# A word listed here that is also a verb (תפריט, "privatize") then fails closed, never open.
+AL_TO = ("תוך תוכו תוכה תוכם תוכן תחת תל "
+         "תיקייה תיקיית תיקיה תיקית תיקיות תבנית תבניות תצורה תצורת תוכנה תוכנת תוכנית תכנית "
+         "תכונה תכונת תמונה תמונת תיבה תיבת תחנה תחנת תפריט תג תגית תהליך תור תא תאריך תיק "
+         "תיעוד").split()
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
-    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])(?![ \t]+(?:תוך|תחת|תל)(?![{HEB}]))"
+    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])(?![ \t]+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
     rf"|אף|מעולם"
     rf")(?![{HEB}])"
 )

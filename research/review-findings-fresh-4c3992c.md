@@ -30,6 +30,22 @@ Class searches: the only loose `"context_check.py" in` match left is verify's, b
 
 Docs: README (hook matching, add_to_repo refusal, cloud setup), keyline/README (Hebrew negations), CHANGELOG "Fixed" F1-F5.
 
+## Self-check of the fixes (after fa13143)
+
+I re-read the fa13143 diff with the same rules. F1, F3 and F4 hold. Two of the fixes brought problems of their own, and one fix was too narrow:
+
+| ID | Sev | File:line (at 0ae7588) | Class | Failure |
+|----|-----|-----------|-------|---------|
+| S1 | low | config/cloud-setup.sh:31 | temp wider than its source (A8), brought in by F5 | The temp file beside `CLAUDE.md` was made with the umask (0644). It was narrowed only after awk had copied the user's text into it, so a 0600 file sat in a 0644 copy for a moment. That is the class A8 closed for the installers, and README promises it never happens. |
+| S2 | low | config/cloud-setup.sh:54 | regression, brought in by F5 | A `CLAUDE.md` that can be written but not renamed over (a bind mount, or a folder the session may not write) was left without the rules: "not written". The in-place write before F5 had worked there. |
+| S3 | medium | keyline/keyline_check.py:269 | F2 too narrow (fail-open) | Docs often put ת-nouns after אל in the construct form: אל תיקיית הפרויקט (to the project folder), אל תפריט ההגדרות (to the settings menu), אל תבנית, אל תצורת. These still counted as "don't". "Do not copy v2.1 to the project folder." rendered as "העתיקו את v2.1 אל תיקיית הפרויקט." passed with the negation lost. |
+
+| ID | Fix | Test (each failed on 0ae7588 for the stated reason) |
+|----|-----|------|
+| S1 | The temp file is made under `umask 077` before anything is written to it, then given the file's mode. A new file gets the umask default. | tests/test_cloud_setup.py `test_the_temp_file_is_never_more_open_than_the_file_it_replaces`: an awk shim records the temp file's mode. It was 644 before the fix. |
+| S2 | When the temp file cannot be made beside `CLAUDE.md` it goes to TMPDIR. When the rename fails, the file is written in place. If that write stops short, the note names the temp file, which holds the whole text. | tests/test_cloud_setup.py `test_a_file_that_cannot_be_moved_over_is_still_written`: an `mv` shim that fails. |
+| S3 | `AL_TO` lists תוך, תחת, תל and the common docs ת-nouns (absolute and construct forms). A listed word that is also a verb only fails closed. | tests/test_keyline_check.py: 8 noun sentences and 2 lost-negation rows, plus verb guards אל תשבית, אל תמחקו. |
+
 ## Checks
 
 See the PR #39 body for the commit and the exact results of `python -m pytest -q`, `python -I keyline/tests/run_tests.py` and `python -m pyflakes $(git ls-files '*.py')`.

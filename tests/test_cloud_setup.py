@@ -101,3 +101,48 @@ def test_a_write_cut_short_leaves_the_file_as_it_was(tmp_path):
     assert md.read_text(encoding="utf-8") == "# Image rules\nkeep me\n"
     assert "not written" in result.stderr, result.stderr
     assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
+
+
+def _shim(tmp_path, name, body):
+    """A PATH folder whose `name` runs body (bash) before, or instead of, the real command."""
+    bin_dir = tmp_path / "shim"
+    bin_dir.mkdir(exist_ok=True)
+    tool = bin_dir / name
+    tool.write_text("#!/bin/bash\n" + body + "\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return {"HOME": str(tmp_path), "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+
+def test_the_temp_file_is_never_more_open_than_the_file_it_replaces(tmp_path):
+    # Self-check of F5 (PR #39): the temp file beside CLAUDE.md was made with the umask (0644)
+    # and narrowed only after awk had copied the user's text into it, so a 0600 file sat in a
+    # 0644 one for a moment, the class A8 closed for the installers. The awk shim records the
+    # temp file's mode while awk runs.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("private\n", encoding="utf-8")
+    md.chmod(0o600)
+    seen = tmp_path / "seen"
+    env = _shim(tmp_path, "awk", f'stat -c %a "{md}".ideal-umbrella-* > "{seen}"\n'
+                                 f'exec "{shutil.which("awk")}" "$@"')
+    result = subprocess.run(["bash", "-c", 'umask 022; exec bash "$0"', str(SCRIPT)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text().split() == ["600"]
+    assert oct(md.stat().st_mode & 0o777) == "0o600"
+    assert RULES in md.read_text(encoding="utf-8")
+
+
+def test_a_file_that_cannot_be_moved_over_is_still_written(tmp_path):
+    # Self-check of F5 (PR #39): a CLAUDE.md that is a bind mount, or sits in a folder the
+    # session may not write, cannot be replaced by a rename; it was left without the rules,
+    # where the earlier in-place write had worked. A failing mv stands in for both.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("# Image rules\n", encoding="utf-8")
+    env = _shim(tmp_path, "mv", "exit 1")
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    text = md.read_text(encoding="utf-8")
+    assert text.startswith(f"# Image rules\n\n{BEGIN}\n{RULES}") and text.endswith(f"{END}\n")
+    assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]

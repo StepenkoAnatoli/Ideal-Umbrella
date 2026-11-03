@@ -1707,7 +1707,7 @@ def test_a_contraction_with_a_typographic_apostrophe_is_a_negation(keyline_check
 
 @pytest.mark.parametrize("text", [
     "השרת ואינו יציב.", "שרת שאינו יציב.", "כשאינו זמין, חכו.", "פרסו בלי אישור.", "ובלי אישור.",
-    "אל תפרסו ביום שישי.", "ואל תפרסו ביום שישי.",
+    "אל תפרסו ביום שישי.", "ואל תפרסו ביום שישי.", "אל תשבית את השירות.", "אל תמחקו את התיקייה.",
 ])
 def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
     # General review 44170ca, B2: ואינו/שאינו, בלי and the imperative אל were not counted.
@@ -1715,7 +1715,11 @@ def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
 
 
 @pytest.mark.parametrize("text", ["הלכנו אל הבית.", "אלתר את הקוד.", "שלום אל העולם.",
-                                  "העתיקו אל תוך התיקייה.", "נסענו אל תל אביב.", "זחלו אל תחת השולחן."])
+                                  "העתיקו אל תוך התיקייה.", "נסענו אל תל אביב.", "זחלו אל תחת השולחן.",
+                                  # Self-check of F2 (PR #39): the ת-nouns docs put after אל.
+                                  "העתיקו אל תיקיית הפרויקט.", "עברו אל תפריט ההגדרות.",
+                                  "הוסיפו אל תבנית הדף.", "שמרו אל תיקייה חדשה.", "הוסיפו אל תצורת השרת.",
+                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר."])
 def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
 
@@ -1731,6 +1735,8 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     ("Do not copy v2.1 into the folder.", "העתיקו את v2.1 אל תוך התיקייה.", False),
     ("העתיקו את v2.1 אל תוך התיקייה.", "Copy v2.1 into the folder.", True),
     ("Do not copy v2.1 into the folder.", "אל תעתיקו את v2.1 אל תוך התיקייה.", True),
+    ("Do not copy v2.1 to the project folder.", "העתיקו את v2.1 אל תיקיית הפרויקט.", False),
+    ("Do not open v2.1 from the settings menu.", "פתחו את v2.1 אל תפריט ההגדרות.", False),
 ])
 def test_a_negation_survives_or_is_reported_in_both_directions(keyline_check, source, rendering, ok):
     assert keyline_check.report("src", "ren", source, rendering)[0] is ok
