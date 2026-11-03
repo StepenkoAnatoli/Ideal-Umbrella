@@ -49,7 +49,8 @@ FAIL tests/incident.glyph.txt  (checked against tests/incident.keyline.txt)
 `--list SOURCE` prints what would be checked. Exit 0 pass, 1 fail or inconclusive, 2 usage error.
 
 Matching is exact and case-sensitive, on Unicode word boundaries (letters of any script, digits
-and `_`) except Hebrew letters: `5` does not count as present because `503` is, `COLE` is not in
+and `_`) except Hebrew letters and CJK, Kana, Hangul and Thai letters, which are written without
+spaces (`会议在Paris举行` holds `Paris`, and `会议在**Paris**举行` drops its marks): `5` does not count as present because `503` is, `COLE` is not in
 `ÉCOLE`, a bare number does not count as present inside a time or a grouped number (`10` is not in
 `10:00`, `2` is not in `2,500`), but a Hebrew prefix glued to an identifier still counts (`בv2.14.0`,
 `ב-v2.1`). Text is compared in Unicode NFC, so a name saved with combining accents (NFD) matches,
@@ -63,19 +64,28 @@ punctuation, `ב_Paris_` after a Hebrew prefix). A pair does not span a blank li
 `# `, `>`, a fence of three backticks or tildes; the next line of the same quote, at the same
 depth (`>`, `> >`), continues it, unless it is a blank quote line or starts one of those blocks
 after its `>` marks)
-or a table cell separator `|`. A mark
-inside an inline code span is code, compared as written: `` `__FILE__` ``, `` `_Config_` `` and
+or, inside a table (a line that starts with `|`, or a GFM table from its header row to a blank
+line), a cell separator `|` or a row end; outside a table `|` is text (`**R|CA**` is bold). A mark
+inside an inline code span, an indented code block (four columns, after a blank line, not in a
+list item) or an HTML `<code>` or `<pre>` element is code, compared as written: `` `__FILE__` ``, `` `_Config_` `` and
 `` `*API*` `` are the tokens `__FILE__`, `_Config_` and `*API*`, so a rendering that drops those
 marks fails, and one that extends them fails as any token does (`` `_v2.1_-rc` ``,
 `` `/x/__FILE__` ``); emphasis around a code span (`**use `x` for v2.1**`) is still dropped.
-A rendering that drops the backticks and puts emphasis around such a token
-(`` `__FILE__` `` as `**__FILE__**`) fails too: the `*` glued to it extends it.
+A rendering that drops the backticks and puts emphasis around such a token fails too
+(`` `__FILE__` `` as `**__FILE__**`, which CommonMark shows as a bold `FILE`), except code with
+`_` marks on its left only, wrapped whole in `*` emphasis (`` `_Config` `` as `**_Config**`,
+which CommonMark shows as `_Config`). A `*` wrapping inside the rendering's own code is shown as
+written, so it does not count.
 An `_` or `*` that is not emphasis stays part of the token: anywhere inside a URL
 (`https://x.io/a?_k_=1`, `#_frag_`, `&*b*=2`; marks around a whole URL, `**https://x.io/a**`,
-are still emphasis), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
-or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks), glued to a word that
+are still emphasis), a `*` before a glob suffix (`*.log`, `*.tar.gz` with no `*` closing the
+word, so `*.log and keep ab.txt*` keeps the `*` of `ab.txt*`), inside a path or identifier (`/srv/_data_/x.txt`; a run does not open after
+or close after a `/` or `\`, so `**/*.py and docs/**` keeps its marks; a lone `/` between
+spaces is text, so `**Class: v2.1 /**` is bold), glued to a word that
 holds an `_` itself (`_private_var_`; of `_v2.1 adds max_retries_` only the closing `_` stays,
-so `v2.1` is still a token), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold), or a
+so `v2.1` is still a token), a dunder (`__init__`, `__init_subclass__`; `__12__` is bold; a lowercase `__tools__` that is
+no Python, C or tooling name, never in code and never glued to a path, call or member may also
+render as a bold or plain `tools`, as often as the source writes the word), or a
 lone edge mark (`_private_name`, `snake_case_`).
 A mark the first scan keeps hides no token: a second scan drops every `*` or `_` run at a word
 edge outside URLs and code (`~_20_`, `14:30-_15:00_`, `measured=__True__` give `20`, `15:00`,
