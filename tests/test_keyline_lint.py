@@ -273,3 +273,41 @@ def test_a_list_marker_needs_content_after_it(line, what, furniture):
     words = set(line.replace(".", " ").split()) - {"-", "*", "+"}
     findings = [f for _, f in keyline_lint.lint_text(line, words, set())]
     assert any(what in f for f in findings) == furniture
+
+
+def test_a_non_ascii_word_is_not_split_into_ascii_fragments():
+    # B5: "kämpft" used to give "abbreviation: 'mpft'"; the rule covers ASCII words only.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    for word in ("kämpft", "naïve", "façade", "über"):
+        assert list(keyline_lint.lint_text(f"the {word} test\n", {"the", "test"}, set())) == []
+
+
+@pytest.mark.parametrize("sep", [" ", " ", "\x85", "\x0c", "\x1c"])
+def test_only_a_newline_ends_a_line(sep):
+    # B6: str.splitlines() also splits on U+2028, NEL, form feed and others, so line numbers
+    # drifted and a "- " after the separator was taken for a bullet.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    text = f"one{sep}- two\nthree\n**bold**\n"
+    assert list(keyline_lint.lint_text(text, {"one", "two", "three", "bold"}, set())) == [
+        (3, "furniture: bold '**'")]
+
+
+@pytest.mark.parametrize("text, line", [
+    ("Title\n=====\n", 2),
+    ("Title\n---\n", 2),
+    ("text\n\nTitle\n  ===  \n", 4),
+    ("#\n", 1),
+    ("  ######\n", 1),
+])
+def test_setext_headings_and_a_bare_hash_are_headers(text, line):
+    # B7: a setext heading and a lone "#" passed the lint.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    findings = list(keyline_lint.lint_text(text, {"title", "text"}, set()))
+    assert (line, "furniture: header") in findings
+
+
+@pytest.mark.parametrize("text", ["\n---\n", "---\n", "a - b\n", "#tag\n", "x = 1\n"])
+def test_a_rule_or_a_hash_word_is_not_a_header(text):
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    findings = list(keyline_lint.lint_text(text, {"a", "b", "tag", "x"}, set()))
+    assert not any("header" in m for _, m in findings)

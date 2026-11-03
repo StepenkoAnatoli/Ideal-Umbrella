@@ -139,8 +139,10 @@ python keyline_lint.py notes/*.txt
 
 - Furniture: a line starting with a bullet (`- `, `* `, `+ `), a numbered item of one or two digits
   (`1. `, `12) `; `2024. ` is a year, not an item), each with content after it (`12.  ` alone is
-  not an item), or a header (`#` to `######`), or any `**` or backtick.
-- Abbreviations: a lowercase ASCII word that is not one o200k_base token (with its leading space)
+  not an item), or a header (`#` to `######`, a lone `#` included, or a `===`/`---` line under a
+  line of text), or any `**` or backtick. Lines end at `\n` only, so U+2028 or a form feed does
+  not shift the line numbers.
+- Abbreviations: a lowercase ASCII word (a word with any non-ASCII letter, `kämpft`, is skipped) that is not one o200k_base token (with its leading space)
   AND has the shape of an invented abbreviation: a numeronym (k8s, i18n, a11y), 2-5 letters with
   no vowel (rst, mgmt), or 4-5 letters with one vowel (alrt, srvc). Words of 6+ letters, anything
   containing a digit (cp1252, sha256, git hashes), and plurals of a one-token word (diffs, slugs)
