@@ -19,6 +19,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `scripts/plugin_cost.py` does not follow a folder link to a folder that holds the app folder (`/`, the home folder), which made the walk cover the whole tree above it; other links are still followed, each real folder once (general review 44170ca, N5).
 - `config/verify-tokens.py` takes the key from `ANTHROPIC_API_KEY`; `--api-key` still works but warns that the key shows in `ps` output and shell history, and its help says so (general review 44170ca, A9).
 - `config/cloud-setup.sh` writes the rules as a marked section of `CLAUDE.md` in `${CLAUDE_CONFIG_DIR:-~/.claude}` instead of `cat >` over `~/.claude/CLAUDE.md`, which replaced what the image or an earlier step wrote and ignored `CLAUDE_CONFIG_DIR`; tests: `tests/test_cloud_setup.py` (general review 44170ca, A7).
 - `config/install.py` (install and `--verify-only`) and `config/uninstall.py` warn when `--home` is given while `CLAUDE_CONFIG_DIR` is set: `--home` still wins, but Claude Code reads only the variable's folder, so the install changed nothing it sees and the verify still said OK (general review 44170ca, A5).
