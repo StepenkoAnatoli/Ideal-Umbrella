@@ -18,7 +18,8 @@ The single-token word list is built once with tiktoken and cached in cache/.
 
 Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
 keyline-allow.txt, one or more words per line (split on spaces; '#' starts a comment); every
-keyline-allow.txt in the file's folder or any parent folder is read.
+keyline-allow.txt from the file's folder up to the repository root (the first folder with .git) is
+read, except in a folder anyone may write to (/tmp).
 
 Usage:
   python keyline_lint.py FILE [FILE ...]
@@ -30,6 +31,7 @@ Exit: 0 clean, 1 findings, 2 usage or read error.
 import errno
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -153,14 +155,30 @@ def load_words():
     return words
 
 
+def allow_files(path):
+    """The keyline-allow.txt files from the note's folder up to the repository root (the first
+    folder holding .git) or, outside a repository, up to "/". A folder anyone may write to
+    (/tmp) is passed over: a file planted there would whitelist words for every note below it."""
+    found = []
+    for d in [Path(path).resolve().parent, *Path(path).resolve().parents]:
+        try:
+            # os.stat, not is_file(): on Python 3.14 is_file() says False for a file it cannot
+            # look at, which would drop the allow file silently.
+            shared = os.name != "nt" and os.stat(d).st_mode & stat.S_IWOTH
+            if not shared and stat.S_ISREG(os.stat(d / ALLOW_NAME).st_mode):
+                found.append(d / ALLOW_NAME)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        if os.path.lexists(d / ".git"):
+            break
+    return found
+
+
 def load_allow(path, extra, use_files=True):
     allow = set(BUILTIN_ALLOW) if use_files else set()
     files = list(extra)
     if use_files:
-        for d in [Path(path).resolve().parent, *Path(path).resolve().parents]:
-            f = d / ALLOW_NAME
-            if f.is_file():
-                files.append(f)
+        files.extend(allow_files(path))
     for f in files:
         for line in read(f).split("\n"):
             allow.update(line.split("#", 1)[0].lower().split())

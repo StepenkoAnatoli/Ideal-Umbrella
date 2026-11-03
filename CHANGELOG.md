@@ -19,6 +19,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `keyline/keyline_lint.py` reads `keyline-allow.txt` files only up to the repository root, and never from a folder anyone may write to; a file planted in `/tmp` or above the repository whitelisted words for its notes. It checks the file with `os.stat`, like the hook (general review 44170ca, N4).
 - `keyline/keyline_lint.py`: a word with a non-ASCII letter is skipped instead of split into ASCII fragments (`kämpft` gave `abbreviation: 'mpft'`); lines end at `\n` only, so U+2028, NEL or a form feed no longer shift line numbers or start a false bullet; a setext heading (`===` or `---` under a line of text) and a lone `#` are flagged as headers (general review 44170ca, B5, B6, B7).
 - `scripts/usage_breakdown.py` counts each session's `subagents/*.jsonl` transcripts with it; COUNT picks the largest sessions, subagents included, and the report says how many subagent transcripts it read. Before, subagent cache writes and output were left out (general review 44170ca, B4). The README cost split was read without them and is flagged until it is measured again.
 - `scripts/lint_validate.py` walks its corpus without following folder links, skips hidden folders and `node_modules` while it walks, and stops at 400 files; a link cycle (a pnpm `node_modules`) made it hang (general review 44170ca, B3).

@@ -156,7 +156,9 @@ python keyline_lint.py notes/*.txt
 - Common tool and format names (mcp, npm, npx, pnpm, venv, pwsh, docx, stdout...) are allowed by a
   built-in list in `keyline_lint.py`. Other real names go in a `keyline-allow.txt`, one or more words per line
   (`#` starts a comment).
-  Every such file in the note's folder or a parent folder is read. `--no-allow` ignores those files
+  Every such file from the note's folder up to the repository root (the first folder holding
+  `.git`; outside a repository, up to `/`) is read, except in a folder anyone may write to
+  (`/tmp`), where a planted file would whitelist words for every note below it. `--no-allow` ignores those files
   and the built-in list; `--allow FILE` adds one.
 
 ## measure.py
