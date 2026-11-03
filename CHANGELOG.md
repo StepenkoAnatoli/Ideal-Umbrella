@@ -19,6 +19,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `scripts/usage_breakdown.py` counts each session's `subagents/*.jsonl` transcripts with it; COUNT picks the largest sessions, subagents included, and the report says how many subagent transcripts it read. Before, subagent cache writes and output were left out (general review 44170ca, B4). The README cost split was read without them and is flagged until it is measured again.
 - `scripts/lint_validate.py` walks its corpus without following folder links, skips hidden folders and `node_modules` while it walks, and stops at 400 files; a link cycle (a pnpm `node_modules`) made it hang (general review 44170ca, B3).
 - `config/add_to_repo.py` runs git with `core.fsmonitor` and `core.untrackedCache` off, so a `core.fsmonitor` command planted in the target folder's `.git/config` no longer runs as the user (general review 44170ca, A2).
 - `keyline/keyline_check.py` counts more negations. English contractions with a typographic apostrophe count (`can’t`), so "can’t" -> "can" fails. In Hebrew it now counts בלי, ואינו and שאינו (the prefixes on the inflected forms of אין), and the imperative אל before a ת-verb. Before, a dropped negation could pass and a correct English-to-Hebrew rendering could fail (general review 44170ca, B1, B2).

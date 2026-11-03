@@ -6,7 +6,7 @@ Rules and small tools that cut how many tokens Claude Code re-reads on every cal
 
 ## Why
 
-In the three largest Claude Code transcripts for this project (2,226 API responses, read 2026-10-23), list-price cost at Opus 5.5 rates was **43% cache reads, 37% cache writes and 20% output**. The cache writes were 100% 1-hour writes (`$8/MTok`), not 5-minute writes (`$5/MTok`). Every call re-reads the whole context, so the lever is a smaller context per call, not shorter wording.
+In the three largest Claude Code transcripts for this project (2,226 API responses, read 2026-10-23), list-price cost at Opus 5.5 rates was **43% cache reads, 37% cache writes and 20% output**. (That reading left out subagent transcripts, which `scripts/usage_breakdown.py` now counts with their session; with them the split may differ, and has not been measured again yet.) The cache writes were 100% 1-hour writes (`$8/MTok`), not 5-minute writes (`$5/MTok`). Every call re-reads the whole context, so the lever is a smaller context per call, not shorter wording.
 
 Earlier versions of this README said 58% cache reads / 27% cache writes / 15% output. That was wrong: `scripts/usage_breakdown.py` priced every cache write at the 5-minute rate. The script now splits the two TTLs and prices each separately; the command to reproduce the split is under [Measured numbers](#measured-numbers).
 

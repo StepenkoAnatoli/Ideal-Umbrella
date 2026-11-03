@@ -328,3 +328,22 @@ def test_a_huge_token_count_is_no_traceback_in_the_report(usage_breakdown, tmp_p
     usage_breakdown.main([str(tmp_path)])
     out = capsys.readouterr().out
     assert "nan" not in out and " -" not in out, out
+
+
+def test_a_sessions_subagent_transcripts_are_counted_with_it(usage_breakdown, tmp_path, capsys):
+    # General review 44170ca, B4: only the project folder was listed, so a session's
+    # <session>/subagents/*.jsonl (their cache writes and output) were left out of the totals.
+    _responses(tmp_path / "s1.jsonl", 1)
+    (tmp_path / "s1" / "subagents").mkdir(parents=True)
+    _responses(tmp_path / "s1" / "subagents" / "agent-a.jsonl", 40)
+    _responses(tmp_path / "s1" / "subagents" / "agent-b.jsonl", 9)
+    _responses(tmp_path / "s2.jsonl", 20)
+    (tmp_path / "s2" / "subagents").mkdir(parents=True)
+    _responses(tmp_path / "s2" / "subagents" / "agent-c.jsonl", 2)
+    (tmp_path / "other").mkdir()
+    _responses(tmp_path / "other" / "t.jsonl", 100)               # not a session's subagents
+    assert usage_breakdown.main([str(tmp_path), "1"]) == 0
+    # The count is of sessions: s1 with its subagents is the largest; s2 is left out.
+    assert "3 transcripts, 50 API responses, 2 of them subagent transcripts" in capsys.readouterr().out
+    assert usage_breakdown.main([str(tmp_path)]) == 0
+    assert "5 transcripts, 72 API responses, 3 of them subagent transcripts" in capsys.readouterr().out
