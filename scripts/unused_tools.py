@@ -60,6 +60,7 @@ def transcripts(folder):
 def tool_calls(folder):
     """Return (number of transcripts, Counter of tool names)."""
     called = collections.Counter()
+    seen_uuids = set()   # a resumed session repeats the lines it continues: count each once
     files = sorted(transcripts(folder))
     for path in files:
         # utf-8-sig: a BOM would otherwise make the first line unreadable JSON.
@@ -69,6 +70,11 @@ def tool_calls(folder):
                     event = json.loads(line)
                 except (ValueError, RecursionError):
                     continue
+                uuid = event.get("uuid") if isinstance(event, dict) else None
+                if isinstance(uuid, str) and uuid:
+                    if uuid in seen_uuids:
+                        continue
+                    seen_uuids.add(uuid)
                 message = event.get("message") if isinstance(event, dict) else None
                 content = message.get("content") if isinstance(message, dict) else None
                 for block in content if isinstance(content, list) else []:

@@ -347,3 +347,30 @@ def test_a_sessions_subagent_transcripts_are_counted_with_it(usage_breakdown, tm
     assert "3 transcripts, 50 API responses, 2 of them subagent transcripts" in capsys.readouterr().out
     assert usage_breakdown.main([str(tmp_path)]) == 0
     assert "5 transcripts, 72 API responses, 3 of them subagent transcripts" in capsys.readouterr().out
+
+
+def test_streamed_lines_of_one_response_take_the_largest_count_of_each_field(usage_breakdown, tmp_path):
+    # Review general-44170ca, N1: the lines of one streamed response share a message id. An
+    # early line can hold a partial output count; the largest of each field is the response's.
+    def line(uuid, output, cache_read, text):
+        return {"type": "assistant", "uuid": uuid, "message": {
+            "id": "m1", "usage": {"input_tokens": 3, "cache_read_input_tokens": cache_read,
+                                  "output_tokens": output},
+            "content": [{"type": "text", "text": text}]}}
+    path = write_jsonl(tmp_path / "t.jsonl", [line("u1", 1, 100, "ab"), line("u2", 40, 0, "cde")])
+    totals, chars, turns = usage_breakdown.summarize([path])
+    assert turns == 1
+    assert totals["output_tokens"] == 40
+    assert totals["cache_read_input_tokens"] == 100
+    assert totals["input_tokens"] == 3
+    assert chars["visible text"] == 5
+
+
+def test_a_resumed_session_that_repeats_earlier_lines_counts_their_content_once(usage_breakdown, tmp_path):
+    # Review general-44170ca, N2: the same event (same uuid) in two files is counted once.
+    event = {"type": "assistant", "uuid": "u1", "message": {
+        "id": "m1", "usage": {"output_tokens": 5}, "content": [{"type": "text", "text": "abc"}]}}
+    a = write_jsonl(tmp_path / "a.jsonl", [event])
+    b = write_jsonl(tmp_path / "b.jsonl", [event])
+    totals, chars, turns = usage_breakdown.summarize([a, b])
+    assert (turns, totals["output_tokens"], chars["visible text"]) == (1, 5, 3)

@@ -68,11 +68,14 @@ def _len(value):
 
 
 def summarize(files):
-    """Return (totals, output_characters, api_responses) for the given files."""
-    tot = collections.Counter()
+    """Return (totals, output_characters, api_responses) for the given files.
+
+    The lines of one streamed response share a message id, and an early one can hold a
+    partial count: each field takes its largest value across them. A line whose uuid was
+    already read (a resumed session repeats the history it continues) is counted once."""
+    per_message = {}
     out_chars = collections.Counter()
-    seen = set()
-    turns = 0
+    seen_uuids = set()
     for path in files:
         # utf-8-sig: a BOM would otherwise make the first line unreadable JSON.
         with open(path, encoding="utf-8-sig", errors="ignore") as f:
@@ -83,22 +86,27 @@ def summarize(files):
                     continue
                 if not isinstance(event, dict) or event.get("type") != "assistant":
                     continue
+                uuid = event.get("uuid")
+                if isinstance(uuid, str) and uuid:
+                    if uuid in seen_uuids:
+                        continue
+                    seen_uuids.add(uuid)
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
                 message_id = message.get("id")
                 usage = message.get("usage")
-                if not isinstance(usage, dict):
-                    usage = {}
-                if isinstance(message_id, str) and message_id and message_id not in seen and usage:
-                    seen.add(message_id)
-                    turns += 1
+                if isinstance(message_id, str) and message_id and isinstance(usage, dict) and usage:
                     five, one = _cache_writes(usage)
-                    tot["cache_creation_5m_input_tokens"] += five
-                    tot["cache_creation_1h_input_tokens"] += one
-                    tot["cache_creation_input_tokens"] += five + one
+                    counts = {
+                        "cache_creation_5m_input_tokens": five,
+                        "cache_creation_1h_input_tokens": one,
+                    }
                     for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"):
-                        tot[key] += _int(usage.get(key))
+                        counts[key] = _int(usage.get(key))
+                    known = per_message.setdefault(message_id, counts)
+                    for key, value in counts.items():
+                        known[key] = max(known[key], value)
                 content = message.get("content")
                 for block in content if isinstance(content, list) else []:
                     if not isinstance(block, dict):
@@ -112,7 +120,13 @@ def summarize(files):
                         )
                     elif kind == "thinking":
                         out_chars["thinking (visible part)"] += _len(block.get("thinking"))
-    return tot, out_chars, turns
+    tot = collections.Counter()
+    for counts in per_message.values():
+        tot.update(counts)
+    tot["cache_creation_input_tokens"] = (
+        tot["cache_creation_5m_input_tokens"] + tot["cache_creation_1h_input_tokens"]
+    )
+    return tot, out_chars, len(per_message)
 
 
 def costs(tot):
