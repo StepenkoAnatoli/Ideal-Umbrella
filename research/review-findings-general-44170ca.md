@@ -236,3 +236,18 @@ Totals: 1 high, 7 medium, 14 low, and 7 notes.
 2. Fix B1 and B2: fail-open in the main use case.
 3. Fix A2 and B3/B4: hardening and correct numbers. Re-measure the README "Why" split after B4.
 4. Batch the lows.
+
+## Fixes (branch `ccr-fix-general`, PR #39)
+Each fix began with a failing test. Each was checked for the same class elsewhere, and each moved README and CHANGELOG with it. Checks at 04fc025: pytest 2022 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+
+| ID | Commit | What changed |
+|---|---|---|
+| A1 | aea4db8 | add_to_repo stops, with nothing written, in two cases. The first is a settings or hook symlink to a file with a different name. The second is a file or folder link that lands in `~/.claude` or `CLAUDE_CONFIG_DIR`. A same-name link, such as a copy in a dotfiles folder, still works. `install.py` is the neighbour; it writes into the config folder by design. |
+| A3 | ec79c14 | A hook counts as ours only when it runs `ballast/context_check.py` (in a repo, `.claude/hooks/context_check.py`) in an event the template names. The fix covers install, uninstall and add_to_repo. `--verify-only` keeps its loose match on purpose, because it only reports. A replaced command is not recorded: with the strict match, install only ever replaces its own hook. |
+| C1 | 89d0bc5 | `--watch` reads the path and the pattern both as written and resolved. `shown()` is used for display only, so it is unchanged. |
+| B1, B2 | 047174c | NEG_EN takes `’` and `ʼ` in n't. NEG_HE adds בלי and the ו/ש/וש/כש prefixes on the אינ* forms. It also adds the imperative אל or ואל, but only before a word starting with ת, so that אל meaning "to" is not counted. |
+| A2 | 95ce586 | The git reads in add_to_repo run with `-c core.fsmonitor=false -c core.untrackedCache=false`. The README warns that the user's own later `git add` is not covered. |
+| B3 | 95ce586 | `corpus_files` walks with `os.walk(followlinks=False)`, skips hidden folders and node_modules as it goes, and stops at MAX_FILES. |
+| B4 | 04fc025 | COUNT picks the largest sessions, with `<session>/subagents/*.jsonl` read alongside each one. The report says how many subagent transcripts it read. The README cost split is flagged because it has not been measured again: no local transcripts are available in this container. |
+
+Still open: the lows A4-A9, B5-B7 and C2-C6, and the notes N1-N7 where a fix is cheap.

@@ -1,4 +1,4 @@
-# Resume point: general review done (report on `ccr-review-general`); next: fix A1, A3, C1, then the rest
+# Resume point: general-review fixes A1-B4 done (PR #39); next: the lows
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -38,31 +38,28 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - B1/B2: curly-apostrophe and Hebrew negation gaps in keyline_check.
 - The review branch is stacked on #36 because both change this file. Merge #36 first.
 
-## Next task: fix the general-review findings (user asked 2026-11-03)
-- The user's words: "fix A1, A3 and C1 first then whatever is left if any".
-- Source of truth: `research/review-findings-general-44170ca.md`. It gives each finding's file:line, its repro, a suggested fix and the missing tests.
-- Order:
-  1. A1, A3, C1;
-  2. B1, B2;
-  3. A2, B3, B4 (after B4, re-measure the README "Why" split, or flag it as possibly stale);
-  4. the lows (A4-A9, B5-B7, C2-C6), and the notes N1-N7 where a fix is cheap and in scope.
-- Planned fixes:
-  - A1: in `config/add_to_repo.py`, before any write, refuse (nothing written, exit non-zero) when a file-level symlink for the hook or settings file resolves outside the real repo, or to a file that is not already that kind of file. Folder links stay allowed (tests/test_add_to_repo.py:919).
-  - A3: a hook is "ours" only when its command names the installed path (`ballast/context_check.py` or the install record's path) and it sits in an event the template names. Install records a command it replaces; uninstall restores it. Update README:69.
-  - C1: in `keyline/keyline_hook.py`, `--watch` matches the path as written and as resolved, against the pattern as written and as resolved.
-- Rules (from CONTRIBUTING.md):
-  - a failing test first for each fix;
-  - search for the same class elsewhere, so the neighbours (install and add_to_repo, uninstall) are covered;
-  - README.md and CHANGELOG.md move with the code;
-  - stdlib only;
-  - `python -I`;
-  - temp HOME and CLAUDE_CONFIG_DIR, never the real ~/.claude.
-- Branch: `ccr-fix-general`, cut from `ccr-review-general`, with a draft PR against main. It is stacked on #36 and #37; merge those first.
+## Done: high and medium fixes (branch `ccr-fix-general`, draft PR #39, stacked on #36 and #37)
+- A1, A3, C1, B1, B2, A2, B3 and B4 are fixed and pushed, with head 04fc025.
+- The details and commits are in the "Fixes" section of `research/review-findings-general-44170ca.md`.
+- Checks: pytest 2022 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+- This session is subscribed to PR #39 activity.
+- Decisions:
+  - A1 refuses a link to a file with a different name, and any landing in the Claude config folder. A same-name dotfiles link is still allowed; tests 237/255 need it.
+  - A3: verify-only keeps its loose match, because it only reports. No record of a replaced command is kept, since the strict match makes one unnecessary.
+  - B4: COUNT counts sessions, not files. The README "Why" split is flagged and has not been measured again; that needs the user's local transcripts.
+
+## Next task: the lows, on the same branch (`ccr-fix-general`)
+- Do A4-A9, B5-B7 and C2-C6, then the notes N1-N7 where a fix is cheap. The report has file:line for each.
+- Rules for each fix:
+  - write a failing test first;
+  - search for the same class elsewhere;
+  - update README and CHANGELOG;
+  - use a temp HOME and CLAUDE_CONFIG_DIR, and `python -I`, for everything run.
 - Checks before each push:
-  - `python -m pytest -q`;
-  - `python -I keyline/tests/run_tests.py`;
-  - `python -m pyflakes $(git ls-files '*.py')`.
-- Record what was fixed, and how, in a "Fixes" section of the review report.
+  - `python -m pytest -q`
+  - `python -I keyline/tests/run_tests.py`
+  - `python -m pyflakes $(git ls-files '*.py')`
+- When done, add the lows to the report's "Fixes" table and replace this file.
 
 ## Open items
 - Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
