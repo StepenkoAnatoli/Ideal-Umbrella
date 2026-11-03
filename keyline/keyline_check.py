@@ -14,6 +14,7 @@ Usage:
 Exit: 0 all renderings pass, 1 any rendering fails or is inconclusive, 2 usage or read error.
 """
 import bisect
+import collections
 import os
 import re
 import sys
@@ -43,9 +44,17 @@ def _mark_outside_words(c, category):
     return category == "Me" or "\ufe00" <= c <= "\ufe0f" or "\U000e0100" <= c <= "\U000e01ef"
 
 
+# The letters of the scripts that write no space between a word and the next (Chinese, Japanese,
+# Thai) or glue particles to a word (Korean): like a Hebrew letter, one is no word character
+# here, so "会议在Paris举行" holds "Paris", "パリv2.1で" holds "v2.1", and a "*" run glued to one
+# opens or closes an emphasis ("会议在**Paris**举行"), as in CommonMark.
+CJK = ("\u0e00-\u0e7f\u2e80-\u2fff\u3040-\u30ff\u3100-\u312f\u3190-\u31ff\u3400-\u4dbf"
+       "\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af\U00020000-\U0003134f")
+
+
 def _word_classes():
     """(letter, alnum, mark): the insides of [...] classes for a letter, a letter or digit, and
-    a combining mark, of any script but Hebrew. A mark NFC cannot fold into its letter (U+0331
+    a combining mark, of any script but Hebrew and those of CJK. A mark NFC cannot fold into its letter (U+0331
     after the "a" of a name) is part of the word, as the letter is; a Hebrew point is not (a
     Hebrew letter is no word character here), nor a variation selector or an enclosing mark
     (see _mark_outside_words). A mark is no word character to re ("\\W"), so the
@@ -57,7 +66,7 @@ def _word_classes():
     never joined across a digit (for the letter class) or an assigned non-word character."""
     top = 0x40000                                     # planes 0 to 3, then plane 14 after a " "
     text = "".join(map(chr, range(top))) + " " + "".join(map(chr, range(0xE0000, 0xF0000)))
-    text = re.sub("[\u0590-\u05ff\ufb1d-\ufb4f]", " ", text)
+    text = re.sub(f"[\u0590-\u05ff\ufb1d-\ufb4f{CJK}]", " ", text)
 
     def spans(pattern):
         """The [first, last] code points of each run of pattern."""
@@ -73,6 +82,7 @@ def _word_classes():
                 marks.append(ord(c))
             elif category != "Cn" and c > "\uffff":
                 walls.append(ord(c))
+    walls = sorted(walls + [0x20000, 0x3134F])     # the CJK of plane 2 and 3 is no word: a wall
     mark_spans = []
     for cp in marks:
         if mark_spans and mark_spans[-1][1] == cp - 1:
@@ -430,17 +440,28 @@ NOT_EXTENDED = (None, None)
 # "ab.txt*" from "ab.txt"; a token the strict scan finds is judged by it. Inside a code span the
 # runs are kept: a token glued to them is taken with its marks ("`__FILE__`" is checked as
 # "__FILE__", "`_Config_`" as "_Config_"), so a rendering that drops them fails.
-_GLUED_DASH = r"(?<![^\W֐-׿יִ-ﭏ]-)"
+_GLUED_DASH = rf"(?<![^\W֐-׿יִ-ﭏ{CJK}]-)"
 _NO_OPEN = rf"[{_ALNUMS}*/\\.:~@=]"             # what an opening run may not follow
+# After a lone "/" (no non-space before it) a run may close: "**Class: v2.1 /**".
+_AFTER_LONE_SLASH = r"(?<=(?<!\S)/)"
 EMPHASIS = re.compile(
     rf"(?P<open>(?<!{_NO_OPEN})(?<!{_NO_OPEN}_)(?<!{_NO_OPEN}__)(?<!{_NO_OPEN}___)(?<!____)"
     rf"{_GLUED_DASH}\*{{1,3}}(?=[^\s*])"
-    rf"|(?<![{_ALNUMS}_/\\.:~@=]){_GLUED_DASH}_{{1,3}}(?=[^\s_]))"
-    rf"|(?P<close>(?<=[^\s*/\\])\*{{1,3}}(?!\*|_*[{_ALNUMS}/\\])|(?<=[^\s_/\\])_{{1,3}}(?![{_ALNUMS}_/\\]))"
-    r"|\n[ \t\r]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|```|~~~))|(?P<quote>\n(?=[ \t]*>))|\|")
+    rf"|(?<![{_ALNUMS}{CJK}_/\\.:~@=]){_GLUED_DASH}_{{1,3}}(?=[^\s_]))"
+    rf"|(?P<close>(?:(?<=[^\s*/\\])|{_AFTER_LONE_SLASH})\*{{1,3}}(?!\*|_*[{_ALNUMS}/\\])"
+    rf"|(?:(?<=[^\s_/\\])|{_AFTER_LONE_SLASH})_{{1,3}}(?![{_ALNUMS}{CJK}_/\\]))"
+    r"|\n[ \t\r]*\n|\n(?=[ \t]*(?:(?:[-*+]|\d{1,2}[.)])[ \t]|#{1,6}[ \t]|```|~~~))|(?P<quote>\n(?=[ \t]*>))"
+    r"|(?P<pipe>\|)|(?P<nl>\n)")
 # An "_" run that may close (after a non-space, before no word character): one that EMPHASIS
 # reads as opening ("%_," after punctuation) closes an open run of the same marks.
-UNDERSCORE_CLOSE = re.compile(rf"(?<=[^\s_/\\])_{{1,3}}(?![{_ALNUMS}_/\\])")
+UNDERSCORE_CLOSE = re.compile(rf"(?:(?<=[^\s_/\\])|{_AFTER_LONE_SLASH})_{{1,3}}(?![{_ALNUMS}{CJK}_/\\])")
+# A single "*" that starts a glob ("*.log", "*.tar.gz"): a "." and a letter or digit follow, and
+# no "*" ends the word ("*.NET*" is emphasis). The look-ahead and back-reference stand in for an
+# atomic group, so the word is read once.
+GLOB = re.compile(rf"\.{ALNUM}(?=(?P<rest>[^\s*]*))(?P=rest)(?!\*)")
+# A GFM table's delimiter row ("--|--", "| :-: | --- |"), quote marks allowed before it.
+TABLE_DELIM = re.compile(r"^[ \t>]*(?:\|[ \t]*)?:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*(?:\|[ \t]*)?\r?$", re.M)
+TABLE_ROW = re.compile(r"^[ \t>]*\|", re.M)
 # The ">" marks that start a quote line, nested ones too ("> >", ">>").
 QUOTE_MARKS = re.compile(r"(?:[ \t]*>)+")
 # After its marks, a quote line that starts a block of its own inside the quote: a blank quote
@@ -476,27 +497,136 @@ def _url_spans(text):
     return [(u.start(), u.start() + len(u.group().rstrip(URL_TAIL))) for u in URL_SPAN.finditer(text)]
 
 
-def _code_spans(text):
-    """The (start, end) of each inline code span of text: a run of backticks up to the next run
-    of as many, within one paragraph (an unclosed run is a literal). Linear: the next run of each
-    length is found once, from the right."""
-    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(text)]
-    if len(runs) < 2:
-        return []
-    blanks = [m.start() for m in BLANK_LINE.finditer(text)]
-    after, last = [None] * len(runs), {}
-    for i in range(len(runs) - 1, -1, -1):
-        n = runs[i][1] - runs[i][0]
-        after[i], last[n] = last.get(n), i
-    spans, i = [], 0
-    while i < len(runs):
-        j = after[i]
-        if j is not None and bisect.bisect_left(blanks, runs[i][1]) == bisect.bisect_left(blanks, runs[j][0]):
-            spans.append((runs[i][0], runs[j][1]))
-            i = j + 1
+INDENT = re.compile(r"[ \t]*")
+LIST_ITEM = re.compile(r"(?:[-*+]|\d{1,9}[.)])(?:[ \t]|\r?$)")
+HTML_CODE = re.compile(r"<(code|pre)(?=[\s>/])[^<>]*>", re.I)
+HTML_CLOSE = {"code": re.compile(r"</code\s*>", re.I), "pre": re.compile(r"</pre\s*>", re.I)}
+
+
+def _indented_code_spans(text):
+    """The (start, end) of each indented code block of text: lines indented by four columns or
+    more (a tab to the next multiple of four), the first after a blank line or at the start and
+    not inside a list (a list item's lines go on after a blank line, up to a line indented less
+    than four that is no list item), and the next ones up to a line indented less (blank lines
+    inside go with the block). An indented line that goes on a paragraph or list item is no code:
+    a mark there stays emphasis, as before."""
+    spans, pos, n = [], 0, len(text)
+    after_blank, in_list, block = True, False, None
+    while pos <= n:
+        nl = text.find("\n", pos)
+        end = n if nl < 0 else nl
+        ws = INDENT.match(text, pos, end).end()
+        if text[ws:end] in ("", "\r"):
+            after_blank = True
         else:
-            i += 1
+            width = 0
+            for c in text[pos:ws]:
+                width = width + 4 - width % 4 if c == "\t" else width + 1
+            if width >= 4 and (block is not None or after_blank and not in_list):
+                block = (pos if block is None else block[0], end)
+            else:
+                if block is not None:
+                    spans.append(block)
+                    block = None
+                if width < 4:
+                    if LIST_ITEM.match(text, ws, end):
+                        in_list = True
+                    elif after_blank:
+                        in_list = False
+            after_blank = False
+        if nl < 0:
+            break
+        pos = nl + 1
+    if block is not None:
+        spans.append(block)
     return spans
+
+
+def _html_code_spans(text):
+    """The (start, end) of each "<code>...</code>" (within one paragraph) and "<pre>...</pre>"
+    of text, tag names in any case. Linear: the next closing tag of each name is searched for
+    once and kept until an opening tag comes after it."""
+    spans, next_close, end = [], {}, 0
+    blanks = None
+    for m in HTML_CODE.finditer(text):
+        if m.start() < end:
+            continue
+        name = m.group(1).lower()
+        close = next_close.get(name, False)
+        if close is not False and close is not None and close.start() < m.end():
+            close = False
+        if close is False:
+            close = next_close[name] = HTML_CLOSE[name].search(text, m.end())
+        if close is None:
+            continue
+        if name == "code":
+            if blanks is None:
+                blanks = [x.start() for x in BLANK_LINE.finditer(text)]
+            if bisect.bisect_left(blanks, m.end()) != bisect.bisect_left(blanks, close.start()):
+                continue
+        spans.append((m.start(), close.end()))
+        end = close.end()
+    return spans
+
+
+def _code_spans(text):
+    """The sorted, disjoint (start, end) of the code of text: indented code blocks, "<code>" and
+    "<pre>" elements (see _indented_code_spans and _html_code_spans) and each inline code span,
+    a run of backticks up to the next run of as many, within one paragraph (an unclosed run is a
+    literal; a run inside a block is code, not a delimiter). Linear: the next run of each length
+    is found once, from the right."""
+    blocks = sorted(_indented_code_spans(text) + _html_code_spans(text))
+    inside = _Spans(blocks, True)
+    runs = [(m.start(), m.end()) for m in BACKTICKS.finditer(text) if not inside.holds(m.start())]
+    spans = []
+    if len(runs) >= 2:
+        blanks = [m.start() for m in BLANK_LINE.finditer(text)]
+        after, last = [None] * len(runs), {}
+        for i in range(len(runs) - 1, -1, -1):
+            n = runs[i][1] - runs[i][0]
+            after[i], last[n] = last.get(n), i
+        i = 0
+        while i < len(runs):
+            j = after[i]
+            if j is not None and bisect.bisect_left(blanks, runs[i][1]) == bisect.bisect_left(blanks, runs[j][0]):
+                spans.append((runs[i][0], runs[j][1]))
+                i = j + 1
+            else:
+                i += 1
+    merged = []
+    for a, b in sorted(blocks + spans):
+        if merged and a < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _table_spans(text):
+    """The (start, end) of the table lines of text, each with its newline: a line that starts
+    with "|" (after quote marks), and a GFM table, from its header line (the line before a
+    delimiter row that holds a "|") up to a blank line. A "|" or a line end there ends a block
+    of emphasis; a "|" elsewhere is text."""
+    spans = []
+    for m in TABLE_ROW.finditer(text):
+        nl = text.find("\n", m.end())
+        spans.append((m.start(), len(text) if nl < 0 else nl + 1))
+    blanks = None
+    for m in TABLE_DELIM.finditer(text):
+        if "|" not in m.group() or m.start() == 0:
+            continue
+        if blanks is None:
+            blanks = [x.start() for x in BLANK_LINE.finditer(text)]
+        k = bisect.bisect_left(blanks, m.end())
+        stop = len(text) if k == len(blanks) else blanks[k] + 1
+        spans.append((text.rfind("\n", 0, m.start() - 1) + 1, stop))
+    merged = []
+    for a, b in sorted(spans):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
 
 
 class _Spans:
@@ -518,6 +648,7 @@ def _plain(text):
     pairs would scan the same text again), and a quote line looks back over one line only."""
     drop, opened, edges = [], {}, None
     urls, codes = _Spans(_url_spans(text), False), _Spans(_code_spans(text), True)
+    tables = None
 
     def glued_identifier(a, b, forward):
         """Whether the word characters glued to a (forward) or to b (backward) within text[a:b]
@@ -538,6 +669,15 @@ def _plain(text):
         if urls.holds(m.start()) or codes.holds(m.start()):
             continue                          # a mark inside a URL ("?_k_=1") or code is no emphasis
         kind, run = m.lastgroup, m.group()
+        if kind in ("pipe", "nl", "quote"):
+            if tables is None:
+                tables = _Spans(_table_spans(text), True)
+            if tables.holds(m.start()):
+                kind = None                   # a cell or row of a table ends the block
+            elif kind != "quote":
+                continue                      # a "|" or line end of prose is text
+        if kind == "open" and run == "*" and GLOB.match(text, m.end()):
+            continue                          # "*.log": a glob, no emphasis
         if kind == "open" and run[0] == "_" and opened.get(run) and UNDERSCORE_CLOSE.match(text, m.start()):
             kind = "close"                    # "_27%_,": between punctuation, it closes (an opening
                                               # run is a whole run of at most three, so is the match)
@@ -558,7 +698,8 @@ def _plain(text):
             continue                          # the next line of the same quote paragraph
         else:
             opened.clear()                    # emphasis does not run past a blank line, into a
-                                              # list item, heading, quote or fence, or past a "|"
+                                              # list item, heading, quote or fence, or out of a
+                                              # table cell or row
     if not drop:
         return text
     drop.sort()
@@ -786,21 +927,10 @@ def word_index(text):
     return index
 
 
-def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=None):
-    """Whether the source token tok of kind is in the rendering text (through _plain()). tokens is
-    invariants(text) and index is word_index(text) when the caller already has them. alone:
-    the source writes tok on its own, so a rendering that only extends it ("ab.txt" as
-    "ab.txt.bak", "old/ab.txt") does not count (see EXT_RIGHT). Otherwise extensions, when
-    given, is the set of ways the source extends tok (see _scan): a rendering occurrence counts
-    on its own or extended in one of those ways ("v2.1,v2.2" holds the "v2.1" of "v2.1,v2.2",
-    "v2.1-rc,v2.2" does not), so a joiner beside tok in the source lets no other extension
-    pass."""
-    if kind in ("number", "url"):
-        # A URL is looked up by extraction too: whatever a rendering glues to it ("@evil.io",
-        # "&debug=1", "#frag") is part of the rendering's URL, so the source's is not there.
-        return tok in (invariants(text) if tokens is None else tokens)
-    # The forms of the token in the order a pattern would try them (an optional part present
-    # first), so the first that fits at a position is the match there.
+def _forms(tok, kind):
+    """(forms, left, right): the forms of the token in the order a pattern would try them (an
+    optional part present first), so the first that fits at a position is the match there, and
+    the boundaries before and after it."""
     left, right = LEFT_AT, RIGHT_AT
     if kind == "time":
         clocks, zone = _clock(tok)
@@ -814,22 +944,53 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
         forms = [tok]
     if kind == "date":
         right = RIGHT_DATE_AT
+    return forms, left, right
 
-    def match(pos):
-        """(start, end) of the token at pos, or None."""
+
+def _counts(text, start, end, kind, tok, alone, extensions):
+    """Whether the match text[start:end] of tok counts (see present())."""
+    if not alone and extensions is None:
+        return True
+    how = _extension(text, start, end, kind, tok)
+    return how == NOT_EXTENDED or not alone and how in extensions
+
+
+def _in_calendar(tok, kind, text):
+    """Whether text holds a Hebrew form of the month or weekday name tok. A Hebrew form stands
+    between Hebrew-letter boundaries, with up to three prefix letters (במאי, ממאי, ובמאי);
+    "מאיפה" or "לשבת" is another word, not the month or the day. Only a capitalised name or a
+    full name in capitals is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
+    שבת."""
+    if kind == "proper" or tok.lower() in CALENDAR_FULL:
+        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
+                 for form in CALENDAR.get(tok.lower(), ())]
+        if forms and re.search("(?:" + "|".join(forms) + ")", text):
+            return True
+    return False
+
+
+def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=None):
+    """Whether the source token tok of kind is in the rendering text (through _plain()). tokens is
+    invariants(text) and index is word_index(text) when the caller already has them. alone:
+    the source writes tok on its own, so a rendering that only extends it ("ab.txt" as
+    "ab.txt.bak", "old/ab.txt") does not count (see EXT_RIGHT). Otherwise extensions, when
+    given, is the set of ways the source extends tok (see _scan): a rendering occurrence counts
+    on its own or extended in one of those ways ("v2.1,v2.2" holds the "v2.1" of "v2.1,v2.2",
+    "v2.1-rc,v2.2" does not), so a joiner beside tok in the source lets no other extension
+    pass."""
+    if kind in ("number", "url"):
+        # A URL is looked up by extraction too: whatever a rendering glues to it ("@evil.io",
+        # "&debug=1", "#frag") is part of the rendering's URL, so the source's is not there.
+        return tok in (invariants(text) if tokens is None else tokens)
+    forms, left, right = _forms(tok, kind)
+
+    def found(pos):
+        """Whether the token is at pos: the first form that fits there, if it counts."""
         if left.match(text, pos):
             for form in forms:
                 if text.startswith(form, pos) and right.match(text, pos + len(form)):
-                    return pos, pos + len(form)
-        return None
-
-    def found(m):
-        if m is None:
-            return False
-        if not alone and extensions is None:
-            return True
-        how = _extension(text, m[0], m[1], kind, tok)
-        return how == NOT_EXTENDED or not alone and how in extensions
+                    return _counts(text, pos, pos + len(form), kind, tok, alone, extensions)
+        return False
 
     first = WORD_RUN.match(tok)
     positions = None
@@ -843,7 +1004,7 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
         if len(positions) * FIND_COST > len(text):
             positions = None                    # a scan for the token costs less (FIND_COST)
     if positions is not None:
-        if any(found(match(pos)) for pos in positions):
+        if any(found(pos) for pos in positions):
             return True
     else:
         prefix, pos = os.path.commonprefix(forms), 0
@@ -851,19 +1012,62 @@ def present(tok, kind, text, tokens=None, alone=True, index=None, extensions=Non
             pos = text.find(prefix, pos)
             if pos < 0:
                 break
-            if found(match(pos)):
+            if found(pos):
                 return True
             pos += 1
-    # A Hebrew form stands between Hebrew-letter boundaries, with up to three prefix letters
-    # (במאי, ממאי, ובמאי); "מאיפה" or "לשבת" is another word, not the month or the day. Only
-    # a capitalised name or a full name in capitals is a month or weekday: "DEC" and "SAT" are
-    # acronyms, not דצמבר and שבת.
-    if kind == "proper" or tok.lower() in CALENDAR_FULL:
-        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-                 for form in CALENDAR.get(tok.lower(), ())]
-        if forms and re.search("(?:" + "|".join(forms) + ")", text):
-            return True
-    return False
+    return _in_calendar(tok, kind, text)
+
+
+def present_all(items, text, tokens=None, index=None):
+    """[present(tok, kind, text, tokens, alone, index, extensions) for each (tok, kind, alone,
+    extensions) of items], the same results. Many tokens of one length that share a first run
+    ("__/a1" ... "__/a9999"), or that start with the same mark ("*a1" ... "*a9999" in code), are
+    looked up in one walk over that run's starts (or the mark's places), each start
+    reading one slice per length: a walk costs a step per start, present() a step per start or
+    FIND_COST characters per token, so the tokens of a length are walked together when that
+    costs less than looking each up alone. Linear in the starts times the lengths walked."""
+    result, groups = [None] * len(items), {}
+    for i, (tok, kind, alone, extensions) in enumerate(items):
+        first = WORD_RUN.match(tok)
+        if tok and kind not in ("number", "url", "time", "datetime"):    # one form: tok
+            # a token that starts with a mark ("*a1" in code) by its first character
+            key = first.group() if first else (tok[0],)
+            groups.setdefault(key, {}).setdefault(len(tok), []).append(i)
+    if index is None and any(type(run) is str for run in groups):
+        index = word_index(text)
+    for run, by_length in groups.items():
+        if type(run) is str:
+            positions = index.get(run, ())
+        else:                                   # every place present()'s scan would try
+            positions = [m.start() for m in re.finditer(re.escape(run[0]), text)]
+        # what present() costs a token: its walk, or its scan when that costs less
+        alone_cost = len(positions) if len(positions) * FIND_COST <= len(text) else len(text) / FIND_COST
+        walked = {n: members for n, members in by_length.items()
+                  if len(members) > 1 and len(positions) < len(members) * alone_cost}
+        if not walked:
+            continue
+        by_form, waiting = {}, 0
+        for members in walked.values():
+            for i in members:
+                by_form.setdefault(items[i][0], []).append(i)
+                result[i], waiting = False, waiting + 1
+        for pos in positions:
+            if not LEFT_AT.match(text, pos):
+                continue
+            for n in walked:
+                for i in by_form.get(text[pos:pos + n], ()):
+                    tok, kind, alone, extensions = items[i]
+                    if (not result[i] and (RIGHT_DATE_AT if kind == "date" else RIGHT_AT).match(text, pos + n)
+                            and _counts(text, pos, pos + n, kind, tok, alone, extensions)):
+                        result[i], waiting = True, waiting - 1
+            if not waiting:
+                break
+        for members in walked.values():
+            for i in members:
+                if not result[i]:
+                    result[i] = _in_calendar(items[i][0], items[i][1], text)
+    return [present(tok, kind, text, tokens, alone, index, extensions) if r is None else r
+            for r, (tok, kind, alone, extensions) in zip(result, items)]
 
 
 def _after_word(text, start, digit=False):
@@ -902,6 +1106,79 @@ def negations(text, rendering_of=None):
     return n + ambiguous
 
 
+# C2: a dunder ("__init__") is kept whole by the strict scan, though CommonMark shows "__word__"
+# in prose as a bold "word". A dunder token is also present where the rendering holds its word
+# alone ("__tools__" as "tools" or "**tools**"), when the word holds no "_", is no name that
+# Python, C or JavaScript tooling gives a dunder (KNOWN_DUNDERS: "__init__", "__pycache__",
+# "__mocks__" stay strict), and every source occurrence reads as emphasis: in no code span, and
+# not glued to a path, call or member ("x.__tools__", "__tools__()", "src/__tools__/"). Code is
+# verbatim, so "`__tools__`" anywhere in the source keeps "__tools__" strict.
+KNOWN_DUNDERS = frozenset("""
+    abs add aenter aexit aiter all and anext annotations args await base bases bool buffer
+    builtins bytes cached call cause ceil class classcell closure cmp code coerce complex
+    contains context copy deepcopy defaults del delattr delete delitem dict dir div divmod doc
+    enter eq exit file float floor floordiv format fspath func future ge get getattr
+    getattribute getitem getnewargs getslice getstate globals gt hash hex iadd iand idiv
+    ifloordiv ilshift imatmul imod import imul index init instancecheck int invert ior ipow
+    irshift isub iter itruediv ixor kwdefaults le len loader long lshift lt main matmul members
+    metaclass missing mod module mro mul name ne neg new next nonzero notes oct or orig origin
+    package parameters path pos pow prepare qualname radd rand rdiv rdivmod reduce repr reversed
+    rfloordiv rlshift rmatmul rmod rmul ror round rpow rrshift rshift rsub rtruediv rxor self
+    set setattr setitem setstate signature sizeof slots spec str sub subclasses subclasshook
+    traceback truediv trunc unicode version weakref wrapped xor
+    author copyright credits email license maintainer status title summary uri url
+    pycache pypackages tests test mocks snapshots fixtures generated
+    attribute asm inline restrict volatile typeof extension builtin cplusplus stdc gnuc
+    linux unix i386 x86 arm aarch64 clang llvm apple mips
+    proto dirname filename esmodule webpack
+""".split())
+BOLD_DUNDER = re.compile(rf"{L}__([a-z][a-z0-9]*)__(?!{WORD})")
+BOLD_WORD = re.compile(rf"{L}(__|)([a-z][a-z0-9]*)\1(?!{WORD})")
+
+
+def _word_counts(text):
+    """How often each lowercase word stands in text, alone or as a dunder: the rendering must
+    hold the word of a bold dunder as often as the source does ("__tools__" changed into
+    "__bools__" is no pass for "tools" written elsewhere in it). One pass."""
+    return collections.Counter(m.group(2) for m in BOLD_WORD.finditer(text))
+
+
+def _bold_dunders(text):
+    """The dunder tokens of text (through _plain()) that CommonMark shows as a bold word (see
+    KNOWN_DUNDERS). Linear: one pass, the code spans asked in order."""
+    codes, ok = _Spans(_code_spans(text), True), {}
+    for m in BOLD_DUNDER.finditer(text):
+        a, b = m.span()
+        before, after = text[a - 1:a], text[b:b + 2]
+        prose = (m.group(1) not in KNOWN_DUNDERS and not codes.holds(a)
+                 and before not in tuple("/\\.:~@=-") and not after.startswith(("/", "\\", "(", "["))
+                 and not (after[:1] == "." and WORD_CHAR.match(after, 1)))
+        ok[m.group()] = ok.get(m.group(), True) and prose
+    return {t for t, prose in ok.items() if prose}
+
+
+# G4: code with "_" marks on its left only ("`_Config`", "`__Init`") may be put in "*"
+# emphasis whole ("**_Config**"): CommonMark shows the "_" as written, as the "_" run cannot
+# pair inside. STAR_WRAPPED finds such a wrapping (whitespace, an opening bracket or quote, or
+# nothing before it; no "*" glued on either side) for check() to look the code up in a copy
+# without it. Code with "_" on both sides is not taken: CommonMark shows "**__FILE__**" as a
+# bold "FILE", so the rendering lost the marks. A wrapping inside code is shown as written.
+STAR_WRAPPED = re.compile(r"""(?<![^\s(\[{"'])(\*{1,3})(?=_)(?P<body>[^\s*]*)(?<=[^\W_])\1(?!\*)""")
+
+
+def _unwrap_stars(text):
+    """text with each STAR_WRAPPED wrapping outside code replaced by its body: in code the "*"
+    are shown as written ("`*_Paris*`" is no "_Paris"). Linear: the code spans are asked in
+    order."""
+    codes = _Spans(_code_spans(text), True)
+
+    def body(m):
+        if codes.holds(m.start()) or codes.holds(m.end() - 1) or "`" in m.group("body"):
+            return m.group()
+        return m.group("body")
+    return STAR_WRAPPED.sub(body, text)
+
+
 @dataclass
 class CheckResult:
     ok: bool
@@ -920,26 +1197,39 @@ def check(source, rendering):
     inv, extensions = _scan(_plain(source))
     plain = _plain(rendering)
     rendered, index = _scan(plain)[0], word_index(plain)
-    missing = [t for t, k in inv.items()
-               if not present(t, k, plain, rendered, NOT_EXTENDED in extensions.get(t, (NOT_EXTENDED,)),
-                              index, extensions.get(t))]
+    items = [(t, k, NOT_EXTENDED in extensions.get(t, (NOT_EXTENDED,)), extensions.get(t)) for t, k in inv.items()]
+    missing, bold, words = [], None, None
+    for (t, k, alone, ext), found in zip(items, present_all(items, plain, rendered, index)):
+        if found:
+            continue
+        if t.startswith("__") and k == "snake":
+            bold = _bold_dunders(_plain(source)) if bold is None else bold
+            if t in bold and present(t[2:-2], k, plain, rendered, alone, index, ext):
+                if words is None:
+                    words = (_word_counts(_plain(source)), _word_counts(plain))
+                if words[1][t[2:-2]] >= words[0][t[2:-2]]:
+                    continue                  # "__tools__" shown bold as "tools" (see KNOWN_DUNDERS)
+        missing.append(t)
     # The edge-free scan (see EMPHASIS): a token a mark hid from the strict one is looked up in
     # the rendering's edge-free copy, through the same functions.
     inv2, extensions2 = _scan(*_edge_free(source))
     extra = _hidden(inv, inv2)
     if extra:
         scan, raw, mask = _edge_free(rendering)
-        rendered2, index2, verbatim = _scan(scan, raw, mask)[0], word_index(raw), None
-        for t, k in extra:
-            if k == "code":
-                # Code is compared as written: "__FILE__" anywhere in the rendering, in code or
-                # not, and not extended ("/x/__FILE__") but as the source extends it.
-                verbatim = word_index(rendering) if verbatim is None else verbatim
-                found = present(t, k, rendering, None, NOT_EXTENDED in extensions2.get(t, (NOT_EXTENDED,)),
-                                verbatim, extensions2.get(t))
-            else:
-                found = present(t, k, raw, rendered2, NOT_EXTENDED in extensions2.get(t, (NOT_EXTENDED,)),
-                                index2, extensions2.get(t))
+        rendered2, index2, unwrapped = _scan(scan, raw, mask)[0], word_index(raw), None
+        items = [(t, k, NOT_EXTENDED in extensions2.get(t, (NOT_EXTENDED,)), extensions2.get(t)) for t, k in extra]
+        code = [item for item in items if item[1] == "code"]
+        # Code is compared as written: "__FILE__" anywhere in the rendering, in code or not, and
+        # not extended ("/x/__FILE__") but as the source extends it.
+        found_code = iter(present_all(code, rendering, None, word_index(rendering)) if code else ())
+        found_other = iter(present_all([item for item in items if item[1] != "code"], raw, rendered2, index2))
+        for t, k, alone, ext in items:
+            found = next(found_code) if k == "code" else next(found_other)
+            if not found and k == "code" and t[0] == "_" and t[-1] != "_" and "*" not in t:
+                if unwrapped is None:         # "`_Config`" as "**_Config**" (see STAR_WRAPPED)
+                    copy = _unwrap_stars(rendering)
+                    unwrapped = (copy, word_index(copy))
+                found = present(t, k, unwrapped[0], None, alone, unwrapped[1], ext)
             if not found:
                 missing.append(t)
     source_hedges, rendering_hedges = hedges(source), hedges(rendering)

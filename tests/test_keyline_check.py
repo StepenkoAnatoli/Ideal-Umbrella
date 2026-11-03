@@ -950,7 +950,7 @@ def test_a_hebrew_point_is_still_not_a_word_character(keyline_check):
 def test_the_word_classes_match_unicode(keyline_check):
     # The classes are built from part of Unicode only (see _word_classes). A letter, a digit or
     # "_" as re reads them, plus every combining mark that is no word character to re, and no
-    # Hebrew letter or point: exactly these, over all assigned characters of Unicode.
+    # Hebrew letter or point nor CJK or Thai character: exactly these, over all assigned characters of Unicode.
     import re
     import unicodedata
     classes = {name: re.compile(getattr(keyline_check, name)) for name in ("LETTER", "ALNUM", "WORD")}
@@ -963,7 +963,8 @@ def test_the_word_classes_match_unicode(keyline_check):
             # short); it is no character yet, so it is never a mark.
             assert not mark.match(c), hex(cp)
             continue
-        hebrew = "\u0590" <= c <= "\u05ff" or "\ufb1d" <= c <= "\ufb4f"
+        hebrew = ("\u0590" <= c <= "\u05ff" or "\ufb1d" <= c <= "\ufb4f"
+                  or bool(re.match(f"[{keyline_check.CJK}]", c)))      # C3: CJK and Thai too
         # SA3: a variation selector and an enclosing mark (U+20E3) are no part of a word.
         selector = "\ufe00" <= c <= "\ufe0f" or "\U000e0100" <= c <= "\U000e01ef"
         is_mark = (unicodedata.category(c)[0] == "M" and not c.isalnum() and not hebrew
@@ -1524,3 +1525,174 @@ def test_a_nested_quote_blank_line_or_start_ends_the_block(keyline_check, source
 def test_a_nested_quote_paragraph_still_pairs_across_its_lines(keyline_check):
     assert keyline_check._plain("> > **a\n> > b**") == "> > a\n> > b"
     assert keyline_check._plain(">> **a\n> > b**") == ">> a\n> > b"
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Delete *.log and keep ab.txt at 14:30.", "Delete *.log and keep ab.txt* at 14:30."),
+    ("Delete *.tar.gz and keep ab.txt at 14:30.", "Delete *.tar.gz and keep ab.txt* at 14:30."),
+    ("Run:\n\n    rm *.o\nKeep ab.txt at 14:30", "Run:\n\n    rm *.o\nKeep ab.txt* at 14:30"),
+    ("Run:\n\n    a *b\nKeep ab.txt at 14:30", "Run:\n\n    a *b\nKeep ab.txt* at 14:30"),
+    ("Run:\n\n\ta *b\nKeep ab.txt at 14:30", "Run:\n\n\ta *b\nKeep ab.txt* at 14:30"),
+    ("    a *b\nKeep ab.txt at 14:30", "    a *b\nKeep ab.txt* at 14:30"),
+    ("<code>*.o</code> and keep ab.txt at 14:30", "<code>*.o</code> and keep ab.txt* at 14:30"),
+    ("<code>a *b</code> and keep ab.txt at 14:30", "<code>a *b</code> and keep ab.txt* at 14:30"),
+    ("<pre>\na *b\nc\n</pre> and keep ab.txt at 14:30", "<pre>\na *b\nc\n</pre> and keep ab.txt* at 14:30"),
+    ("<PRE>a *b</PRE> and keep ab.txt at 14:30", "<PRE>a *b</PRE> and keep ab.txt* at 14:30"),
+])
+def test_a_glob_or_a_mark_in_indented_or_html_code_pairs_with_nothing(keyline_check, source, rendering):
+    # L2: a "*" of a glob ("*.log") or inside an indented code block or <code> opened, and the
+    # "*" a rendering glued to "ab.txt" closed it, so both were dropped and ab.txt passed.
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and result.missing == ["ab.txt"], result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Run:\n\n    rm `x\nKeep **ab.txt** now` at 14:30", "Run:\n\n    rm `x\nKeep ab.txt now` at 14:30"),
+    ("<code>a`b</code> keep **ab.txt** now` at 14:30", "<code>a`b</code> keep ab.txt now` at 14:30"),
+])
+def test_a_backtick_in_indented_or_html_code_opens_no_code_span(keyline_check, source, rendering):
+    # The "`" inside the block is code; paired with the later "`" it made "**ab.txt**" code.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("text, plain", [
+    ("Use *.NET* at 14:30", "Use .NET at 14:30"),                 # a word that ends in "*"
+    ("- item\n\n    **Paris** at 14:30", "- item\n\n    Paris at 14:30"),   # list content
+    ("1. item\n   more\n\n    **Paris** at 14:30", "1. item\n   more\n\n    Paris at 14:30"),
+    ("Run\n    **Paris** at 14:30", "Run\n    Paris at 14:30"),   # a paragraph's next line
+    ("<codex>*a*</codex>", "<codex>a</codex>"),
+])
+def test_emphasis_that_is_no_glob_or_code_is_still_dropped(keyline_check, text, plain):
+    assert keyline_check._plain(text) == plain
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Count the __tools__ at 14:30.", "Count the tools at 14:30."),
+    ("Hash *__bcc441c__* at 14:30.", "Hash bcc441c at 14:30."),
+    ("Count the __tools__ at 14:30.", "Count the **tools** at 14:30."),
+    ("Count the __tools__ and the tools at 14:30.", "Count the **tools** and the tools at 14:30."),
+    ("Count __tools__ and __tools__ at 14:30.", "Count tools and __tools__ at 14:30."),
+])
+def test_bold_underscores_around_a_word_that_is_no_known_dunder_may_be_dropped(keyline_check, source, rendering):
+    # C2: a lowercase "__word__" was kept as a dunder, so a rendering that drops the bold failed.
+    assert keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("Edit __init__ at 14:30.", "Edit init at 14:30."),           # a Python name
+    ("Edit __pycache__ at 14:30.", "Edit pycache at 14:30."),
+    ("Edit __mocks__ at 14:30.", "Edit mocks at 14:30."),
+    ("Edit __init_subclass__ at 14:30.", "Edit init_subclass at 14:30."),   # an identifier
+    ("Edit `__tools__` at 14:30.", "Edit tools at 14:30."),       # code is verbatim
+    ("Edit `__tools__` and __tools__ at 14:30.", "Edit tools and tools at 14:30."),
+    ("Count the __tools__ at 14:30.", "Count the __tool__ at 14:30."),
+    ("Count the __tools__ at 14:30.", "Count the tool at 14:30."),
+    ("Count the __tools__ at 14:30.", "Count the tools_ at 14:30."),
+    # The word written elsewhere is not the bold one: the rendering holds it once, not twice.
+    ("Count the __tools__ and the tools at 14:30.", "Count the __bools__ and the tools at 14:30."),
+    ("Count the __tools__ and the tools at 14:30.", "Count the and the tools at 14:30."),
+    ("Count __tools__ and __tools__ at 14:30.", "Count tools and __bools__ at 14:30."),
+])
+def test_a_known_dunder_code_or_a_changed_word_still_fails(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("会议在**Paris**举行，时间14:30", "会议在Paris举行，时间14:30"),
+    ("会议在Paris举行，时间14:30", "会议在**Paris**举行，时间14:30"),
+    ("会议在*Paris*举行，时间14:30", "会议在Paris举行，时间14:30"),
+    ("パリ**v2.1**で14:30", "パリv2.1で14:30"),
+    ("회의는 **Paris**에서 14:30", "회의는 Paris에서 14:30"),   # not first: a name
+])
+def test_bold_glued_to_cjk_text_is_emphasis(keyline_check, source, rendering):
+    # C3: a "*" run after or before a CJK letter was no opener or closer.
+    assert keyline_check.check(source, rendering).ok
+    assert not keyline_check.check(source, rendering.replace("Paris", "Berlin").replace("v2.1", "v2.2")).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("sub-word tokens R|CA at 14:30", "**sub-word tokens R|CA** at 14:30"),
+    ("ship v2.1|v2.2 at 14:30", "**ship v2.1|v2.2** at 14:30"),
+    ("ship v2.1 | v2.2 at 14:30", "_ship v2.1 | v2.2_ at 14:30"),
+    ("Class: v2.1 / at 14:30", "**Class: v2.1 /** at 14:30"),
+    ("Class: v2.1 / at 14:30", "_Class: v2.1 /_ at 14:30"),
+    ("_Class: v2.1 /_ at 14:30", "Class: v2.1 / at 14:30"),
+])
+def test_a_pipe_in_prose_or_a_lone_slash_does_not_stop_emphasis(keyline_check, source, rendering):
+    # C5: a "|" reset pairing outside tables too, and a run after a lone "/" closed nothing.
+    assert keyline_check.check(source, rendering).ok
+    assert keyline_check.check(rendering, source).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    ("a | *b\n--|--\nab.txt | c", "a | *b\n--|--\nab.txt* | c"),
+    ("a | b\n:-: | --\n*c | d\nab.txt | e", "a | b\n:-: | --\n*c | d\nab.txt* | e"),
+    ("x\n| *b | c |\nab.txt", "x\n| *b | c |\nab.txt*"),
+])
+def test_a_table_pipe_still_ends_the_block(keyline_check, source, rendering):
+    result = keyline_check.check(source, rendering)
+    assert not result.ok and "ab.txt" in result.missing, result
+    assert keyline_check.check(source, source).ok
+
+
+@pytest.mark.parametrize("rendering", [
+    "Use **_Config** at 14:30.", "Use *_Config* at 14:30.", "Use ***_Config***, at 14:30.",
+    "Use (**_Config**) at 14:30.",
+])
+def test_code_with_left_marks_wrapped_whole_in_star_emphasis_passes(keyline_check, rendering):
+    # G4: "`_Config`" rendered as "**_Config**" failed: the "*" glued to it extended it, though
+    # CommonMark shows the "_" as written (the run has no partner inside the "**").
+    assert keyline_check.check("Use `_Config` at 14:30.", rendering).ok
+
+
+@pytest.mark.parametrize("source, rendering", [
+    # CommonMark shows "**__FILE__**" as a bold "FILE": the marks are lost, so G4 as first
+    # reported is no false alarm.
+    ("Use `__FILE__` at 14:30.", "Use **__FILE__** at 14:30."),
+    ("Use `__FILE__` at 14:30.", "Use *__FILE__* at 14:30."),
+    ("Use `__FILE__` at 14:30.", "Use ***__FILE__***, at 14:30."),
+    ("Use `_Config_` at 14:30.", "Use **_Config_** at 14:30."),
+    ("Use `_Config` at 14:30.", "Use x**_Config** at 14:30."),
+    ("Use `_Config` at 14:30.", "Use **_Config**x at 14:30."),
+    ("Use `_Config` at 14:30.", "Use **_Config**.c at 14:30."),
+    ("Use `_Config` at 14:30.", "Use **_Config* at 14:30."),
+    ("Use `_Config` at 14:30.", "Use ***_Config** at 14:30."),
+    ("Use `_Config` at 14:30.", "Use _**_Config**_ at 14:30."),
+    ("Use `_Config` at 14:30.", "Use /**_Config** at 14:30."),
+    ("Use `_Config` at 14:30.", "Use **_Confi** at 14:30."),
+    ("Use `_Config` at 14:30.", "Use Config at 14:30."),
+    ("Use `__FILE__` at 14:30.", "Use **__LINE__** at 14:30."),
+    ("Use `__FILE__` at 14:30.", "Use __FILE__* at 14:30."),
+    ("Use `__FILE__` at 14:30.", "Use FILE at 14:30."),
+    ("Use `_Config` at 14:30.", "Use `*_Config*` at 14:30."),        # in code, "*" is shown
+    ("Use `_Config` at 14:30.", "Use `x **_Config**` at 14:30."),
+    ("Use `_Config` at 14:30.", "Use <code>**_Config**</code> at 14:30."),
+])
+def test_code_with_other_marks_around_it_still_fails(keyline_check, source, rendering):
+    assert not keyline_check.check(source, rendering).ok
+
+
+def test_many_tokens_sharing_a_run_with_few_lengths_are_looked_up_in_one_walk(keyline_check):
+    # F4 at its worst: 16,000 distinct "__/aN" against a rendering with "__" everywhere scanned
+    # the whole rendering once per token (about 4 s at 200 kB).
+    import time
+    source = " ".join(f"__/a{i}" for i in range(16000))
+    start = time.perf_counter()
+    assert not keyline_check.check(source, "__ " * (len(source) // 3)).ok
+    assert not keyline_check.check(source, "__/x " * (len(source) // 5)).ok
+    assert time.perf_counter() - start < 3
+
+
+def test_many_code_tokens_that_start_with_a_mark_are_looked_up_in_one_walk(keyline_check, monkeypatch):
+    # "`*a1`" ... "`*a9999`" (code, compared as written) have no first word run, so each was
+    # looked up alone by a scan of the whole rendering: quadratic (about 3.5 s of 8 s at 400 kB).
+    # They are walked together now; present() is left for the few that are not ("a1", the
+    # strict scan's token, has a first run of its own and costs one step).
+    calls = []
+    real = keyline_check.present
+    monkeypatch.setattr(keyline_check, "present", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
+    source = " ".join(f"`*a{i}`" for i in range(2000))
+    assert keyline_check.check(source, source).ok
+    assert not keyline_check.check(source, source.replace("`*a1999`", "`*b1999`")).ok
+    assert len([tok for tok in calls if tok.startswith("*")]) < 400, len(calls)    # 4,000 before

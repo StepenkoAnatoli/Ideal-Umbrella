@@ -241,3 +241,20 @@ A fresh reviewer of 038739b found G1 (medium: the F4 index was quadratic in time
 Fixes: `present()` now walks the first-run index or uses `str.find`, whichever is cheaper per token (FIND_COST=1024), with no per-token position lists, so memory is O(input). Over 181,090 pairs the two paths give 0 differences. G1 and G2 at 200 kB take about 1 s or less and 34 MB. The adversarial F4 shape can reach about 4 s at its worst size, well under the 30 s timeout; this is accepted. Nested quotes pair only at the same `>` depth, and a blank line or block start ends the pairing. Against 038739b, 14 quote pairs now pass and 5 now fail, nearly all because the old code paired marks across a paragraph break.
 
 Checks: pytest 1912 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures. Self-review rounds stop here; the remaining items are lows recorded above.
+
+### Round 4: the remaining lows (on 1cd10bb, PR #36)
+
+Each item got a test that failed on 1cd10bb first (34 cases fail there; the new must-fail guards pass on both).
+
+| Finding | Status |
+|---|---|
+| L2 (fail-open) | fixed: a `*` that starts a glob (`*.log`, `*.tar.gz`) opens no emphasis, so it cannot pair with a later `ab.txt*`; indented code blocks and HTML `<code>`/`<pre>` are code, compared as written, and a backtick inside them opens no span |
+| C2 (fail-closed) | narrowed, not removed: a bold lowercase `__word__` may render as `**word**` or `word` only when the word is not a known Python dunder (`KNOWN_DUNDERS`), not in code, not glued to a path, call or member, and the rendering writes the word at least as often as the source. `__init__` and other known dunders still fail when dropped. Treating every `__word__` as emphasis would let a changed dunder pass, so that was not done |
+| C3 (fail-closed) | fixed: CJK, Kana, Hangul and Thai are word boundaries, like Hebrew (`会议在**Paris**举行` holds `Paris`) |
+| C5 (fail-closed) | fixed: `|` and line ends reset emphasis only inside a GFM table; a run closes after a lone `/` (`**Class: v2.1 /**`) |
+| G4 (fail-closed) | narrowed: code with `_` marks on its left only, wrapped whole in `*` emphasis (`` `_Config` `` as `**_Config**`) passes, since CommonMark shows `_Config`. `` `__FILE__` `` as `**__FILE__**` still fails: CommonMark shows a bold `FILE`, so the token is gone. A wrapping inside the rendering's own code does not count |
+| Speed | tokens that start with a mark are grouped by first character and length, like word-led tokens; F4 `__/aN` takes 1.35 s at 200 kB (limit 3 s) |
+
+Fail-open fuzz against 1cd10bb: the round-2/3 harness gives the same fail-open set as before (one `__tools__`→`__yools__` shape per mark combination, which 1cd10bb also passes). A new differential harness (about 45,000 mutated repo pairs per seed, seeds 4, 7, 11) lists every pair the tree passes and 1cd10bb fails, and judges each by markdown-it. All are the same display text, a CJK neighbour (CJK is not a token, as Hebrew is not), a glob `*` that 1cd10bb already lets go elsewhere, text 1cd10bb itself accepts once the markup is read as CommonMark reads it, or code shown verbatim in another code form. Two real fail-opens turned up during the round and were fixed before the end: the C2 fallback passed `__word__`→`__bord__` when `word` stood elsewhere (now counted), and a `*_x*` wrapping inside a rendering's code span was unwrapped (now skipped).
+
+Checks: pytest 1985 passed / 14 skipped, run_tests 35/35, pyflakes clean, self-pass 0 failures over 3,097 paragraphs and 90 files, add/remove-emphasis fuzz 0 new failures (dropped `__x__` false alarms fell from 585 to 64), linearity suite linear to 200 kB except indented blocks, which grow the same way on 1cd10bb, 15 mutants all killed. Details: the scratch FIX.md, Round 4.
