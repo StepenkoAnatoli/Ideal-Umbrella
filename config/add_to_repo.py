@@ -185,6 +185,17 @@ def _bad_byte(path, e):
     return f"{e.reason} at byte {e.start + bom}"
 
 
+def _no_duplicates(pairs):
+    """json.load's object_pairs_hook: a key given twice is an error. json.load would keep the
+    last one, and the rewrite would drop the first without a word."""
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise ValueError(f"duplicate key {key!r}")
+        data[key] = value
+    return data
+
+
 def _read_json(path):
     """Read a JSON object; a file that cannot be read, is not UTF-8, not JSON, not an object or
     not writable back is a ValueError naming the file, which main() reports as one line before
@@ -192,7 +203,7 @@ def _read_json(path):
     try:
         # Text mode: bare CR and CRLF line ends are line ends in a JSON error's position.
         with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+            data = json.load(f, object_pairs_hook=_no_duplicates)
     except UnicodeDecodeError as e:
         raise ValueError(f"{path} is not UTF-8 ({_bad_byte(path, e)}); save it as UTF-8 first") from None
     except ValueError as e:
@@ -207,17 +218,18 @@ def _read_json(path):
     return data
 
 
-def _new_temp(directory, prefix):
+def _new_temp(directory, prefix, mode=0o666):
     """Create a new file in directory with the mode a plain write gives (0666 less the umask,
     applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
     read: reading it means setting it, which leaves a window where another thread's files are
-    created unmasked."""
+    created unmasked. A narrower mode (the mode of the file the temp file replaces) keeps the
+    data from ever sitting in a file more open than that one."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     for _ in range(100):
         tmp = os.path.join(directory, prefix + os.urandom(4).hex())
         try:
-            return os.open(tmp, flags, 0o666), tmp
+            return os.open(tmp, flags, mode), tmp
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
@@ -270,12 +282,15 @@ def _write_bytes(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path) and not os.access(path, os.W_OK):
         raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
-    fd, tmp = _new_temp(os.path.dirname(path), f".{os.path.basename(path)}-")
+    # The temp file starts no more open than the file it replaces.
+    current = os.stat(path).st_mode & 0o7777 if os.path.exists(path) else None
+    fd, tmp = _new_temp(os.path.dirname(path), f".{os.path.basename(path)}-",
+                        0o666 if current is None else current & 0o777)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        if os.path.exists(path):
-            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        if current is not None:
+            os.chmod(tmp, current)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -287,7 +302,8 @@ def _write_bytes(path, data):
 
 
 def _write_json(path, data):
-    _write_bytes(path, (json.dumps(data, indent=2, allow_nan=False) + "\n").encode("utf-8"))
+    # ensure_ascii=False, as install.py writes: "Grüße" stays as written, not "Gr\u00fc\u00dfe".
+    _write_bytes(path, (json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
 
 
 USAGE = "usage: python -I config/add_to_repo.py [--force] [--handoff-at TOKENS] <repo folder>"

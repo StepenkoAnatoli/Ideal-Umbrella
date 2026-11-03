@@ -105,11 +105,11 @@ def fail_write(monkeypatch, inst, number):
     truncated backup). Returns a function that ends the failure."""
     real_write, calls = inst._write_bytes, []
 
-    def failing(path, data):
+    def failing(path, data, *mode):
         calls.append(path)
         if len(calls) - 1 == number:
             raise OSError(28, "No space left on device")
-        real_write(path, data)
+        real_write(path, data, *mode)
     monkeypatch.setattr(inst, "_write_bytes", failing)
 
     def stop():
@@ -192,12 +192,12 @@ def test_a_rerun_settles_a_record_left_pending_by_its_last_write(uninstall_modul
     record_path = claude(home) / "ballast" / "install-record.json"
     real_write, calls = inst._write_bytes, []
 
-    def failing(path, data):
+    def failing(path, data, *mode):
         if path == record_path:
             calls.append(path)
             if len(calls) == 2:
                 raise OSError(28, "No space left on device")
-        real_write(path, data)
+        real_write(path, data, *mode)
     monkeypatch.setattr(inst, "_write_bytes", failing)
     with pytest.raises(OSError):
         inst.install(home)

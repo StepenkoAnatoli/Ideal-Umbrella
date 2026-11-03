@@ -1574,3 +1574,51 @@ def test_a_planted_fsmonitor_in_the_repositorys_git_config_is_not_run(tmp_path):
     result = run(repo)
     assert result.returncode == 0, result.stderr
     assert not ran.exists()
+
+
+def test_non_ascii_text_survives_the_rewrite(tmp_path):
+    # A4: json.dumps without ensure_ascii=False wrote "Grüße" back as "Grüße".
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text('{"note": "Grüße, שלום"}\n', encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    text = (repo / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert '"note": "Grüße, שלום"' in text and "\\u" not in text
+
+
+def test_a_duplicate_key_stops_the_run_before_anything_is_written(tmp_path):
+    # A8: json.load kept the last of two equal keys and the rewrite dropped the first silently.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    original = '{"env": {"A": "1"}, "env": {"B": "2"}}\n'
+    (repo / ".claude" / "settings.json").write_text(original, encoding="utf-8")
+    result = run(repo)
+    assert result.returncode != 0
+    assert "duplicate key 'env'" in result.stderr
+    assert (repo / ".claude" / "settings.json").read_text(encoding="utf-8") == original
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_temp_file_is_never_more_open_than_the_file_it_replaces(add_to_repo, tmp_path, monkeypatch):
+    # A6: the temp file was created at 0666 less the umask (0644) and chmodded to the target's
+    # 0600 only after the data was in it.
+    target = tmp_path / "settings.json"
+    target.write_text("{}\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    seen = []
+    real = add_to_repo._new_temp
+
+    def spy(*args, **kwargs):
+        fd, tmp = real(*args, **kwargs)
+        seen.append(os.stat(tmp).st_mode & 0o777)
+        return fd, tmp
+
+    monkeypatch.setattr(add_to_repo, "_new_temp", spy)
+    old = os.umask(0o022)
+    try:
+        add_to_repo._write_json(target, {"env": {"TOKEN": "x"}})
+    finally:
+        os.umask(old)
+    assert seen == [0o600] and os.stat(target).st_mode & 0o777 == 0o600

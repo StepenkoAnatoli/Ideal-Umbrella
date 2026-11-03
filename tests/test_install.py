@@ -1043,10 +1043,10 @@ def test_a_symlinked_claude_md_reuses_the_backup_of_a_run_that_failed(install_mo
     link_or_skip(claude / "CLAUDE.md", dotfiles / "CLAUDE.md")
     write = install_module._write_bytes
 
-    def fail_claude_md(path, data):
+    def fail_claude_md(path, data, *mode):
         if Path(path).resolve() == (dotfiles / "CLAUDE.md").resolve():
             raise OSError(28, "No space left on device")
-        write(path, data)
+        write(path, data, *mode)
     monkeypatch.setattr(install_module, "_write_bytes", fail_claude_md)
     with pytest.raises(OSError):
         install_module.install(home)
@@ -1091,3 +1091,41 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(install_module, tmp_
     path.write_bytes(bom + body)
     assert install_module.main(["--home", str(home)]) == 1
     assert f"at byte {len(bom) + body.index(0xE9)})" in capsys.readouterr().err
+
+
+def test_a_duplicate_key_in_settings_stops_the_install(install_module, tmp_path):
+    # A8: the second "permissions" replaced the first on the rewrite, and nothing said so.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    original = '{"permissions": {"allow": ["A"]}, "permissions": {"deny": ["B"]}}\n'
+    settings_file(home).write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate key 'permissions'"):
+        install_module.install(home)
+    assert settings_file(home).read_text(encoding="utf-8") == original
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_backup_and_a_temp_file_are_never_more_open_than_the_file(install_module, tmp_path, monkeypatch):
+    # A6: a 0600 settings.json (its env may hold a token) had its backup and temp file at 0644
+    # until chmod or copystat ran; a copystat that failed left the backup at 0644.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text('{"env": {"TOKEN": "secret"}}\n', encoding="utf-8")
+    os.chmod(settings_file(home), 0o600)
+    seen = []
+    real = install_module._new_temp
+
+    def spy(*args, **kwargs):
+        fd, tmp = real(*args, **kwargs)
+        seen.append(os.stat(tmp).st_mode & 0o777)
+        return fd, tmp
+
+    monkeypatch.setattr(install_module, "_new_temp", spy)
+    old = os.umask(0o022)
+    try:
+        backup = install_module._backup(settings_file(home))
+        install_module._write_json(settings_file(home), {"env": {"TOKEN": "secret"}, "x": 1})
+    finally:
+        os.umask(old)
+    assert seen == [0o600, 0o600]
+    assert os.stat(backup).st_mode & 0o777 == 0o600
