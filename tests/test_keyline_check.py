@@ -1714,7 +1714,8 @@ def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
     assert keyline_check.negations(text) == 1
 
 
-@pytest.mark.parametrize("text", ["הלכנו אל הבית.", "אלתר את הקוד.", "שלום אל העולם."])
+@pytest.mark.parametrize("text", ["הלכנו אל הבית.", "אלתר את הקוד.", "שלום אל העולם.",
+                                  "העתיקו אל תוך התיקייה.", "נסענו אל תל אביב.", "זחלו אל תחת השולחן."])
 def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
 
@@ -1726,6 +1727,10 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     ("Deploy v2.1 without approval.", "פרסו את v2.1 בלי אישור.", True),
     ("השרת ואינו יציב אחרי v2.1.", "The server is stable after v2.1.", False),
     ("The server is not stable after v2.1.", "שרת שאינו יציב אחרי v2.1.", True),
+    # Fresh review 4c3992c, F2: "אל תוך" (into) counted as a negation and hid a lost one.
+    ("Do not copy v2.1 into the folder.", "העתיקו את v2.1 אל תוך התיקייה.", False),
+    ("העתיקו את v2.1 אל תוך התיקייה.", "Copy v2.1 into the folder.", True),
+    ("Do not copy v2.1 into the folder.", "אל תעתיקו את v2.1 אל תוך התיקייה.", True),
 ])
 def test_a_negation_survives_or_is_reported_in_both_directions(keyline_check, source, rendering, ok):
     assert keyline_check.report("src", "ren", source, rendering)[0] is ok

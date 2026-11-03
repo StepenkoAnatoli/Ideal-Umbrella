@@ -109,6 +109,36 @@ def test_missing_scalar_still_fails_verification(install_module, tmp_path):
     assert any("autoCompactWindow is missing" in issue for issue in issues)
 
 
+@pytest.mark.parametrize("command", ["python3 ~/tools/my_context_check.py --mine",
+                                     "python3 ~/tools/context_check.py"])
+def test_a_users_own_context_check_hook_beside_ours_verifies(install_module, tmp_path, capsys, command):
+    # Fresh review 4c3992c, F1: since A3, install leaves a user's own UserPromptSubmit hook that
+    # names context_check.py and adds ours beside it; verify still took that hook for ours and
+    # failed, so the install itself exited 1 after a good install.
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    own = {"type": "command", "command": command}
+    settings_file(home).write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [own]}]}}),
+                                   encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 0, capsys.readouterr()
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    hooks = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
+    assert own in [h for entry in hooks for h in entry["hooks"]]
+
+
+def test_a_context_check_hook_that_is_not_ours_alone_still_fails_verification(install_module, tmp_path):
+    # The loose match stays for the report: with no hook of ours, one naming another
+    # context_check.py is named as pointing elsewhere.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["hooks"]["UserPromptSubmit"] = [{"hooks": [{"type": "command", "command": "python3 /x/context_check.py"}]}]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok and any("does not point at" in i and "/x/context_check.py" in i for i in issues), issues
+
+
 @pytest.mark.parametrize("record, ok", [(None, True), ("{not json", False)], ids=["no-record", "corrupt-record"])
 def test_verify_only_does_not_need_a_readable_record(install_module, tmp_path, capsys, record, ok):
     # Review 32, finding L2: --verify-only does not check the record, so a deleted one still

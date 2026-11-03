@@ -147,6 +147,15 @@ def undo_settings(settings, template, record, evidence=None):
                 hooks[event] = kept
                 if not kept and made(f"hooks.{event}"):
                     del hooks[event]
+        # A hook wired by hand to the installed file in another event (PostToolUse, which the
+        # hook supports) stays, but the file it runs is removed below: say so, or it is left
+        # running a missing file on every event without a word.
+        for event, entries in hooks.items():
+            if event not in events and isinstance(entries, list) \
+                    and any(install._is_ours(entry) for entry in entries):
+                notices.append(f"hooks.{event} runs ballast/context_check.py, which uninstall "
+                               "removes; that hook was added by hand, so it is left: delete it "
+                               "from settings.json")
         if not hooks and made("hooks"):
             del settings["hooks"]
     return changes, notices, left

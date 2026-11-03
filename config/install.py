@@ -1310,23 +1310,24 @@ def verify(home, config_dir=None):
                 issues.append(f"hooks.UserPromptSubmit is not a list: {hooks!r}")
                 hooks = []
         found = False
-        for entry in hooks:
-            for hook in _hook_entries(entry):
-                if not isinstance(hook, dict):
-                    continue
-                command = str(hook.get("command", ""))
-                # Loose on purpose: a hook that names another context_check.py is reported as
-                # pointing elsewhere (it only reports; install and uninstall leave it alone).
-                if "context_check.py" in command:
-                    found = True
-                    # The installer writes the path quoted, so a path with a quote in it
-                    # (it's/.claude/...) only appears in its quoted form.
-                    if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
-                        issues.append(f"Hook command does not point at {paths['hook']}: {command}")
-                    exe = _interpreter(command)
-                    if exe and not _runnable(exe):
-                        issues.append(f"Hook interpreter not found: {exe}; run install.py again "
-                                      "to point the hook at the current Python")
+        named = [hook for entry in hooks for hook in _hook_entries(entry)
+                 if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", ""))]
+        # Our hook when there is one: install leaves a user's own hook that names another
+        # context_check.py beside it, and that one is not checked. With none of ours, the loose
+        # match stays on purpose: a hook that names another context_check.py is reported as
+        # pointing elsewhere (it only reports; install and uninstall leave it alone).
+        named = [hook for hook in named if _is_our_hook(hook)] or named
+        for hook in named:
+            found = True
+            command = str(hook.get("command", ""))
+            # The installer writes the path quoted, so a path with a quote in it
+            # (it's/.claude/...) only appears in its quoted form.
+            if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
+                issues.append(f"Hook command does not point at {paths['hook']}: {command}")
+            exe = _interpreter(command)
+            if exe and not _runnable(exe):
+                issues.append(f"Hook interpreter not found: {exe}; run install.py again "
+                              "to point the hook at the current Python")
         if not found:
             issues.append("Ideal-Umbrella hook not found in UserPromptSubmit")
         risk = shell_risk(paths["hook"])

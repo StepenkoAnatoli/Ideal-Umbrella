@@ -1517,6 +1517,20 @@ def test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written(
     assert not (repo / "notes" / "learnings.md").exists()
 
 
+def test_a_repository_inside_the_claude_config_folder_is_refused_without_naming_a_symlink(tmp_path):
+    # Fresh review 4c3992c, F4: a repository cloned inside CLAUDE_CONFIG_DIR (a plugin
+    # marketplace clone) was refused with "replace the symlink", though no link was on the way.
+    config = tmp_path / "cfg"
+    repo = config / "plugins" / "marketplaces" / "mk"
+    repo.parent.mkdir(parents=True)
+    _git_init(repo)
+    result = run(repo, env=git_env(CLAUDE_CONFIG_DIR=str(config)))
+    assert result.returncode == 1, result.stdout
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert "symlink" not in result.stderr and "lies in Claude Code's own folder" in result.stderr, result.stderr
+    assert not (repo / ".claude").exists()
+
+
 @pytest.mark.parametrize("how", ["folder", "file"])
 def test_a_link_into_the_claude_config_folder_is_refused(tmp_path, how):
     # General review 44170ca, A1: `.claude -> ~/.claude`, or settings.json -> the user's own

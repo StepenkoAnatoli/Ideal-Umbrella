@@ -24,6 +24,11 @@ rules=$(cat <<'EOF'
 EOF
 )
 mkdir -p "$dir" || exit 0
+# The new file is built whole beside the real file (a linked CLAUDE.md stays a link) and moved
+# over it, so a write cut short (a full disk) leaves the old file as it was, never half a section.
+real=$(readlink -f -- "$file") || real="$file"
+tmp="$real.ideal-umbrella-$$"
+fail() { rm -f "$tmp"; echo "Ideal-Umbrella: $file not written ($1); left as it was" >&2; exit 0; }
 if [ -f "$file" ]; then
   b=$(grep -cxF -- "$begin" "$file")
   e=$(grep -cxF -- "$end" "$file")
@@ -39,9 +44,12 @@ if [ -f "$file" ]; then
     /^[ \t\r]*$/ { blank++; next }
     { n = blank; if (merge && keep > n) n = keep; merge = 0
       for (; n > 0; n--) print ""; blank = 0; print }
-  ' "$file" > "$file.tmp" || { rm -f "$file.tmp"; exit 0; }
-  # Copied back, not moved: a linked CLAUDE.md stays a link, and the file keeps its mode.
-  cat "$file.tmp" > "$file"; rm -f "$file.tmp"
+  ' "$file" > "$tmp" || fail "cannot write $tmp"
+  chmod --reference="$real" "$tmp" 2>/dev/null
+else
+  : > "$tmp" || fail "cannot write $tmp"
 fi
-{ if [ -s "$file" ]; then printf '\n'; fi; printf '%s\n%s\n%s\n' "$begin" "$rules" "$end"; } >> "$file"
+{ if [ -s "$tmp" ]; then printf '\n'; fi; printf '%s\n%s\n%s\n' "$begin" "$rules" "$end"; } >> "$tmp" \
+  || fail "cannot write $tmp"
+mv -f -- "$tmp" "$real" || fail "cannot replace $real"
 exit 0

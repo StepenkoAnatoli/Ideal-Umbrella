@@ -19,6 +19,11 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `config/install.py` passes its own verify when a hook of yours that names `context_check.py` sits in `UserPromptSubmit` beside the Ideal-Umbrella hook: since install leaves such a hook, verify compared it too and the install exited 1 (fresh review 4c3992c, F1).
+- `keyline/keyline_check.py` no longer counts אל before תוך, תחת or תל ("into", "to Tel Aviv") as a negation; the extra count hid a lost one ("Do not copy v2.1 into the folder." rendered without the negation passed) (fresh review 4c3992c, F2).
+- `config/uninstall.py` notes a hook wired by hand to `ballast/context_check.py` in an event outside the template (`PostToolUse`): it is left, but uninstall deletes the file it runs (fresh review 4c3992c, F3).
+- `config/add_to_repo.py` refuses a repository inside Claude Code's own folder (a plugin marketplace clone) with a message that says so, not with advice to replace a symlink there is none of (fresh review 4c3992c, F4).
+- `config/cloud-setup.sh` builds the new `CLAUDE.md` beside the old one and moves it over; a write cut short left a begin marker without an end, which later runs refused as broken markers (fresh review 4c3992c, F5).
 - `scripts/plugin_cost.py` does not follow a folder link to a folder that holds the app folder (`/`, the home folder), which made the walk cover the whole tree above it; other links are still followed, each real folder once (general review 44170ca, N5).
 - `scripts/usage_breakdown.py` takes the largest count of each usage field across the streamed lines of one response, not the first line's, which can hold a partial output count (general review 44170ca, N1).
 - The transcript scripts (`usage_breakdown.py`, `unused_tools.py`, `toolresult_share.py`, `usertext_split.py`, `usertext_top.py`) count a line whose `uuid` was already read once: a resumed session's file can repeat the history it continues, which was counted twice (general review 44170ca, N2).

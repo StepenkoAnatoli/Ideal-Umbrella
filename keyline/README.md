@@ -128,7 +128,9 @@ Negations counted, English and Hebrew together in both texts:
 - Hebrew: לא, אין, ללא, אף, מעולם (the spec list), plus בלי, the inflected forms of אין (אינו,
   אינה, אינם, אינן, אינני, איננו, אינך), ו/ש/וש/כש prefixes on all of these but אף and מעולם
   (ולא, שאינו, ובלי), and the imperative אל or ואל before a verb that starts with ת (אל תפרסו;
-  elsewhere אל is "to"). Without these the panel's own Hebrew prose rendering counts 1 negation
+  elsewhere אל is "to", and so it is before תוך, תחת and תל: אל תוך, "into"; אל תל אביב). A noun
+  after אל that starts with ת (אל תחנה) still counts, so a rendering with such a phrase can hide
+  a lost negation. Without these the panel's own Hebrew prose rendering counts 1 negation
   instead of 4 and fails falsely.
 
 ## keyline_lint.py

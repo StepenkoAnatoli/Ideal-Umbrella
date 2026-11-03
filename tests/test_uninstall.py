@@ -2978,8 +2978,12 @@ def test_a_users_own_hook_that_names_context_check_is_left_alone(install_module,
     after_install = read_settings(home)["hooks"]
     assert {"type": "command", "command": command} in after_install[event][0]["hooks"]
     assert install_module.has_our_hook(read_settings(home))
-    uninstall_module.uninstall(home)
+    _, notices = uninstall_module.uninstall(home)
     assert read_settings(home) == before
+    # Fresh review 4c3992c, F3: a hook that runs the installed ballast/context_check.py in an
+    # event the template does not name is left, but uninstall deletes the file it runs: say so.
+    names_ours = "ballast/context_check.py" in command
+    assert any(f"hooks.{event}" in n and "ballast" in n for n in notices) is names_ours, notices
 
 
 def test_uninstall_home_with_claude_config_dir_set_warns(uninstall_module, tmp_path, monkeypatch, capsys):

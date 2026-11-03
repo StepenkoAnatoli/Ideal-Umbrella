@@ -85,3 +85,19 @@ def test_a_linked_claude_md_stays_a_link(tmp_path):
     run(tmp_path)
     assert (tmp_path / ".claude" / "CLAUDE.md").is_symlink()
     assert real.read_text(encoding="utf-8").startswith("mine\n\n" + BEGIN + "\n" + RULES)
+
+
+def test_a_write_cut_short_leaves_the_file_as_it_was(tmp_path):
+    # Fresh review 4c3992c, F5: the file was rewritten in place (cat tmp > file, then >> file):
+    # a write cut short (a full disk; here a 1 KiB file size limit) left half a section with a
+    # begin marker and no end, which every later run then refused as broken markers.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("# Image rules\nkeep me\n", encoding="utf-8")
+    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    result = subprocess.run(["bash", "-c", 'trap "" XFSZ; ulimit -f 1; exec bash "$0"', str(SCRIPT)],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert md.read_text(encoding="utf-8") == "# Image rules\nkeep me\n"
+    assert "not written" in result.stderr, result.stderr
+    assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]

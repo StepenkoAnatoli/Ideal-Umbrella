@@ -258,12 +258,15 @@ NUMBER_SIGN = re.compile(r"\.[ \t]*\d")
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
 # לא/אין/ללא/בלי and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו,
 # שאינו), and the imperative אל ("don't"), only before a second-person future verb (אל תפרסו):
-# elsewhere אל is "to" (אל הבית).
+# elsewhere אל is "to" (אל הבית), and so it is before the ת-words that are not verbs, תוך ("into"),
+# תחת ("under") and תל (Tel Aviv). A noun in the construct state after אל (אל תחנת) is still
+# taken for the verb, which the check cannot tell apart; such a count in a rendering can hide a
+# lost negation, so the words that are common after אל are listed.
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
-    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])"
+    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])(?![ \t]+(?:תוך|תחת|תל)(?![{HEB}]))"
     rf"|אף|מעולם"
     rf")(?![{HEB}])"
 )

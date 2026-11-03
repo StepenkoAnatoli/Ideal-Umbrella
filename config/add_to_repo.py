@@ -654,6 +654,12 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
     for p, kind in ((path, "settings.json"), (target, "context_check.py")):
         landing = os.path.realpath(p)
         if any(_relative(d, landing) is not None for d in own):
+            # Without a link below the repository it is the repository itself that lies there
+            # (a plugin marketplace clone, a home folder holding ~/.claude): no link to replace.
+            plain = os.path.join(os.path.realpath(repo), os.path.relpath(p, repo))
+            if any(_relative(d, plain) is not None for d in own):
+                raise ValueError(f"{p} lies in Claude Code's own folder ({landing}); config/install.py "
+                                 "looks after that one: run this on a repository outside it")
             raise ValueError(f"{p} leads into Claude Code's own folder ({landing}); config/install.py "
                              "looks after that one: replace the symlink with a plain file or folder")
         if _is_link(p) and os.path.normcase(os.path.basename(landing)) != os.path.normcase(kind):
