@@ -2994,3 +2994,14 @@ def test_uninstall_home_with_claude_config_dir_set_warns(uninstall_module, tmp_p
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     uninstall_module.main(["--home", str(tmp_path / "home"), "--dry-run"])
     assert f"CLAUDE_CONFIG_DIR is set ({config})" in capsys.readouterr().err
+
+
+def test_without_a_record_a_users_own_bash_output_cap_is_left(install_module, uninstall_module, tmp_path):
+    # An install from before the record never wrote bashOutputMaxChars, so a 12000 there is the user's.
+    home = tmp_path / "home"
+    install_module.install(home)
+    (home / ".claude" / "ballast" / "install-record.json").unlink()
+    uninstall_module.uninstall(home)
+    seed_after = read_settings(home)
+    assert seed_after.get("bashOutputMaxChars") == 12000
+    assert "autoCompactWindow" not in seed_after

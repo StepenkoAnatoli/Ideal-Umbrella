@@ -22,6 +22,7 @@ SHELL_TOOLS = ("Bash", "PowerShell")
 BUCKETS = (("<2k", 2000), ("2-8k", 8000), ("8-12k", 12000), ("12-30k", 30000))
 LAST_BUCKET = ">30k"
 TOP = 10
+KEY_LIMIT = 2000      # a command is one repeat only when all of it (up to here) matches
 
 
 def size_bucket(n):
@@ -93,7 +94,7 @@ def analyse(files):
                             row[0] += 1
                             row[1] += n
                             if command:
-                                key = " ".join(command.split())[:60]
+                                key = " ".join(command.split())[:KEY_LIMIT]
                                 count, chars = repeats.get(key, (0, 0))
                                 repeats[key] = (count + 1, chars + n)
     ranked = sorted(((k, c, ch) for k, (c, ch) in repeats.items() if c > 1), key=lambda r: -r[2])[:TOP]
@@ -114,7 +115,7 @@ def print_report(data, files):
         print(f"  {name:8} {n:>7,} results {chars:>13,} characters {chars / shell_total if shell_total else 0:>6.0%}")
     print("most repeated shell commands (by result characters)")
     for command, n, chars in data["repeats"]:
-        print(f"  {n:>5}x {chars:>11,} chars  {command}")
+        print(f"  {n:>5}x {chars:>11,} chars  {command[:60]}")
     if not data["repeats"]:
         print("  none repeated")
 

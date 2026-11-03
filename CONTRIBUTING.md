@@ -9,7 +9,7 @@ Ideal-Umbrella is small on purpose: settings, one rule file, one hook, installer
   - *neighbour of a previous fix*: a guard or handler that covers one twin or one path but not the other (install and uninstall, `install.py` and `add_to_repo.py`, Windows and POSIX);
   - *halfway state*: a write that fails part way and leaves something the install record does not describe;
   - *absent is not empty*: a missing, meaningful key defaulted to its empty value.
-- **Stdlib only** in everything that ships (`config/`, `hooks/`, `scripts/`). `tiktoken` is for `keyline/` only; `pytest` and `pyflakes` are for development only.
+- **Stdlib only** in everything that ships (`config/`, `hooks/`, `scripts/`). `tiktoken` is for `keyline/` only, except the token proxy in `scripts/plugin_cost.py` and `scripts/skill_bill.py` (the first run may download its table into `keyline/cache/tiktoken`); `pytest` and `pyflakes` are for development only.
 - **Run a script that reads user files with `python -I`** and treat those files as untrusted: a transcript, note or settings file that is not UTF-8, not the expected shape or nested too deep for `json` is a one-line message, never a traceback. `tests/test_source_rules.py` checks the rules it can see in the source.
 - **Windows and Ubuntu both pass.** Paths, encodings and symlinks differ; CI runs both.
 - **User files are written whole or not at all** (temp file beside it, then rename), backed up before they are replaced, and recorded in the install record before the next write, as `config/install.py` does (`config/add_to_repo.py` writes inside a repository and makes no backup: git holds the copy). A temp file or backup is created with the mode of the file it copies, never wider.

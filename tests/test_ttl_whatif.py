@@ -109,3 +109,12 @@ def test_odd_lines_are_skipped(ttl_whatif, tmp_path):
                   + json.dumps(response("m1", "not a time", write5=5)).encode() + b"\n"
                   + json.dumps(response("m2", "2026-01-01T00:00:00Z", write5=5)).encode() + b"\n")
     assert ttl_whatif.analyse([[str(p)]])["responses"] == 1     # only the one with a readable time
+
+
+def test_a_one_hour_stream_keeps_its_ttl_after_a_pure_read(ttl_whatif, tmp_path):
+    path = write_jsonl(tmp_path / "s.jsonl", [
+        response("m1", "2026-01-01T00:00:00Z", write1=100_000),
+        response("m2", "2026-01-01T00:01:00Z", read=100_000),
+        response("m3", "2026-01-01T00:20:00Z", write5=100_000),    # 19 min: the 1-hour cache should be live
+    ])
+    assert ttl_whatif.analyse([[str(path)]])["busts"] == {"other": 1}

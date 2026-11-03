@@ -121,7 +121,7 @@ def analyse(streams):
                     row["write"] += writes
                     total = read + writes
                     if total >= BUST_MIN_TOKENS and writes >= BUST_WRITE_SHARE * total:
-                        ttl = LONG_TTL_SECONDS if previous["w1"] else TTL_SECONDS
+                        ttl = LONG_TTL_SECONDS if previous["long"] else TTL_SECONDS
                         if gap > ttl:
                             cause = "gap over TTL"
                         elif total < previous["total"] / 2:
@@ -129,7 +129,8 @@ def analyse(streams):
                         else:
                             cause = "other"
                         busts[cause] = busts.get(cause, 0) + 1
-                previous = {"when": when, "w1": w1, "total": read + writes}
+                previous = {"when": when, "long": w1 > 0 or (previous is not None and previous["long"]),
+                            "total": read + writes}
     return {"responses": responses, "actual": actual, "whatif": whatif, "buckets": buckets, "busts": busts}
 
 

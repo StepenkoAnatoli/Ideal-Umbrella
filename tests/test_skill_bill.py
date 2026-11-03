@@ -84,3 +84,30 @@ def test_main_errors_are_one_line(skill_bill, tmp_path, monkeypatch):
         skill_bill.main([str(tmp_path)])
     assert "no SKILL.md" in str(e.value)
     assert os.path.isdir(tmp_path)
+
+
+def test_default_folders_skip_desktop_session_copies_and_count_a_skill_once(skill_bill, tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    home = tmp_path / "home"
+    make_skill(home / ".claude" / "skills", "alpha")
+    make_skill(app / "local-agent-mode-sessions" / "s1" / "skills-plugin" / "skills", "alpha")
+    plugin = app / "plugins" / "p"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    make_skill(plugin / "skills", "beta")
+    monkeypatch.setenv("CLAUDE_APP_DIR", str(app))
+    monkeypatch.setattr(skill_bill.Path, "home", classmethod(lambda cls: home))
+    rows = skill_bill.analyse(skill_bill.default_folders(), words)
+    assert sorted(r["name"] for r in rows) == ["alpha", "beta"]
+
+
+def test_a_symlinked_skill_folder_is_found(skill_bill, tmp_path):
+    real = tmp_path / "real"
+    make_skill(real, "linked")
+    root = tmp_path / "skills"
+    root.mkdir()
+    try:
+        os.symlink(str(real / "linked"), str(root / "linked"), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    assert [r["name"] for r in skill_bill.analyse([str(root)], words)] == ["linked"]

@@ -68,3 +68,13 @@ def test_report_and_errors(top_waste, tmp_path, capsys):
     with pytest.raises(SystemExit) as e:
         top_waste.main([str(tmp_path / "missing")])
     assert "cannot read" in str(e.value)
+
+
+def test_commands_that_share_their_first_60_characters_are_not_one_repeat(top_waste, tmp_path):
+    prefix = "cd /some/long/repository/folder/for/the/project && python -m pytest "
+    assert len(prefix) > 60
+    path = write_jsonl(tmp_path / "s.jsonl", [
+        call("1", "t1", "Bash", prefix + "tests/a.py"), result("r1", "t1", "x" * 10),
+        call("2", "t2", "Bash", prefix + "tests/b.py"), result("r2", "t2", "x" * 10),
+    ])
+    assert top_waste.analyse([str(path)])["repeats"] == []

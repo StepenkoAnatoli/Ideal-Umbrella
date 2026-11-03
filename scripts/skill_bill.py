@@ -65,14 +65,20 @@ def front_value(front, key):
 
 def skill_folders(folder):
     """Folders under `folder` (itself included) that hold SKILL.md, not looking inside one."""
-    found = []
-    for root, dirs, names in os.walk(str(folder)):
+    found, seen = [], set()
+    for root, dirs, names in os.walk(str(folder), followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:       # a link back into a folder already walked
+            dirs[:] = []
+            continue
+        seen.add(real)
         if "SKILL.md" in names:
             found.append(root)
             dirs[:] = []
         else:
             dirs[:] = sorted(d for d in dirs if d not in SKIP_FOLDERS)
         if len(found) >= MAX_SKILLS:
+            print(f"note: stopped after {MAX_SKILLS} skills in {folder}", file=sys.stderr)
             break
     return sorted(found)
 
@@ -94,9 +100,13 @@ def referenced_files(folder, body):
 
 
 def analyse(folders, count):
-    rows = []
+    rows, seen = [], set()
     for folder in folders:
         for skill in skill_folders(folder):
+            real = os.path.realpath(skill)
+            if real in seen:
+                continue
+            seen.add(real)
             text = read_text(os.path.join(skill, "SKILL.md"))
             front, body = split_frontmatter(text)
             name = front_value(front, "name") or os.path.basename(skill)
@@ -109,7 +119,11 @@ def analyse(folders, count):
 
 
 def default_folders():
-    return [str(Path.home() / ".claude" / "skills"), str(pc.default_app_dir())]
+    """~/.claude/skills and each installed plugin. The app's desktop-session folders hold copies
+    Claude Code does not load, so they are left out."""
+    app = pc.default_app_dir()
+    plugins = [str(r) for r in pc.plugin_roots(app) if "local-agent-mode-sessions" not in Path(r).parts]         if os.path.isdir(app) else []
+    return [str(Path.home() / ".claude" / "skills"), *plugins]
 
 
 def main(argv=None):

@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+LEGACY_KEYS = ("autoCompactWindow", "skillListingBudgetFraction")   # the keys installs before the record wrote
 sys.path.insert(0, str(HERE))
 import install  # noqa: E402
 
@@ -79,7 +80,8 @@ def undo_settings(settings, template, record, evidence=None):
     if has_record:
         keys = list(dict.fromkeys([*added, *replaced]))
     elif evidence:
-        keys = list(template)
+        # an install from before the record wrote only these; a bashOutputMaxChars there is the user's
+        keys = [key for key in template if key in LEGACY_KEYS or key in ("hooks", "permissions")]
     else:
         keys = []
         notices.append("no install record and no Ideal-Umbrella hook; settings values left as is")

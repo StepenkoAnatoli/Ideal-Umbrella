@@ -4,6 +4,8 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 
 ## [Unreleased]
 ### Added
+- `config/uninstall.py` without an install record removes only the two keys those installs wrote, so a `bashOutputMaxChars` you set yourself stays.
+- `scripts/skill_bill.py` by default reads `~/.claude/skills` and installed plugins, follows linked skill folders and counts each skill folder once; the app's desktop-session copies are left out.
 - `bashOutputMaxChars: 12000` in `config/user-settings.json` (Claude Code 2.1.261+): shell output past it goes to a file with a preview; `config/install.py` verifies it and the README settings table and `tests/test_docs_match_source.py` cover it.
 - `# Effort` in `config/CLAUDE.md` and the copy in `config/cloud-setup.sh`: stop after 3 failed attempts at one fix; size the process to the change.
 - `scripts/ledger.py --tag LABEL`, to keep a holdout and a treated measurement apart; README says how to compare them and that `promptCacheTtl` stays unset (with the numbers).
