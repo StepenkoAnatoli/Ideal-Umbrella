@@ -9,7 +9,8 @@ inside a notes/ or plans/ folder of the project (a file outside the project, and
 file in a dotted folder below notes/ or plans/, is ignored), or, when one or more --watch PATTERN
 arguments are given, only on files matching those patterns instead (fnmatch, case-insensitive; an
 absolute pattern is matched against the absolute path, a relative one against the path relative to
-the project dir; the suffix rule still applies, so a watched .py file is passed over).
+the project dir, both read as written and with symlinks resolved; the suffix rule still applies,
+so a watched .py file is passed over).
 Example: keyline_hook.py --watch /path/to/project/PROGRESS.md
 A rendering is the note's name with .he.txt, .he.md or .he.keyline in place of its extension
 (any case: c.HE.TXT counts).
@@ -71,17 +72,25 @@ def _norm(p):
 
 def watched(path, root, patterns=()):
     if patterns:
-        absolute = _norm(path.resolve())
-        try:
-            rel = _norm(path.resolve().relative_to(Path(root).resolve()).as_posix())
-        except (ValueError, OSError):
-            rel = None
+        # The path and the pattern each as written and with symlinks resolved, as below: a
+        # repository reached through a link (/tmp and /var on macOS) matches either way.
+        readings = []
+        for candidate, base in ((Path(os.path.abspath(path)), Path(os.path.abspath(root))),
+                                (path.resolve(), Path(root).resolve())):
+            try:
+                rel = _norm(candidate.relative_to(base).as_posix())
+            except (ValueError, OSError):
+                rel = None
+            readings.append((_norm(candidate), rel))
         for pat in patterns:
-            pat_n = _norm(pat)
             if Path(pat).is_absolute():
-                if fnmatch.fnmatchcase(absolute, pat_n):
+                try:
+                    forms = {_norm(os.path.abspath(pat)), _norm(Path(pat).resolve())}
+                except (OSError, RuntimeError):
+                    forms = {_norm(os.path.abspath(pat))}
+                if any(fnmatch.fnmatchcase(absolute, f) for absolute, _ in readings for f in forms):
                     return True
-            elif rel is not None and fnmatch.fnmatchcase(rel, pat_n):
+            elif any(rel is not None and fnmatch.fnmatchcase(rel, _norm(pat)) for _, rel in readings):
                 return True
         return False
     # The path as written first (a notes/ folder that is a symlink to Dropbox stays inside the

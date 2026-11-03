@@ -188,7 +188,8 @@ cannot be read or is not a regular file or folder (a named pipe).
    such as `.obsidian/`), and only acts on `.txt`, `.md`, `.keyline` or
    extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
-   absolute pattern matches the absolute path, a relative one the path from the project dir;
+   absolute pattern matches the absolute path, a relative one the path from the project dir, each
+   read both as written and with symlinks resolved, so a repo reached through a link still matches;
    the suffix rule still applies, so a watched `.py` file is passed over).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from. A `--watch` without a pattern, with a

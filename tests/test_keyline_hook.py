@@ -316,3 +316,26 @@ def test_a_folder_named_like_a_rendering_is_not_a_rendering(keyline_hook, tmp_pa
     (notes / "c.he.txt").mkdir()
     assert edit(keyline_hook, monkeypatch, note) == 0
     assert capsys.readouterr().err == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_watch_pattern_matches_through_a_symlinked_folder(keyline_hook, tmp_path):
+    # General review 44170ca, C1: the edited path was resolved but the pattern was not, so an
+    # absolute --watch pattern through a link (/tmp and /var on macOS) never matched.
+    real = tmp_path / "real"
+    (real / "notes").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    (real / "PROGRESS.md").write_text("# Progress\n", encoding="utf-8")
+    (real / "notes" / "moved").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "a.md").write_text("# A\n", encoding="utf-8")
+    written = link / "PROGRESS.md"
+    for path in (written, real / "PROGRESS.md"):
+        for pat in (str(link / "PROGRESS.md"), str(real / "PROGRESS.md"), str(link / "*.md")):
+            assert keyline_hook.watched(path, link, [pat]), (path, pat)
+        assert keyline_hook.watched(path, link, ["PROGRESS.md"]), path
+        assert keyline_hook.watched(path, real, ["PROGRESS.md"]), path
+    # A relative pattern also reads the path as written (a folder link inside the project).
+    assert keyline_hook.watched(real / "notes" / "moved" / "a.md", real, ["notes/moved/*.md"])
+    assert not keyline_hook.watched(written, link, [str(link / "OTHER.md")])
