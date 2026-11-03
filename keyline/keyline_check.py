@@ -253,15 +253,17 @@ CALENDAR_FULL = {"january", "february", "march", "april", "may", "june", "july",
 # "ticket no. 5" counts as a negation (fails closed). The number follows on the same line. The word edges are letters and digits,
 # not "\b": "\b" counts "_" as a letter, so underscore emphasis ("_not_") hid the word.
 EN_L, EN_R = r"(?<![^\W_])", r"(?![^\W_])"
-NEG_EN = re.compile(EN_L + r"(?:no|not|never|without|none|cannot|[A-Za-z]+n't)" + EN_R, re.I)
+NEG_EN = re.compile(EN_L + r"(?:no|not|never|without|none|cannot|[A-Za-z]+n['’ʼ]t)" + EN_R, re.I)
 NUMBER_SIGN = re.compile(r"\.[ \t]*\d")
 # Hebrew: the specified list (לא, אין, ללא, אף, מעולם) plus the conjunction prefixes ו/ש/וש/כש on
-# לא/אין/ללא and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו).
+# לא/אין/ללא/בלי and the inflected forms of אין, which Hebrew prose uses constantly (שלא, ולא, אינו,
+# שאינו), and the imperative אל ("don't"), only before a second-person future verb (אל תפרסו):
+# elsewhere אל is "to" (אל הבית).
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
-    rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא)"
-    rf"|אינו|אינה|אינם|אינן|אינני|איננו|אינך"
+    rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
+    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])"
     rf"|אף|מעולם"
     rf")(?![{HEB}])"
 )

@@ -123,10 +123,13 @@ must never report a vacuous `PASS` on a source whose claims it did not understan
 
 Negations counted, English and Hebrew together in both texts:
 
-- English: no, not, never, without, none (the spec list), plus cannot and n't contractions.
-- Hebrew: לא, אין, ללא, אף, מעולם (the spec list), plus ו/ש/וש/כש prefixes on לא, אין and ללא, and
-  the inflected forms of אין (אינו, אינה, אינם, אינן, אינני, איננו, אינך). Without these the
-  panel's own Hebrew prose rendering counts 1 negation instead of 4 and fails falsely.
+- English: no, not, never, without, none (the spec list), plus cannot and n't contractions, with
+  a straight or a typographic apostrophe (`can't`, `can’t`, `canʼt`).
+- Hebrew: לא, אין, ללא, אף, מעולם (the spec list), plus בלי, the inflected forms of אין (אינו,
+  אינה, אינם, אינן, אינני, איננו, אינך), ו/ש/וש/כש prefixes on all of these but אף and מעולם
+  (ולא, שאינו, ובלי), and the imperative אל or ואל before a verb that starts with ת (אל תפרסו;
+  elsewhere אל is "to"). Without these the panel's own Hebrew prose rendering counts 1 negation
+  instead of 4 and fails falsely.
 
 ## keyline_lint.py
 
