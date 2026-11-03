@@ -78,3 +78,26 @@ Each test below failed on 8a22df2 first. Full repros are kept with the reviewer'
 Class searches: `NEG_HE` and `HEDGE_HE` are the only Hebrew word scans (the hedge scan had the points gap, fixed). `cloud-setup.sh` is the only shell script. `_claude_config_dirs` has one caller that compares unresolved paths.
 
 Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2124 passed, 16 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 23 passed, 1 skipped (the chown test needs root, and it passes as root).
+
+### Round 3 (fresh-eyes reviewer, head 86a492e): 10 findings, 1 medium, 9 low; all fixed
+
+Each test below failed on 86a492e first (R3-10 is docs only).
+
+| ID | Sev | File (at 86a492e) | Class | Failure | Fix | Test |
+|----|-----|------|-------|---------|-----|------|
+| R3-1 | medium | keyline/keyline_check.py NEG_HE | fail-open, neighbour of R2-8 | אף still counted in "על אף" ("despite"), "אף ש…" ("although") and "אף-כי"/"אף-על-פי" with an ASCII hyphen, so a dropped negation passed. | Those are not counted; a hyphen joins like a maqaf; a ש-word after אף is "although" unless listed in `AF_NOUNS` (אף שורה). | both-directions cases; `test_hebrew_af_as_not_even_is_still_a_negation` (אף שורה, אף-אחד) |
+| R3-2 | low | config/cloud-setup.sh pass 1 | BOM, neighbour of R2-3 | A BOM before ``` on line 1 hid the fence, so the user's fenced example was taken as the section and deleted. | Pass 1 strips the BOM before the fence match. | `test_a_bom_before_a_fence_on_line_1_keeps_the_fenced_example` |
+| R3-3 | low | config/cloud-setup.sh pass 2 | BOM | A BOM before the begin marker gave an extra BOM-only line and an unstable rerun. | The BOM is printed with the section, not as a text line. | BOM-before-begin test (rerun stable) |
+| R3-4 | low | config/cloud-setup.sh mode copy | portability (busybox) | busybox has no `chmod --reference`; the file ended at 0600. | `stat -c %a` and `chmod MODE`. | chmod shim rejecting `--reference` |
+| R3-5 | low | config/cloud-setup.sh link resolution | wrong message | A link loop said "missing folder"; busybox `readlink -f` fails on a dangling link into an existing folder. | One "leads nowhere (a missing folder, or a loop)" note; a dangling link is followed by hand. | link-loop test; busybox readlink shim |
+| R3-6 | low | config/cloud-setup.sh | wrong message | An unreadable file said "cannot write <tmp>". | A read check first: "cannot read it". | unreadable file (non-root) |
+| R3-7 | low | config/cloud-setup.sh | host script state | `set -C` in the host blocked the write. | `set +C` in the subshell. | noclobber host |
+| R3-8 | low | config/cloud-setup.sh decide() | quadratic | Fence pairing took 27 s for 20000 unclosed openers. | A longest-closer table makes it linear, as `_fenced`. | 20000 openers, timeout 10 s |
+| R3-9 | low | keyline/keyline_check.py `_in_calendar` | false FAIL, neighbour of R2-9 | A pointed weekday or one split by a no-break space or line break was missing. | Points taken off, `\s+` inside two-word forms; same for the two-word Hebrew hedges. | `test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present`, `test_a_two_word_hebrew_hedge_with_a_no_break_space_is_a_hedge` |
+| R3-10 | low | README, CHANGELOG | docs vs code | "Blank lines kept as written", but the gaps around the old section merge. | Docs say so. | — |
+
+Class searches: the BOM is handled wherever line 1 is read (pass 1 fences and markers, pass 2 print). `_in_calendar`, `NEG_HE` and `HEDGE_HE` are the only Hebrew scans, now all on pointless text with `\s+` between words. `chmod --reference` and `readlink -f` were the only GNU-isms left in the script.
+
+Limit kept: pointed text in the short spelling (שִׁשִּׁי) is another spelling and is not matched; an unlisted ש-noun after אף is not counted (as the AL_TO limit).
+
+Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2142 passed, 17 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 31 passed, 1 skipped (chown, root only).

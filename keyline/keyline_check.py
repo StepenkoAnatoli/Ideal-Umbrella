@@ -269,14 +269,21 @@ AL_TO = ("תוך תוכו תוכה תוכם תוכן תחת תל "
          "תיעוד").split()
 # אל and its verb may stand on two lines (a hard-wrapped note) or around a no-break space, so
 # any whitespace separates them. אף is "not even" (אף אחד), but not in "אף על פי" / "אף כי"
-# ("although"), which would otherwise stand in for a lost negation. Pointed text (לֹא, אַל
-# תִּפְרְסוּ) is matched with its points taken off (POINTS).
+# / "אף ש…" ("although") or "על אף" ("despite"), which would otherwise stand in for a lost
+# negation; a space, a maqaf or a hyphen may join those words. A word after אף that starts
+# with ש is "although" unless it is a noun listed in AF_NOUNS (אף שורה, "not one line"); an
+# unlisted ש-noun after אף is not counted. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with
+# its points taken off (POINTS).
+AF_NOUNS = ("שורה שורות שאלה שאלות שם שמות שינוי שינויים שלב שלבים שעה שעות שנה שנים שבוע "
+            "שבועות שום שירות שרת שרתים שגיאה שגיאות שדה שדות שיחה שפה שיטה שכבה שקל שקלים "
+            "שיר שולחן שוק שותף שעון").split()
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
     rf"|(?:ו)?אל(?=\s+ת[{HEB}])(?!\s+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
-    rf"|אף(?!(?:\s+|־)(?:על(?:\s+|־)פי|כי)(?![{HEB}]))|מעולם"
+    rf"|(?<!על\s)(?<!על[-־])אף(?!(?:\s+|[-־])(?:על(?:\s+|[-־])פי|כי)(?![{HEB}]))"
+    rf"(?!(?:\s+|[-־])ש(?!(?:{'|'.join(w[1:] for w in AF_NOUNS)})(?![{HEB}])))|מעולם"
     rf")(?![{HEB}])"
 )
 POINTS = re.compile("[\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7]")
@@ -299,7 +306,7 @@ HEDGE_GROUPS_HE = {
 }
 HEDGE = re.compile(EN_L + "(?:" + "|".join(w for words in HEDGE_GROUPS.values() for w in words) + ")" + EN_R, re.I)
 HEDGE_HE = {
-    group: re.compile(rf"(?<![{HEB}])(?:ו|ש|וש|כש)?(?P<word>" + "|".join(map(re.escape, words)) + rf")(?![{HEB}])")
+    group: re.compile(rf"(?<![{HEB}])(?:ו|ש|וש|כש)?(?P<word>" + "|".join(re.escape(w).replace("\\ ", r"\s+") for w in words) + rf")(?![{HEB}])")
     for group, words in HEDGE_GROUPS_HE.items()
 }
 
@@ -978,9 +985,11 @@ def _in_calendar(tok, kind, text):
     full name in capitals is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
     שבת."""
     if kind == "proper" or tok.lower() in CALENDAR_FULL:
-        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-                 for form in CALENDAR.get(tok.lower(), ())]
-        if forms and re.search("(?:" + "|".join(forms) + ")", text):
+        # Points are taken off and any whitespace joins a two-word form (יום שישי), as for the
+        # negations and hedges.
+        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form).replace("\\ ", r"\s+")
+                 + rf"(?![{HEB}])" for form in CALENDAR.get(tok.lower(), ())]
+        if forms and re.search("(?:" + "|".join(forms) + ")", POINTS.sub("", text)):
             return True
     return False
 

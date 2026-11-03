@@ -1728,7 +1728,7 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
 
 
-@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה."])
+@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה.", "אף שורה לא נמחקה.", "אף-אחד לא בא."])
 def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     # R2-8: only "אף על פי" and "אף כי" ("although") stop counting.
     assert keyline_check.negations(text) == text.count("אף") + text.count("לא") + text.count("אין")
@@ -1751,6 +1751,12 @@ def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     ("Do not copy v2.1, even if it is small.", "העתק את v2.1, אף על פי שהוא קטן.", False),
     ("Do not copy v2.1.", "העתק את v2.1, אף כי זה קטן.", False),
     ("Do not copy v2.1.", "העתק את v2.1, אף־על־פי שזה קטן.", False),
+    # Round 3, R3-1: "על אף" (despite), "אף ש…" (although), and an ASCII hyphen for the maqaf.
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על אף המגבלות.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף-על-פי שזה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף שזה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף-כי זה קטן.", False),
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על־אף המגבלות.", False),
     # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
     ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
     ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
@@ -1766,3 +1772,17 @@ def test_a_pointed_hebrew_hedge_is_still_a_hedge(keyline_check):
     # Neighbour of R2-9 (round 2 review of the G1-G5 fixes): points hid Hebrew words from the
     # hedge scan as they hid לֹא from the negation count.
     assert keyline_check.hedges("הַשָּׁרָת עָלוּל לִפֹּל.") == {"possibility": ["עלול"]}
+
+
+
+@pytest.mark.parametrize("rendering", ["פרסו את v2.1 ביום\u00a0שישי.", "פרסו את v2.1 בְּיוֹם שִׁישִׁי.",
+                                       "פרסו את v2.1 ביום\nשישי."])
+def test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present(keyline_check, rendering):
+    # Round 3, R3-9: the calendar scan read the raw text. (Pointed text in the short spelling,
+    # שִׁשִּׁי, is another spelling of the name and is not matched.)
+    assert keyline_check.report("s", "r", "Deploy v2.1 on Friday.", rendering)[0] is True
+
+
+def test_a_two_word_hebrew_hedge_with_a_no_break_space_is_a_hedge(keyline_check):
+    # Neighbour of R3-9: "ככל הנראה" and "מן הסתם" are matched with any whitespace between.
+    assert list(keyline_check.hedges("הוא ככל\u00a0הנראה יפול.")) == ["probability"]

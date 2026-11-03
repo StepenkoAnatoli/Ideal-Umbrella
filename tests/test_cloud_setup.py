@@ -341,3 +341,89 @@ def test_blank_lines_outside_the_section_are_kept_as_written(tmp_path):
     assert once.startswith(text + BEGIN)
     run(tmp_path)
     assert target.read_text(encoding="utf-8") == once
+
+
+# Round 3 review (research/review-findings-fresh-84bfecf.md, R3-2 to R3-8).
+
+BOM = "﻿"
+
+
+def test_a_bom_before_a_fence_on_line_1_keeps_the_fenced_example(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    text = f"{BOM}```\n{BEGIN}\nmy example\n{END}\n```\n"
+    target.write_text(text, encoding="utf-8")
+    run(tmp_path)
+    assert target.read_text(encoding="utf-8").startswith(text)
+
+
+def test_a_bom_before_the_begin_marker_stays_right_before_the_section(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text(f"{BOM}{BEGIN}\nold\n{END}\n", encoding="utf-8")
+    run(tmp_path)
+    once = target.read_text(encoding="utf-8")
+    assert once.startswith(BOM + BEGIN + "\n") and "old" not in once
+    run(tmp_path)
+    assert target.read_text(encoding="utf-8") == once
+
+
+def test_the_mode_is_kept_without_gnu_chmod_reference(tmp_path):
+    # busybox chmod has no --reference.
+    env = _shim(tmp_path, "chmod", 'case "$1" in --reference*) exit 1;; esac; exec /bin/chmod "$@"')
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("mine\n", encoding="utf-8")
+    target.chmod(0o644)
+    subprocess.run(["bash", str(SCRIPT)], env=env, check=True)
+    assert target.stat().st_mode & 0o777 == 0o644 and sections(target.read_text(encoding="utf-8")) == (1, 1)
+
+
+def test_a_link_loop_is_called_a_loop(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.symlink_to("CLAUDE.md")
+    result = run(tmp_path)
+    assert target.is_symlink() and "or a loop)" in result.stderr
+
+
+def test_a_link_to_a_missing_file_in_a_folder_that_exists_is_written_without_gnu_readlink(tmp_path):
+    # busybox readlink -f fails when the last part is missing; GNU follows it.
+    env = _shim(tmp_path, "readlink",
+                'if [ "$1" = -f ] && [ ! -e "$3" ] && [ -L "$3" ]; then exit 1; fi; exec /usr/bin/readlink "$@"')
+    (tmp_path / "dots").mkdir()
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.symlink_to(tmp_path / "dots" / "CLAUDE.md")
+    result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert result.stderr == "" and target.is_symlink()
+    assert sections((tmp_path / "dots" / "CLAUDE.md").read_text(encoding="utf-8")) == (1, 1)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0, reason="needs a user that file modes apply to")
+def test_an_unreadable_claude_md_is_reported_as_unreadable(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("secret\n", encoding="utf-8")
+    target.chmod(0o200)
+    result = run(tmp_path)
+    assert "cannot read" in result.stderr and "ideal-umbrella-" not in result.stderr
+    assert sorted(p.name for p in target.parent.iterdir()) == ["CLAUDE.md"]
+
+
+def test_noclobber_in_the_setup_script_does_not_block_the_write(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("from the image\n", encoding="utf-8")
+    result = _host(tmp_path, before="set -C\n", after="echo setup goes on\n")
+    assert result.stderr == "" and result.stdout == "setup goes on\n"
+    assert sections(target.read_text(encoding="utf-8")) == (1, 1)
+
+
+def test_many_unclosed_fence_openers_take_linear_time(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("```py\n" * 20000, encoding="utf-8")
+    subprocess.run(["bash", str(SCRIPT)], env={"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")},
+                   check=True, timeout=10)
+    assert sections(target.read_text(encoding="utf-8")) == (1, 1)

@@ -6,8 +6,9 @@
 # else ~/.claude), the markers config/install.py uses. Text already in the file (from the image
 # or an earlier step) stays; a rerun replaces the section. It never fails the setup: it runs in
 # a subshell, so its own exits, traps and names end with it, and the setup script around it goes
-# on (under set -e too).
+# on (under set -e too). Noclobber (set -C) from that script would block its writes, so it is off.
 (
+set +C
 dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 file="$dir/CLAUDE.md"
 begin='<!-- Ideal-Umbrella rules: begin -->'
@@ -27,10 +28,6 @@ rules=$(cat <<'EOF'
 EOF
 )
 mkdir -p "$dir" || exit 0
-if [ -L "$file" ] && [ ! -e "$file" ] && ! readlink -f -- "$file" >/dev/null 2>&1; then
-  echo "Ideal-Umbrella: $file is a link into a missing folder; left as it is" >&2
-  exit 0
-fi
 if [ -e "$file" ] && [ ! -f "$file" ]; then
   echo "Ideal-Umbrella: $file is not a file (a folder?); left as it is" >&2
   exit 0
@@ -40,7 +37,23 @@ fi
 # mktemp makes the temp file new (never one already there) at 0600, so it is never more open than
 # the file it copies; it gets that file's mode only once it is whole. In a folder the session may
 # not write it goes to TMPDIR instead. Every exit removes it, except the one that names it.
-real=$(readlink -f -- "$file") || real="$file"
+# A link to a file not there yet is written at its target, if that folder exists (busybox
+# readlink -f fails on such a link, so it is followed one step by hand).
+real=$(readlink -f -- "$file" 2>/dev/null) || {
+  real=
+  if [ -L "$file" ]; then
+    t=$(readlink -- "$file") && case $t in /*) ;; *) t="$dir/$t" ;; esac
+    if [ -n "$t" ] && [ ! -e "$t" ] && [ ! -L "$t" ] && p=$(readlink -f -- "${t%/*}" 2>/dev/null) && [ -d "$p" ]; then
+      real="$p/${t##*/}"
+    fi
+  else
+    real="$file"
+  fi
+  if [ -z "$real" ]; then
+    echo "Ideal-Umbrella: $file is a link that leads nowhere (a missing folder, or a loop); left as it is" >&2
+    exit 0
+  fi
+}
 beside=1
 tmp=$(mktemp -- "$real.ideal-umbrella-XXXXXX" 2>/dev/null) || {
   beside=0
@@ -48,6 +61,10 @@ tmp=$(mktemp -- "$real.ideal-umbrella-XXXXXX" 2>/dev/null) || {
 }
 trap 'rm -f -- "$tmp"' EXIT
 fail() { echo "Ideal-Umbrella: $file not written ($1); left as it was" >&2; exit 0; }
+if [ -f "$file" ] && [ ! -r "$file" ]; then
+  echo "Ideal-Umbrella: $file not written (cannot read it); left as it was" >&2
+  exit 0
+fi
 if [ -f "$file" ]; then
   # The markers are found as config/install.py finds them: whole lines, trailing whitespace (a
   # CRLF line end) ignored, none inside a closed ``` or ~~~ code fence (an example the user
@@ -60,17 +77,18 @@ if [ -f "$file" ]; then
     function blanks(   i) { for (i = 1; i <= nb; i++) print hb[i]; nb = 0 }
     function take(   i) { if (merge && nk > nb) { for (i = 1; i <= nk; i++) hb[i] = kb[i]; nb = nk }; merge = 0 }
     NR == FNR {
-      line[FNR] = $0; n = FNR
-      if (match($0, /^ ? ? ?(```+|~~~+)/)) {
-        f++; fl[f] = FNR; fs = substr($0, RSTART, RLENGTH); sub(/^ +/, "", fs)
-        fc[f] = substr(fs, 1, 1); flen[f] = length(fs); info = substr($0, RSTART + RLENGTH)
+      line[FNR] = $0; n = FNR; s = $0
+      if (FNR == 1 && substr(s, 1, 3) == "\357\273\277") s = substr(s, 4)
+      if (match(s, /^ ? ? ?(```+|~~~+)/)) {
+        f++; fl[f] = FNR; fs = substr(s, RSTART, RLENGTH); sub(/^ +/, "", fs)
+        fc[f] = substr(fs, 1, 1); flen[f] = length(fs); info = substr(s, RSTART + RLENGTH)
         fclose_[f] = (info ~ /^[ \t\r]*$/); fbad[f] = (fc[f] == "`" && index(info, "`"))
       }
       next
     }
     FNR == 1 { decide() }
     FNR == sb { take(); merge = 1; for (i = 1; i <= nb; i++) kb[i] = hb[i]; nk = nb; nb = 0
-                if (FNR == 1 && bom) { printf "\357\273\277"; out = 1 }; next }
+                if (FNR == 1 && bom) printf "\357\273\277"; next }
     FNR > sb && FNR <= se { next }
     /^[ \t\r]*$/ { hb[++nb] = $0; next }
     { take(); blanks(); print; out = 1 }
@@ -80,9 +98,16 @@ if [ -f "$file" ]; then
     }
     function decide(   i, j, c, L, x, k, nbeg, nend) {
       # Lines inside closed fences (install.py _fenced): an opener with no closer later is text.
+      # lg[c, i]: the longest closing fence of character c at fence i or later, so an opener
+      # with no closer is skipped at once (linear, as in _fenced).
+      lg["`", f + 1] = lg["~", f + 1] = 0
+      for (i = f; i >= 1; i--) {
+        lg["`", i] = lg["`", i + 1]; lg["~", i] = lg["~", i + 1]
+        if (fclose_[i] && flen[i] > lg[fc[i], i]) lg[fc[i], i] = flen[i]
+      }
       for (i = 1; i <= f; ) {
         c = fc[i]; L = flen[i]; j = 0
-        if (!fbad[i]) for (k = i + 1; k <= f; k++) if (fc[k] == c && flen[k] >= L && fclose_[k]) { j = k; break }
+        if (!fbad[i] && lg[c, i + 1] >= L) for (k = i + 1; k <= f; k++) if (fc[k] == c && flen[k] >= L && fclose_[k]) { j = k; break }
         if (!j) { i++; continue }
         for (x = fl[i]; x <= fl[j]; x++) fenced[x] = 1
         i = j + 1
@@ -106,7 +131,9 @@ if [ -f "$file" ]; then
 fi
 printf '%s\n%s\n%s\n' "$begin" "$rules" "$end" >> "$tmp" || fail "cannot write $tmp"
 if [ -f "$file" ]; then
-  chmod --reference="$real" "$tmp" 2>/dev/null
+  # stat -c, not GNU chmod --reference, so busybox keeps the mode too; should stat fail, the
+  # file stays at mktemp's 0600, never more open than before.
+  mode=$(stat -c %a -- "$real" 2>/dev/null) && chmod "$mode" "$tmp" 2>/dev/null
 else
   chmod "$(printf '%o' $((0666 & ~0$(umask))))" "$tmp" 2>/dev/null
 fi
