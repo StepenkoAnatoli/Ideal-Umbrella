@@ -1,9 +1,15 @@
 #!/bin/bash
 # Ideal-Umbrella rules for Claude Code cloud sessions.
 # Paste into the cloud environment's setup script (claude.ai/code -> environment settings).
-# Cloud sessions don't read your local ~/.claude/CLAUDE.md, so this writes it inside the session.
-mkdir -p ~/.claude
-cat > ~/.claude/CLAUDE.md <<'EOF'
+# Cloud sessions don't read your local ~/.claude/CLAUDE.md, so this writes the rules inside the
+# session: as a marked section of CLAUDE.md in the folder Claude Code reads (CLAUDE_CONFIG_DIR,
+# else ~/.claude), the markers config/install.py uses. Text already in the file (from the image
+# or an earlier step) stays; a rerun replaces the section. It never fails the setup.
+dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+file="$dir/CLAUDE.md"
+begin='<!-- Ideal-Umbrella rules: begin -->'
+end='<!-- Ideal-Umbrella rules: end -->'
+rules=$(cat <<'EOF'
 # Side sessions and subagents
 - Write full details to a file; reply with a gist of at most 5 lines plus the file's path.
 - When you brief a side session or subagent, ask it for exactly that, and to update the task's resume point if it changed anything.
@@ -16,4 +22,26 @@ cat > ~/.claude/CLAUDE.md <<'EOF'
 - Save what the code cannot tell the next session in notes/learnings.md when the repo has it: a choice and why under decided; an approach dropped and why under tried and ruled out; a bug's cause found after failed attempts, or the user correcting how something is done here, under watch out.
 - In a cloud session the machine is discarded when the session ends: commit and push the progress file before offering the fresh session.
 EOF
+)
+mkdir -p "$dir" || exit 0
+if [ -f "$file" ]; then
+  b=$(grep -cxF -- "$begin" "$file")
+  e=$(grep -cxF -- "$end" "$file")
+  if [ "$b" != "$e" ] || [ "$b" -gt 1 ]; then
+    echo "Ideal-Umbrella: $file has broken or repeated rule markers; left as it is" >&2
+    exit 0
+  fi
+  # Drop the earlier section. Blank lines are held back until the next text line, so the blank
+  # lines around the old section merge into one gap and none are left at the end of the file.
+  awk -v b="$begin" -v e="$end" '
+    $0 == b { skip = 1; keep = blank; blank = 0; merge = 1; next }
+    skip { if ($0 == e) skip = 0; next }
+    /^[ \t\r]*$/ { blank++; next }
+    { n = blank; if (merge && keep > n) n = keep; merge = 0
+      for (; n > 0; n--) print ""; blank = 0; print }
+  ' "$file" > "$file.tmp" || { rm -f "$file.tmp"; exit 0; }
+  # Copied back, not moved: a linked CLAUDE.md stays a link, and the file keeps its mode.
+  cat "$file.tmp" > "$file"; rm -f "$file.tmp"
+fi
+{ if [ -s "$file" ]; then printf '\n'; fi; printf '%s\n%s\n%s\n' "$begin" "$rules" "$end"; } >> "$file"
 exit 0

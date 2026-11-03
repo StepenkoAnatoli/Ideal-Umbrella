@@ -108,7 +108,7 @@ In multi-repo cloud sessions the repo-level compact window and hook are not appl
 
 ### Cloud setup script
 
-`config/cloud-setup.sh` writes `~/.claude/CLAUDE.md` inside the cloud session (cloud sessions don't read your local one). It holds the rules from `config/CLAUDE.md` plus one cloud-only line: commit and push the progress file before offering a fresh session, because the cloud machine is discarded. Paste it into the cloud environment's setup script.
+`config/cloud-setup.sh` writes the rules into `CLAUDE.md` inside the cloud session (cloud sessions don't read your local one), in the folder Claude Code reads (`CLAUDE_CONFIG_DIR`, else `~/.claude`), as a section between the same markers `install.py` uses: text the image or an earlier setup step put in the file stays, a rerun replaces the section, a linked file stays a link, and a file with broken markers is left alone with a note on stderr. It holds the rules from `config/CLAUDE.md` plus one cloud-only line: commit and push the progress file before offering a fresh session, because the cloud machine is discarded. Paste it into the cloud environment's setup script.
 
 ## Verify
 
