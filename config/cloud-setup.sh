@@ -24,18 +24,23 @@ rules=$(cat <<'EOF'
 EOF
 )
 mkdir -p "$dir" || exit 0
+if [ -e "$file" ] && [ ! -f "$file" ]; then
+  echo "Ideal-Umbrella: $file is not a file (a folder?); left as it is" >&2
+  exit 0
+fi
 # The new file is built whole beside the real file (a linked CLAUDE.md stays a link) and moved
 # over it, so a write cut short (a full disk) leaves the old file as it was, never half a section.
-# The temp file starts at 0600, so it is never more open than the file it copies; in a folder the
-# session may not write it goes to TMPDIR instead.
+# mktemp makes the temp file new (never one already there) at 0600, so it is never more open than
+# the file it copies; it gets that file's mode only once it is whole. In a folder the session may
+# not write it goes to TMPDIR instead. Every exit removes it, except the one that names it.
 real=$(readlink -f -- "$file") || real="$file"
-tmp="$real.ideal-umbrella-$$"
 beside=1
-if ! (umask 077 && : > "$tmp") 2>/dev/null; then
+tmp=$(mktemp -- "$real.ideal-umbrella-XXXXXX" 2>/dev/null) || {
   beside=0
   tmp=$(mktemp) || { echo "Ideal-Umbrella: $file not written (no temp file); left as it was" >&2; exit 0; }
-fi
-fail() { rm -f "$tmp"; echo "Ideal-Umbrella: $file not written ($1); left as it was" >&2; exit 0; }
+}
+trap 'rm -f -- "$tmp"' EXIT
+fail() { echo "Ideal-Umbrella: $file not written ($1); left as it was" >&2; exit 0; }
 if [ -f "$file" ]; then
   b=$(grep -cxF -- "$begin" "$file")
   e=$(grep -cxF -- "$end" "$file")
@@ -52,15 +57,20 @@ if [ -f "$file" ]; then
     { n = blank; if (merge && keep > n) n = keep; merge = 0
       for (; n > 0; n--) print ""; blank = 0; print }
   ' "$file" > "$tmp" || fail "cannot write $tmp"
+fi
+{ if [ -s "$tmp" ]; then printf '\n'; fi; printf '%s\n%s\n%s\n' "$begin" "$rules" "$end"; } >> "$tmp" \
+  || fail "cannot write $tmp"
+if [ -f "$file" ]; then
   chmod --reference="$real" "$tmp" 2>/dev/null
 else
   chmod "$(printf '%o' $((0666 & ~0$(umask))))" "$tmp" 2>/dev/null
 fi
-{ if [ -s "$tmp" ]; then printf '\n'; fi; printf '%s\n%s\n%s\n' "$begin" "$rules" "$end"; } >> "$tmp" \
-  || fail "cannot write $tmp"
 if [ "$beside" = 1 ] && mv -f -- "$tmp" "$real" 2>/dev/null; then exit 0; fi
 # No rename (a bind-mounted CLAUDE.md, a folder the session may not write): write it in place, as
-# such a file allows. Should that write stop short, the whole new text stays in the temp file.
-if cat -- "$tmp" > "$real"; then rm -f "$tmp"; exit 0; fi
+# such a file allows. A file that cannot even be opened for writing is untouched; should the write
+# itself stop short, the whole new text stays in the temp file.
+{ : >> "$real"; } 2>/dev/null || fail "cannot write $real"
+if cat -- "$tmp" > "$real"; then exit 0; fi
+trap - EXIT
 echo "Ideal-Umbrella: $file may be cut short; the whole text is in $tmp" >&2
 exit 0

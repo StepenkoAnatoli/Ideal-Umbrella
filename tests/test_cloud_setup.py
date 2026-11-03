@@ -146,3 +146,89 @@ def test_a_file_that_cannot_be_moved_over_is_still_written(tmp_path):
     text = md.read_text(encoding="utf-8")
     assert text.startswith(f"# Image rules\n\n{BEGIN}\n{RULES}") and text.endswith(f"{END}\n")
     assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
+
+
+def test_broken_markers_leave_no_temp_file_behind(tmp_path):
+    # Fresh review 84bfecf, G1: the temp file is made before the marker check (self-check S2),
+    # and the broken-marker exit did not remove it, so every run left an empty
+    # CLAUDE.md.ideal-umbrella-<pid> beside the file (or in TMPDIR).
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text(f"{BEGIN}\nno end here\n", encoding="utf-8")
+    result = run(tmp_path)
+    assert "markers" in result.stderr
+    assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
+
+
+def test_a_file_already_named_like_the_temp_file_is_neither_reused_nor_changed(tmp_path):
+    # Fresh review 84bfecf, G2: the temp name was CLAUDE.md.ideal-umbrella-$$ and `: >` opened
+    # it without O_EXCL, so a file already there (a run that kept its temp file, as the in-place
+    # fallback does, under the same pid in a fresh container) was truncated and kept its own
+    # mode: 0644 here, beside a 0600 CLAUDE.md (the S1 promise).
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("private\n", encoding="utf-8")
+    md.chmod(0o600)
+    seen = tmp_path / "seen"
+    env = _shim(tmp_path, "awk", f'stat -L -c %a /proc/$$/fd/1 > "{seen}"\n'
+                                 f'exec "{shutil.which("awk")}" "$@"')
+    pre = 'f="$1.ideal-umbrella-$$"; echo kept > "$f"; chmod 644 "$f"; umask 022; exec bash "$0"'
+    result = subprocess.run(["bash", "-c", pre, str(SCRIPT), str(md)], env=env,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert seen.read_text().split() == ["600"]
+    kept = [p for p in md.parent.iterdir() if p.name != "CLAUDE.md"]
+    assert len(kept) == 1 and kept[0].read_text() == "kept\n"
+    assert RULES in md.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a user that file modes apply to")
+def test_a_file_that_cannot_be_opened_for_writing_is_reported_as_not_written(tmp_path):
+    # Fresh review 84bfecf, G3: when the in-place write could not even open the file (a
+    # read-only CLAUDE.md in a folder the session may not write), the note said the file
+    # "may be cut short" and kept a temp file in TMPDIR, though the file was never touched.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("# Image rules\n", encoding="utf-8")
+    md.chmod(0o444)
+    md.parent.chmod(0o555)
+    tmpdir = tmp_path / "t"
+    tmpdir.mkdir()
+    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", ""), "TMPDIR": str(tmpdir)}
+    try:
+        result = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True)
+    finally:
+        md.parent.chmod(0o755)
+    assert result.returncode == 0, result.stderr
+    assert "not written" in result.stderr and "cut short" not in result.stderr, result.stderr
+    assert list(tmpdir.iterdir()) == []
+    assert md.read_text(encoding="utf-8") == "# Image rules\n"
+
+
+def test_a_folder_named_claude_md_is_left_alone_with_a_note(tmp_path):
+    # Fresh review 84bfecf, G4: with a folder in CLAUDE.md's place, `mv -f tmp folder` moved the
+    # temp file into it and the run ended silently with no rules written anywhere.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.mkdir(parents=True)
+    result = run(tmp_path)
+    assert "not a file" in result.stderr, result.stderr
+    assert list(md.iterdir()) == []
+    assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                    reason="needs a user that file modes apply to")
+def test_a_read_only_claude_md_in_a_writable_folder_gets_the_rules(tmp_path):
+    # Fresh review 84bfecf, G5: the temp file was given CLAUDE.md's mode before the section was
+    # appended to it, so a 0444 CLAUDE.md (an image that ships it read-only) made the script's
+    # own append fail: "not written", though the rename it is built for would have worked.
+    md = tmp_path / ".claude" / "CLAUDE.md"
+    md.parent.mkdir()
+    md.write_text("# Image rules\n", encoding="utf-8")
+    md.chmod(0o444)
+    result = run(tmp_path)
+    assert result.stderr == ""
+    assert md.read_text(encoding="utf-8").startswith(f"# Image rules\n\n{BEGIN}\n{RULES}")
+    assert oct(md.stat().st_mode & 0o777) == "0o444"
+    assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
