@@ -1757,6 +1757,9 @@ def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     ("Do not copy v2.1.", "העתק את v2.1, אף שזה קטן.", False),
     ("Do not copy v2.1.", "העתק את v2.1, אף-כי זה קטן.", False),
     ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על־אף המגבלות.", False),
+    # Round 4, R4-1: "על אף" across a double space or a hard wrap.
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על  אף המגבלות.", False),
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על \nאף המגבלות.", False),
     # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
     ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
     ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),

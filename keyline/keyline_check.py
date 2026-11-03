@@ -1109,7 +1109,9 @@ def _negation_counts(text):
     """(definite, ambiguous): the negations of text but a "No. N" that is a number sign, and of
     them those that may be one ("no. N" before a number, read as the answer "no": "ticket no. 5",
     "(No. 5)", "A: No. 5")."""
-    n, ambiguous = len(NEG_HE.findall(POINTS.sub("", text))), 0
+    # Whitespace runs become one space, so the fixed-width lookbehind for "על אף" holds across a
+    # double space or a hard wrap too.
+    n, ambiguous = len(NEG_HE.findall(re.sub(r"\s+", " ", POINTS.sub("", text)))), 0
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):

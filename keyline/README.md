@@ -133,8 +133,8 @@ Negations counted, English and Hebrew together in both texts:
   that starts with ת still counts, so a rendering with such a phrase can hide a lost negation;
   the list is `AL_TO` in `keyline_check.py`. אל and its verb may be split by any whitespace (a
   line break, a no-break space). אף counts as "not even" (אף אחד), but not in "אף על פי",
-  "אף כי" or "אף ש…" ("although"), nor in "על אף" ("despite"), with a space, a maqaf or a
-  hyphen between the words. A word after אף that starts with ש reads as "although" unless it
+  "אף כי" or "אף ש…" ("although"), nor in "על אף" ("despite"), with any whitespace, a maqaf or
+  a hyphen between the words. A word after אף that starts with ש reads as "although" unless it
   is a noun in `AF_NOUNS` (אף שורה, "not one line"), so an unlisted ש-noun after אף is not
   counted. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
   for hedges too. Without these the panel's own Hebrew prose rendering counts 1 negation

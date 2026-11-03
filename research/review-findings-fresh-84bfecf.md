@@ -101,3 +101,19 @@ Class searches: the BOM is handled wherever line 1 is read (pass 1 fences and ma
 Limit kept: pointed text in the short spelling (שִׁשִּׁי) is another spelling and is not matched; an unlisted ש-noun after אף is not counted (as the AL_TO limit).
 
 Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2142 passed, 17 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 31 passed, 1 skipped (chown, root only).
+
+### Round 4 (fresh-eyes reviewer, head 27262c1): 1 low; fixed. The loop stops here
+
+| ID | Sev | File (at 27262c1) | Class | Failure | Fix | Test |
+|----|-----|------|-------|---------|-----|------|
+| R4-1 | low | keyline/keyline_check.py:285 | fail-open, neighbour of R3-1 | The "על אף" lookbehind is fixed width, so a double space or a hard wrap ("על \nאף") made אף count again and hid a lost negation. | Whitespace runs are collapsed to one space before the negation scan. | two both-directions cases (failed on 27262c1) |
+
+The reviewer reproduced nothing else in config/cloud-setup.sh, `_claude_config_dirs` or the docs. As the user asked, the loop stops at a round with at most one low.
+
+## Final self-review
+
+I read the round 3 and round 4 diffs again and ran the script on edge inputs. A rerun gave identical bytes for each of: an empty file, a BOM-only file, a file with no final line break, a file ending in blank lines, and a BOM before an unclosed fence. Hedge words matched across a no-break space keep that space in the FAIL message only; groups, not words, are compared. `bash -n` is clean. shellcheck is not installed here.
+
+Considered and not raised: a file holding only a BOM keeps the BOM as its own line, followed by a blank line, before the section. It is stable on rerun, and no text is lost.
+
+Checks at the round 4 fix (temp HOME and CLAUDE_CONFIG_DIR): pytest 2144 passed, 17 skipped; run_tests 35/35; pyflakes clean.

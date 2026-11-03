@@ -1,4 +1,4 @@
-# Resume point: PR #38 reviewer rounds; G1-G5, round 2 and round 3 (R3-1 to R3-10) fixed; round 4 running
+# Resume point: PR #38 reviewer rounds; G1-G5, round 2 and rounds 3-4 fixed; review loop finished
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -17,7 +17,7 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - pyflakes: clean;
   - the cloud-setup tests as `nobody`: 23 passed, 1 skipped (chown test, root only).
 - Round 3 (10 findings: 1 medium, 9 low) fixed in 27262c1; recorded in the report. Checks there: pytest 2142 passed, 17 skipped; run_tests 35/35; pyflakes clean; as `nobody` 31 passed, 1 skipped.
-- Round 4 reviewer runs on 27262c1; output in the session scratchpad (round4/findings.md), lost if the session ends: rerun a round instead.
+- Round 4 found 1 low (R4-1, על אף across a whitespace run), fixed; the loop has stopped, as asked. Final self-review done; recorded in the report.
 
 ## Standing request from the user (2026-11-03)
 - Keep running reviewer rounds until a round finds only 1 low (or nothing), then stop.
@@ -42,8 +42,7 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - `runuser -u nobody -- env HOME=$T/home PATH=$PATH python -m pytest -p no:cacheprovider tests/test_cloud_setup.py`.
 
 ## Next
-- Fix round 3's findings test-first, record the round, push; repeat until a round finds at most one low; then a final self-review.
-- Update the PR #38 body with the rounds (session is subscribed to PR #38).
+- Nothing pending on the loop. Handle PR #38 CI and review events.
 - The user merges. Do not merge unasked.
 
 ## Open items
