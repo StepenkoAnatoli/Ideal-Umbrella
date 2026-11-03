@@ -1510,7 +1510,7 @@ def test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written(
     result = run(repo)
     assert result.returncode == 1, result.stdout
     assert "nothing written" in result.stderr and "Traceback" not in result.stderr, result.stderr
-    assert relative in result.stderr and "not a " in result.stderr, result.stderr
+    assert os.path.normpath(relative) in result.stderr and "not a " in result.stderr, result.stderr
     assert victim.read_text(encoding="utf-8") == "precious\n"
     assert not (repo / ".claude" / "hooks" / "context_check.py").is_file() or relative.endswith("context_check.py")
     assert not (repo / ".claude" / "settings.json").is_file() or relative.endswith("settings.json")
