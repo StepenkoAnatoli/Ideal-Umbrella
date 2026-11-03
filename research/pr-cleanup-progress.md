@@ -1,4 +1,4 @@
-# Resume point: keyline_check `_plain` lows fixed (PR #36), next: a general fresh review
+# Resume point: general review done (report on `ccr-review-general`); next: user picks fixes
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -29,23 +29,18 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 - **CJK is non-word**, as Hebrew already was.
 - **Indented-code detection is a heuristic.** When it misreads prose as code, the text is compared as written, which is the stricter choice.
 
-## Next task: a general fresh review, in a new cloud session
-- The user asked, on 2026-11-03: "fresh review more general".
-- Scope: the whole repo at the #36 head, not only keyline_check or `_plain`.
-- Cover:
-  - correctness;
-  - security of untrusted input;
-  - tests;
-  - docs;
-  - CI.
-- For each finding:
-  - name its class (neighbour of a previous fix, halfway state, fix without test, pre-existing, design limit);
-  - reproduce every medium or high finding with `python -I`.
-- Never touch the real ~/.claude. Use a temp HOME and CLAUDE_CONFIG_DIR. Git commits need the real HOME.
-- Output:
-  - full details in `research/review-findings-general-<sha>.md`;
-  - a gist of at most 5 lines.
-- Report only. Do not fix anything unless the user asks.
+## Done: general fresh review (branch `ccr-review-general`, stacked on #36)
+- Report: `research/review-findings-general-44170ca.md`. 1 high, 7 medium, 14 low, 7 notes. Every high and medium finding has a `python -I` repro; I re-ran all of them except A2, which only the review agent ran.
+- Top items:
+  - A1 (high): add_to_repo writes through a committed file symlink to any target.
+  - A3: install/uninstall take over or delete any hook naming `context_check.py`.
+  - C1: an absolute `--watch` pattern through a symlinked path never matches.
+  - B1/B2: curly-apostrophe and Hebrew negation gaps in keyline_check.
+- The review branch is stacked on #36 because both change this file. Merge #36 first.
+
+## Next task
+- None started. The user decides which findings to fix. The report ends with a suggested order: A1, A3 and C1 first, then B1/B2, then A2 and B3/B4, then the lows.
+- Report only so far. Do not fix anything unless the user asks.
 
 ## Open items
 - Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
