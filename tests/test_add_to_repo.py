@@ -1485,3 +1485,64 @@ def test_a_path_is_quoted_for_the_shell(add_to_repo, monkeypatch):
     assert add_to_repo._arg("100%/x") == '"100%/x"'
     assert "$ %" in add_to_repo._risk(["a$b/%x%"])
     assert add_to_repo._risk(["plain"]) == ""
+
+
+@pytest.mark.parametrize("relative,target", [
+    (".claude/hooks/context_check.py", "outside/victim.rc"),
+    (".claude/settings.json", "outside/other.json"),
+    (".claude/hooks/context_check.py", "repo/README.md"),
+    (".claude/settings.json", "repo/README.md"),
+])
+def test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written(tmp_path, relative, target):
+    # General review 44170ca, A1: a cloned repo's committed .claude/hooks/context_check.py ->
+    # ~/.bashrc had the hook source written over the link's target, and the run exited 0.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (tmp_path / "outside").mkdir()
+    victim = tmp_path / target
+    victim.write_text("precious\n", encoding="utf-8")
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(victim)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1, result.stdout
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert relative in result.stderr and "not a " in result.stderr, result.stderr
+    assert victim.read_text(encoding="utf-8") == "precious\n"
+    assert not (repo / ".claude" / "hooks" / "context_check.py").is_file() or relative.endswith("context_check.py")
+    assert not (repo / ".claude" / "settings.json").is_file() or relative.endswith("settings.json")
+    assert not (repo / "notes" / "learnings.md").exists()
+
+
+@pytest.mark.parametrize("how", ["folder", "file"])
+def test_a_link_into_the_claude_config_folder_is_refused(tmp_path, how):
+    # General review 44170ca, A1: `.claude -> ~/.claude`, or settings.json -> the user's own
+    # settings.json, merged the repo template into the user's settings and put the hook there.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    config = tmp_path / "cfg"
+    (config / "hooks").mkdir(parents=True)
+    (config / "settings.json").write_text('{"mine": 1}\n', encoding="utf-8")
+    try:
+        if how == "folder":
+            (repo / ".claude").symlink_to(config, target_is_directory=True)
+        else:
+            (repo / ".claude").mkdir()
+            (repo / ".claude" / "settings.json").symlink_to(config / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    for env in (git_env(CLAUDE_CONFIG_DIR=str(config)),
+                git_env(HOME=str(tmp_path), USERPROFILE=str(tmp_path))):
+        if env.get("HOME") == str(tmp_path):
+            if how == "folder":
+                continue
+            (tmp_path / ".claude").symlink_to(config, target_is_directory=True)
+            env.pop("CLAUDE_CONFIG_DIR", None)
+        result = run(repo, env=env)
+        assert result.returncode == 1, result.stdout
+        assert "Claude Code's own" in result.stderr and "nothing written" in result.stderr, result.stderr
+        assert (config / "settings.json").read_text(encoding="utf-8") == '{"mine": 1}\n'
+        assert not (config / "hooks" / "context_check.py").exists()

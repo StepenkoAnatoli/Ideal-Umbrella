@@ -244,6 +244,15 @@ def _is_link(path):
     return bool(isjunction and isjunction(path))
 
 
+def _claude_config_dirs():
+    """The folders Claude Code may read the user's own files from (CLAUDE_CONFIG_DIR, and
+    ~/.claude), as real paths."""
+    dirs = [os.path.join(os.path.expanduser("~"), ".claude")]
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        dirs.append(os.path.expanduser(os.environ["CLAUDE_CONFIG_DIR"]))
+    return [os.path.realpath(d) for d in dirs]
+
+
 def _write_bytes(path, data):
     """Write whole or not at all (temp file beside the target, then rename), through a
     symlink instead of replacing the link, keeping the file's mode; a new file gets the mode a
@@ -606,6 +615,19 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
     for p in (claude_dir, os.path.dirname(target), path, target):
         if _look(p) is not None and _is_link(p) and _look(p, follow=True) is None:
             raise ValueError(f"{p} is a symlink to a missing target; put the target back (a moved or unmounted folder) or point the link at it, then run again")
+    # A committed link is the repository's say, not the user's: one at a file may lead to any
+    # file (~/.bashrc, README.md), and one at a file or a folder may lead into Claude Code's own
+    # folder, which config/install.py looks after. Either would be overwritten, so neither is
+    # followed; a file link to a file of the same name (a dotfiles copy) still is.
+    own = _claude_config_dirs()
+    for p, kind in ((path, "settings.json"), (target, "context_check.py")):
+        landing = os.path.realpath(p)
+        if any(_relative(d, landing) is not None for d in own):
+            raise ValueError(f"{p} leads into Claude Code's own folder ({landing}); config/install.py "
+                             "looks after that one: replace the symlink with a plain file or folder")
+        if _is_link(p) and os.path.normcase(os.path.basename(landing)) != os.path.normcase(kind):
+            raise ValueError(f"{p} is a symlink to {landing}, which is not a {kind}; replace the "
+                             "symlink with a plain file, or point it at a " + kind)
     # Why the courtesy file gets no copy (a notice), looked at the same way: a target that is
     # there but cannot be looked at is not called missing.
     skip_learnings, has_learnings = None, False
