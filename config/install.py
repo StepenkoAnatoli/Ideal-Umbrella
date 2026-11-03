@@ -75,6 +75,16 @@ def layout(home, config_dir=None):
     }
 
 
+def warn_home_beside_config_dir(home_arg, home):
+    """--home wins over CLAUDE_CONFIG_DIR, but Claude Code reads only CLAUDE_CONFIG_DIR while it
+    is set: an install, a verify that passes or an uninstall under <home>/.claude changes
+    nothing it sees, so say so on stderr."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if home_arg is not None and config:
+        print(f"Warning: CLAUDE_CONFIG_DIR is set ({config}); Claude Code reads that folder, not "
+              f"{home / '.claude'}, which --home uses. Unset it or drop --home.", file=sys.stderr)
+
+
 def target(home_arg):
     """(home, config_dir) for a --home argument. An explicit --home installs under
     <home>/.claude; without it, CLAUDE_CONFIG_DIR (the folder Claude Code reads instead of
@@ -1388,6 +1398,7 @@ def main(argv=None):
         # looked at.
         report_error(e, [], before_writes=True)
         return 1
+    warn_home_beside_config_dir(args.home, home)
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")

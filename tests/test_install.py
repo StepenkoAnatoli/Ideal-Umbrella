@@ -1129,3 +1129,20 @@ def test_a_backup_and_a_temp_file_are_never_more_open_than_the_file(install_modu
         os.umask(old)
     assert seen == [0o600, 0o600]
     assert os.stat(backup).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("verify", [False, True])
+def test_home_with_claude_config_dir_set_says_which_folder_claude_code_reads(
+        install_module, tmp_path, monkeypatch, capsys, verify):
+    # A5: --home installs into <home>/.claude, which Claude Code does not read while
+    # CLAUDE_CONFIG_DIR is set, and --verify-only still said OK.
+    config = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    home = tmp_path / "home"
+    if verify:
+        install_module.main(["--home", str(home)])
+        capsys.readouterr()
+    install_module.main(["--home", str(home)] + (["--verify-only"] if verify else []))
+    err = capsys.readouterr().err
+    assert f"CLAUDE_CONFIG_DIR is set ({config})" in err
+    assert str(home / ".claude") in err

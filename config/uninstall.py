@@ -668,6 +668,7 @@ def main(argv=None):
         # looked at.
         install.report_error(e, [], before_writes=True)
         return 1
+    install.warn_home_beside_config_dir(args.home, home)
     progress = []
     try:
         changes, notices = uninstall(home, dry_run=args.dry_run, progress=progress, config_dir=config_dir)

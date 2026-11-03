@@ -2980,3 +2980,11 @@ def test_a_users_own_hook_that_names_context_check_is_left_alone(install_module,
     assert install_module.has_our_hook(read_settings(home))
     uninstall_module.uninstall(home)
     assert read_settings(home) == before
+
+
+def test_uninstall_home_with_claude_config_dir_set_warns(uninstall_module, tmp_path, monkeypatch, capsys):
+    # A5, the same in uninstall: --home undoes <home>/.claude while Claude Code reads the variable's folder.
+    config = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    uninstall_module.main(["--home", str(tmp_path / "home"), "--dry-run"])
+    assert f"CLAUDE_CONFIG_DIR is set ({config})" in capsys.readouterr().err
