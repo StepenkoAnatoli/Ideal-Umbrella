@@ -181,14 +181,14 @@ python -I scripts/usage_breakdown.py ~/.claude/projects/<project-folder> 3
 
 It reports 2,226 API responses, `cache_creation_5m_input_tokens: 0`, `cache_creation_1h_input_tokens: 8,674,673`, and the 43/37/20 split. The old script printed 50/27/23 because it priced all 8.67M 1-hour writes at $5/MTok instead of $8/MTok.
 
-Cache TTL and shell output, on 2026-11-03 on one Windows machine: `ttl_whatif.py` on the 60 largest sessions of each of two project folders (25,000 API responses), `top_waste.py` on three project folders (71.9M tool-result characters):
+Cache TTL and shell output, on 2026-11-03 on one Windows machine: `ttl_whatif.py` on the 60 largest sessions of two project folders (60 and 17 sessions, 25,000 API responses), `top_waste.py` on three project folders (71.9M tool-result characters):
 
 ```bash
 python -I scripts/ttl_whatif.py ~/.claude/projects/<project-folder> 60
 python -I scripts/top_waste.py ~/.claude/projects/<project-folder> 60
 ```
 
-- Pricing every cache write at the 5-minute rate and rewriting the prefix after any gap over 5 minutes would have cost 20% and 21% more cache dollars at list price than the 1-hour writes actually used. 94% and 96% of responses (one figure per folder) followed a gap under 5 minutes; the rest cost the difference. Plan limits are not dollars, so this is a direction, not a bill.
+- Pricing every cache write at the 5-minute rate and rewriting the prefix after any gap over 5 minutes would have cost 20% and 21% more cache dollars at list price than the 1-hour writes actually used. 94% and 96% of responses (one figure per folder) followed a gap under 5 minutes; the rest cost the difference. The what-if prices a read after a gap over 5 minutes as a rewrite; on an API key that already runs on 5 minutes the real bill had those rewrites, so read the figure as the cost of moving from 1 hour to 5 minutes. Plan limits are not dollars, so this is a direction, not a bill.
 - Bash and PowerShell results are 66% of tool-result characters, Read 30%. Shell results of 8,000-12,000 characters are 16% of shell result characters, 12,000-30,000 are 25%, none exceed 30,000 (the output is already capped there).
 
 Cache TTL is left alone: `promptCacheTtl` (`"5m"` or `"1h"`, Claude Code 2.1.242+, or `CLAUDE_CODE_PROMPT_CACHE_TTL`) is not set by `config/user-settings.json`. On a subscription within its included usage the main conversation already gets 1 hour; API-key and cloud users default to 5 minutes, and the numbers above say 1-hour writes pay for themselves after gaps of 5-60 minutes. If you use an API key and your own `ttl_whatif.py` run shows the same pattern, set `"promptCacheTtl": "1h"` yourself; that is an opt-in, not part of the install.
