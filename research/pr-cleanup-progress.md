@@ -1,4 +1,4 @@
-# Resume point: all general-review fixes done (PR #39); next: review of PR #39 by the user
+# Resume point: fresh review of PR #39 done and fixed (fa13143); next: the user reviews and merges #36, #37, #39
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -54,9 +54,24 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 - Checks at the last code commit, with a temp HOME and CLAUDE_CONFIG_DIR: pytest 2069 passed, 14 skipped; run_tests 35/35; pyflakes clean.
 - Tests now clear CLAUDE_CONFIG_DIR (`tests/conftest.py`), since install warns about it beside `--home`.
 
+## Done: fresh review of PR #39 (head 4c3992c), fixed in fa13143
+- Report with Findings and Fixes tables: `research/review-findings-fresh-4c3992c.md`. 2 medium, 3 low:
+  - F1: install's verify judged a user's own context_check hook beside ours (kept since A3), so install exited 1;
+  - F2: keyline counted אל תוך/תחת/תל as negations (fail-open);
+  - F3: uninstall left a hand-wired ballast hook in a non-template event silently;
+  - F4: add_to_repo gave symlink advice for a repo inside the config folder;
+  - F5: cloud-setup.sh could leave a begin marker without an end.
+- Checks at fa13143 (temp HOME and CLAUDE_CONFIG_DIR): pytest 2080 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+- PR #39 body updated; this session is subscribed to PR #39 activity.
+- Decisions:
+  - F1: verify checks our hooks first and falls back to the others only when none is ours, so a lone foreign hook still fails;
+  - F2: excluded only תוך, תחת, תל as whole words; a construct noun after אל that starts with ת (אל תחנה) still counts, documented;
+  - F3: a note rather than removal, since the hook was added by hand;
+  - F5: build in a temp beside the resolved file, mv over it; on failure note on stderr and exit 0 (a setup step must not fail the session).
+
 ## Next
 - The user reviews and merges #36, #37, #39 in order. Do not merge unasked.
-- Handle PR #39 events (CI, review comments); this session is subscribed, with a check-in trigger at about 08:29 UTC.
+- Handle PR #39 events (CI, review comments); this session is subscribed. Confirm CI is green at fa13143, Windows included.
 - Windows CI on #39 was red from 89d0bc5 to 7c7c676: the 4 cases of the A1 test `test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written` looked for a `/` path in stderr. b389cac compares with `os.path.normpath`; confirm the Windows job is green at b389cac or later. The new tests pass or skip on Windows (seen in the 9d0c3ca run).
 - Run the suite with a temp HOME and CLAUDE_CONFIG_DIR exported in the same Bash call, and commit in a call without them (git's identity lives in the real HOME).
 
