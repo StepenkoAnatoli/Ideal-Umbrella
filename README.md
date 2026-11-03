@@ -207,12 +207,10 @@ python -m pip install -r keyline/requirements.txt -r requirements-dev.txt
 python -m pyflakes $(git ls-files '*.py')
 python -m pytest -q
 python -I keyline/tests/run_tests.py
-python -m json.tool config/user-settings.json
-python -m json.tool config/repo-settings.json
-python -m json.tool .claude/settings.json
+for f in $(git ls-files '*.json'); do python -m json.tool "$f" > /dev/null; echo "ok $f"; done
 ```
 
-The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook and its savings line, the learnings template, the calibration fixture path, and the docs that repeat a source file (`tests/test_docs_match_source.py`: the cloud setup script against `config/CLAUDE.md`, the README settings table against `config/user-settings.json`, the "Contents" paths, and these commands against CI). GitHub Actions (`.github/workflows/ci.yml`) runs every command above for every pull request and push to `main`, on Ubuntu with Python 3.10, 3.12, 3.13 and 3.14 and on Windows with 3.12. Run them before opening a pull request; `CONTRIBUTING.md` has the rest of the checklist.
+The pytest suite covers the cost model, the installers and uninstaller, the hand-off hook and its savings line, the learnings template, the calibration fixture path, and the docs that repeat a source file (`tests/test_docs_match_source.py`: the cloud setup script against `config/CLAUDE.md`, the README settings table against `config/user-settings.json`, the "Contents" paths, and these commands against CI). GitHub Actions (`.github/workflows/ci.yml`) runs every command above for every pull request and push to `main` (with read-only token permissions, actions pinned by commit, and tiktoken's o200k_base download cached), on Ubuntu with Python 3.10, 3.12, 3.13 and 3.14 and on Windows with 3.12. Run them before opening a pull request; `CONTRIBUTING.md` has the rest of the checklist.
 
 ## Research
 
