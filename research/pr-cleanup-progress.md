@@ -1,4 +1,4 @@
-# Resume point: keyline_check `_plain` lows fixed (PR #36), next: a general fresh review
+# Resume point: keyline_check `_plain` lows fixed (PR #36, merged), next: a general fresh review
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -22,7 +22,7 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
     - the differential fuzz against markdown-it was classified;
     - 15 of 15 mutants were killed.
   - The details are in the review report's "Round 4" section.
-- The user merges #36. Do not merge it unasked.
+- PR #36 merged into main as 93415dc (2026-11-03), at the user's request, after the coordinator checked it independently: the suites, self-pass, the repros, F4 timing, a rerun of the fail-open fuzz (the same 10 shapes, all of them already passing on 1cd10bb), and 18 hand probes.
 
 ## Decisions
 - **No trade of fail-closed for fail-open.** Known dunders such as `__init__` stay strict.
@@ -48,4 +48,10 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 - Report only. Do not fix anything unless the user asks.
 
 ## Open items
+- The general review runs in cloud session `session_01UWWExC2obFzR6UBxDsLMfX`, started from the #36 head (44170ca, the same code as main 93415dc).
+  - It writes `research/review-findings-general-44170ca.md` on branch `ccr-review-general`, with a draft PR.
+  - When it finishes, check its report. Then archive that session, unless it has an open PR the user still wants it to drive.
+- The coordinator session for #35/#36 was archived at the user's request.
+  - The round-4 harnesses were in its scratchpad (`plain/r4/`) and are gone.
+  - Their method and results are in the review report's "Round 4" section and in PR #36's description.
 - Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
