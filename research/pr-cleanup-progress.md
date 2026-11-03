@@ -56,7 +56,9 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 
 ## Next
 - The user reviews and merges #36, #37, #39 in order. Do not merge unasked.
-- Handle PR #39 events (CI, review comments); this session is subscribed.
+- Handle PR #39 events (CI, review comments); this session is subscribed, with a check-in trigger at about 08:29 UTC.
+- Windows CI on #39 was red from 89d0bc5 to 7c7c676: the 4 cases of the A1 test `test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written` looked for a `/` path in stderr. b389cac compares with `os.path.normpath`; confirm the Windows job is green at b389cac or later. The new tests pass or skip on Windows (seen in the 9d0c3ca run).
+- Run the suite with a temp HOME and CLAUDE_CONFIG_DIR exported in the same Bash call, and commit in a call without them (git's identity lives in the real HOME).
 
 ## Open items
 - Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
