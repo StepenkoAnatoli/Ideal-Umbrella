@@ -2684,7 +2684,7 @@ def test_an_install_on_the_users_file_after_an_uninstall_does_not_keep_settings_
 def test_an_install_while_settings_json_is_away_sees_a_record_without_added_keys(install_module, tmp_path):
     # Review 9, B4 (M7): a record whose keys were all there already holds only the deny list.
     home = tmp_path / "home"
-    seed(home, {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005})
+    seed(home, {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005, "bashOutputMaxChars": 12000})
     install_module.install(home)
     assert _record(home)["added_keys"] == []
     settings_file(home).rename(tmp_path / "settings.json")
@@ -2852,12 +2852,14 @@ def test_a_created_settings_json_holding_nothing_installed_keeps_the_values_to_c
     settings["permissions"]["deny"].remove("Artifact")
     settings["autoCompactWindow"] = 7
     settings["skillListingBudgetFraction"] = 0.7
+    settings["bashOutputMaxChars"] = 5
     _write_settings(home, settings)
     install_module.install(home)
     record = _record(home)
     assert "settings_created" not in record, record
     assert record["replaced"] == {"autoCompactWindow": 123, "skillListingBudgetFraction": 0.5}, record
-    assert record["installed"] == {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005}, record
+    assert record["installed"] == {"autoCompactWindow": 250000, "skillListingBudgetFraction": 0.005,
+                                  "bashOutputMaxChars": 12000}, record
     assert record["deny_added"] == ["Artifact"], record
     # Not missing, which reads as a record from before the field (any container emptied goes).
     assert record["created"] == ["hooks", "hooks.UserPromptSubmit"], record
@@ -2909,7 +2911,7 @@ def test_a_created_settings_json_the_user_emptied_is_left_empty_with_a_note(inst
     home = tmp_path / "home"
     install_module.install(home)
     settings = read_settings(home)
-    del settings["hooks"], settings["autoCompactWindow"], settings["skillListingBudgetFraction"]
+    del settings["hooks"], settings["autoCompactWindow"], settings["skillListingBudgetFraction"], settings["bashOutputMaxChars"]
     settings["permissions"]["deny"].remove("Artifact")
     _write_settings(home, settings)
     changes, notices = uninstall_module.uninstall(home)

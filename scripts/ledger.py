@@ -6,7 +6,7 @@ this by hand after such a measurement (get_usage in a new session, or the first 
 fresh transcript); the hook never runs it.
 
 Usage: python -I scripts/ledger.py --fixed-tokens 71396 [--first-call-cache-write N]
-       [--tools N] [--deny-applied yes|no] [--cc-version V] [--note TEXT] [--date YYYY-MM-DD]
+       [--tools N] [--deny-applied yes|no] [--cc-version V] [--tag LABEL] [--note TEXT] [--date YYYY-MM-DD]
        [--file PATH] [--dry-run]
 
 Each run appends one JSON object per line. Lines that are not a JSON object (a torn append, a
@@ -163,6 +163,9 @@ def main(argv=None):
     parser.add_argument("--tools", type=_count, help="number of tools a new session loads")
     parser.add_argument("--deny-applied", type=_yes_no, help="yes when permissions.deny was in place")
     parser.add_argument("--cc-version", type=_text, help="Claude Code version (claude --version)")
+    parser.add_argument("--tag", type=_text,
+                        help="label of the arm this line measures (holdout, treated): kept with the line, "
+                             "named when the next run compares against it")
     parser.add_argument("--note", type=_text, help="free text kept with the line")
     parser.add_argument("--date", type=_date, default=datetime.date.today().isoformat())
     parser.add_argument("--file", default=str(DEFAULT_FILE))
@@ -177,7 +180,7 @@ def main(argv=None):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
     entry = {"date": args.date}
-    for key in ("cc_version",) + MEASURES + ("note",):
+    for key in ("cc_version",) + MEASURES + ("tag", "note"):
         if getattr(args, key) is not None:
             entry[key] = getattr(args, key)
     try:
@@ -198,7 +201,8 @@ def main(argv=None):
     if old is None:
         print("first line: nothing to compare with")
         return 0
-    print(f"change since line {number} ({old.get('date', 'no date')}):")
+    tag = f", tag {old['tag']}" if isinstance(old.get("tag"), str) and old["tag"] else ""
+    print(f"change since line {number} ({old.get('date', 'no date')}{tag}):")
     for text in delta_lines(old, entry):
         print(f"  {text}")
     return 0

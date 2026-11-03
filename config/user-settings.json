@@ -1,6 +1,7 @@
 {
   "autoCompactWindow": 250000,
   "skillListingBudgetFraction": 0.005,
+  "bashOutputMaxChars": 12000,
   "hooks": {
     "UserPromptSubmit": [
       {

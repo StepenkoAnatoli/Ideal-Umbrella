@@ -62,6 +62,15 @@ def _cache_writes(usage):
     return five, one
 
 
+def parse_line(line):
+    """The JSON object on a transcript line, or None (not JSON, too deep, or not an object)."""
+    try:
+        event = json.loads(line)
+    except (ValueError, RecursionError):
+        return None
+    return event if isinstance(event, dict) else None
+
+
 def _len(value):
     """Characters of a text field; a hand-edited or malformed one (null, a number) counts 0."""
     return len(value) if isinstance(value, str) else 0

@@ -74,12 +74,13 @@ def readme_settings(markdown):
     """The deny list and the two numeric keys as the README table states them."""
     table = section(markdown, "What is applied to every session")
     deny = re.search(r"Never-used tools dropped: ([^(]+?) \(", table)
-    keys = dict(re.findall(r"`(autoCompactWindow|skillListingBudgetFraction): ([\d.]+)`", table))
+    keys = dict(re.findall(r"`(autoCompactWindow|skillListingBudgetFraction|bashOutputMaxChars): ([\d.]+)`", table))
     return {
         "deny": [name.strip() for name in deny.group(1).split(",")] if deny else None,
         "autoCompactWindow": int(keys["autoCompactWindow"]) if "autoCompactWindow" in keys else None,
         "skillListingBudgetFraction": (float(keys["skillListingBudgetFraction"])
                                        if "skillListingBudgetFraction" in keys else None),
+        "bashOutputMaxChars": int(keys["bashOutputMaxChars"]) if "bashOutputMaxChars" in keys else None,
     }
 
 
@@ -89,6 +90,7 @@ def settings_drift(markdown, settings):
         "deny": settings["permissions"]["deny"],
         "autoCompactWindow": settings["autoCompactWindow"],
         "skillListingBudgetFraction": settings["skillListingBudgetFraction"],
+        "bashOutputMaxChars": settings["bashOutputMaxChars"],
     }
     return {key: (stated[key], actual[key]) for key in actual if stated[key] != actual[key]}
 
@@ -139,6 +141,8 @@ def test_settings_drift_is_caught():
     assert set(settings_drift(read("README.md"), settings)) == {"deny", "autoCompactWindow"}
     readme = read("README.md").replace("`skillListingBudgetFraction: 0.005`", "a small budget")
     assert "skillListingBudgetFraction" in settings_drift(readme, json.loads(read("config/user-settings.json")))
+    readme = read("README.md").replace("`bashOutputMaxChars: 12000`", "`bashOutputMaxChars: 8000`")
+    assert settings_drift(readme, json.loads(read("config/user-settings.json"))) == {"bashOutputMaxChars": (8000, 12000)}
 
 
 def test_readme_test_commands_run_in_ci():

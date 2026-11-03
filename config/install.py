@@ -1279,7 +1279,7 @@ def verify(home, config_dir=None):
         # install keeps a user's own value for these unless --force, so a different value is a
         # warning; a missing one means the install did not happen.
         template = _read_json(USER_SETTINGS)
-        for key in ("autoCompactWindow", "skillListingBudgetFraction"):
+        for key in ("autoCompactWindow", "skillListingBudgetFraction", "bashOutputMaxChars"):
             expected = template.get(key)
             if key not in settings:
                 issues.append(f"{key} is missing, expected {expected!r}")

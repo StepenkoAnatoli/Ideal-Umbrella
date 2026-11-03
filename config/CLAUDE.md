@@ -8,3 +8,7 @@
 - At the end of each task that changed something, update the task's resume point (replace it, don't append), so a restart or a fresh chat loses at most the task in progress.
 - Keep decisions in files, not only in the chat.
 - Save what the code cannot tell the next session in notes/learnings.md when the repo has it: a choice and why under decided; an approach dropped and why under tried and ruled out; a bug's cause found after failed attempts, or the user correcting how something is done here, under watch out.
+
+# Effort
+- After 3 failed attempts at one fix, stop and tell me what you tried and the cause you suspect.
+- Size the process to the change: a small, clear change goes straight to the build, with no plan or extra review.
