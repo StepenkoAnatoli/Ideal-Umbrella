@@ -238,7 +238,7 @@ Totals: 1 high, 7 medium, 14 low, and 7 notes.
 4. Batch the lows.
 
 ## Fixes (branch `ccr-fix-general`, PR #39)
-Each fix began with a failing test. Each was checked for the same class elsewhere, and each moved README and CHANGELOG with it. Checks at 04fc025: pytest 2022 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+Each fix began with a failing test. Each was checked for the same class elsewhere, and each moved README and CHANGELOG with it. Checks are listed under the table.
 
 | ID | Commit | What changed |
 |---|---|---|
@@ -250,4 +250,17 @@ Each fix began with a failing test. Each was checked for the same class elsewher
 | B3 | 95ce586 | `corpus_files` walks with `os.walk(followlinks=False)`, skips hidden folders and node_modules as it goes, and stops at MAX_FILES. |
 | B4 | 04fc025 | COUNT picks the largest sessions, with `<session>/subagents/*.jsonl` read alongside each one. The report says how many subagent transcripts it read. The README cost split is flagged because it has not been measured again: no local transcripts are available in this container. |
 
-Still open: the lows A4-A9, B5-B7 and C2-C6, and the notes N1-N7 where a fix is cheap.
+| B5, B6, B7 | 22bd2e9 | The abbreviation lint skips a word that is not ASCII. Lines split at `\n` only, so U+2028, NEL and form feed keep line numbers right. A setext underline and a lone `#` count as headers. |
+| N4 | 05b75ae | Allow files are read from the note's folder up to the repository root (the first folder holding `.git`), never from a world-writable folder, and only when they are regular files. |
+| C2 | a7dffb6 | A test runs the printed `--print-config` command through `/bin/sh` from a folder whose name holds spaces, `$HOME`, quotes and backticks; another checks the Windows quoting. |
+| C3, C4, C5 | d3645f7 | CI has `permissions: contents: read`, actions pinned by SHA, a cache for the tiktoken data, and parses every tracked `*.json` (the README Tests block runs the same loop). |
+| C6 | 9925753 | `hookSpecificOutput` is sent only on UserPromptSubmit and PostToolUse; other events get `systemMessage` alone. |
+| A4, A6, A8 | df16776 | Duplicate JSON keys are refused with nothing written. add_to_repo keeps non-ASCII text (`ensure_ascii=False`). Temp files and backups are created with the source file's mode, never wider. add_to_repo still makes no backup, since git holds the copy; CONTRIBUTING is narrowed to say so. |
+| A5 | 8100050 | install, verify and uninstall warn on stderr when `--home` is given while CLAUDE_CONFIG_DIR is set. |
+| A7 | 113908e | cloud-setup.sh writes a marked section into `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md`, replaces only that section, keeps other text, links and mode, and warns (exit 0) on broken markers. |
+| A9 | 7f0b372 | verify-tokens takes the key from ANTHROPIC_API_KEY; `--api-key` still works and warns that it shows in `ps` and history. |
+| N5 | 6fda1ca | plugin_cost does not follow a link to a folder that holds the app folder. |
+| N1, N2 | 9d0c3ca | usage_breakdown takes the largest count of each usage field across a response's streamed lines. All five transcript scripts count a line whose `uuid` was already read once. Tests clear CLAUDE_CONFIG_DIR so the A5 warning does not depend on the runner. |
+| N6 | 95ce586 | Already fixed by B3: lint_validate prunes by folder name, not by substring. |
+
+Left as documented limits: N3 (unused_tools compares deny entries exactly; the shipped config holds plain names only, and pattern matching would mean re-implementing Claude Code's rule syntax) and N7 (invariants inside an HTML comment; the check does not parse markdown, and that is documented). Checks at 9d0c3ca, with a temp HOME and CLAUDE_CONFIG_DIR: pytest 2069 passed, 14 skipped; run_tests 35/35; pyflakes clean.

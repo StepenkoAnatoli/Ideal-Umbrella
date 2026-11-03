@@ -276,6 +276,8 @@ Two panel claims do not reproduce exactly:
   is an extension, and so is a name pair with a hyphen (`Paris-Berlin`). It also lets a name gain
   a slash pair (`Jean-Luc/Picard` for `Jean-Luc`), and a hyphenated pair of a time, date or version
   with another of its family (`v2.1-v2.3` for `v2.1`) passes as a range.
+- The check reads the rendering as text, not as rendered markdown: a number, name or negation
+  that sits only inside an HTML comment (`<!-- not -->`) counts, though a reader never sees it.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted. A
   negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation,

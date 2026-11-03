@@ -1,4 +1,4 @@
-# Resume point: general-review fixes A1-B4 done (PR #39); next: the lows
+# Resume point: all general-review fixes done (PR #39); next: review of PR #39 by the user
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -48,18 +48,15 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - A3: verify-only keeps its loose match, because it only reports. No record of a replaced command is kept, since the strict match makes one unnecessary.
   - B4: COUNT counts sessions, not files. The README "Why" split is flagged and has not been measured again; that needs the user's local transcripts.
 
-## Next task: the lows, on the same branch (`ccr-fix-general`)
-- Do A4-A9, B5-B7 and C2-C6, then the notes N1-N7 where a fix is cheap. The report has file:line for each.
-- Rules for each fix:
-  - write a failing test first;
-  - search for the same class elsewhere;
-  - update README and CHANGELOG;
-  - use a temp HOME and CLAUDE_CONFIG_DIR, and `python -I`, for everything run.
-- Checks before each push:
-  - `python -m pytest -q`
-  - `python -I keyline/tests/run_tests.py`
-  - `python -m pyflakes $(git ls-files '*.py')`
-- When done, add the lows to the report's "Fixes" table and replace this file.
+## Done: the lows and notes (branch `ccr-fix-general`, draft PR #39)
+- Fixed: A4-A9, B5-B7, C2-C6, N1, N2, N4, N5; N6 was already fixed by B3. N3 and N7 are documented limits.
+- Each fix: failing test first, class searched, README and CHANGELOG updated. The commit per ID is in the "Fixes" table of `research/review-findings-general-44170ca.md`.
+- Checks at the last code commit, with a temp HOME and CLAUDE_CONFIG_DIR: pytest 2069 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+- Tests now clear CLAUDE_CONFIG_DIR (`tests/conftest.py`), since install warns about it beside `--home`.
+
+## Next
+- The user reviews and merges #36, #37, #39 in order. Do not merge unasked.
+- Handle PR #39 events (CI, review comments); this session is subscribed.
 
 ## Open items
 - Remote branch `wip-plain-round2` (a WIP backup) is still to be deleted by the user. The proxy refuses branch deletion (403).
