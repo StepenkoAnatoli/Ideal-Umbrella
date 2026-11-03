@@ -1,4 +1,4 @@
-# Resume point: fresh review of PR #39 done and fixed (fa13143); next: the user reviews and merges #36, #37, #39
+# Resume point: fresh review of PR #39 and its self-check fixed (cd56bb2); next: a second fresh review of PR #39 in a new session
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -54,24 +54,30 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 - Checks at the last code commit, with a temp HOME and CLAUDE_CONFIG_DIR: pytest 2069 passed, 14 skipped; run_tests 35/35; pyflakes clean.
 - Tests now clear CLAUDE_CONFIG_DIR (`tests/conftest.py`), since install warns about it beside `--home`.
 
-## Done: fresh review of PR #39 (head 4c3992c), fixed in fa13143
-- Report with Findings and Fixes tables: `research/review-findings-fresh-4c3992c.md`. 2 medium, 3 low:
-  - F1: install's verify judged a user's own context_check hook beside ours (kept since A3), so install exited 1;
-  - F2: keyline counted אל תוך/תחת/תל as negations (fail-open);
-  - F3: uninstall left a hand-wired ballast hook in a non-template event silently;
+## Done: fresh review of PR #39 (head 4c3992c), fixed in fa13143, self-checked in cd56bb2
+- Report: `research/review-findings-fresh-4c3992c.md` (Findings, Fixes, Self-check tables).
+- F1-F5 (2 medium, 3 low) are fixed in fa13143:
+  - F1: install's verify judged a user's own context_check hook;
+  - F2: keyline counted אל תוך/תחת/תל as negations;
+  - F3: uninstall said nothing about a hand-wired ballast hook;
   - F4: add_to_repo gave symlink advice for a repo inside the config folder;
-  - F5: cloud-setup.sh could leave a begin marker without an end.
-- Checks at fa13143 (temp HOME and CLAUDE_CONFIG_DIR): pytest 2080 passed, 14 skipped; run_tests 35/35; pyflakes clean.
-- PR #39 body updated; this session is subscribed to PR #39 activity.
+  - F5: cloud-setup could leave half a section.
+- S1-S3 are fixed in cd56bb2:
+  - S1: the cloud-setup temp file began at 0644 (the A8 class);
+  - S2: a file that cannot be renamed over got no rules;
+  - S3: the F2 exclusion was too narrow; the ת-nouns docs put after אל are now in `AL_TO`.
+- Checks at cd56bb2 (temp HOME and CLAUDE_CONFIG_DIR): pytest 2094 passed, 14 skipped; run_tests 35/35; pyflakes clean.
+- PR #39 body updated. This session is subscribed to PR #39.
 - Decisions:
-  - F1: verify checks our hooks first and falls back to the others only when none is ours, so a lone foreign hook still fails;
-  - F2: excluded only תוך, תחת, תל as whole words; a construct noun after אל that starts with ת (אל תחנה) still counts, documented;
-  - F3: a note rather than removal, since the hook was added by hand;
-  - F5: build in a temp beside the resolved file, mv over it; on failure note on stderr and exit 0 (a setup step must not fail the session).
+  - F1: verify checks our hooks first and falls back to the others only when none is ours;
+  - F2/S3: AL_TO lists words, it does not guess from word shape (an ending in ת would also take verbs such as תשבית); a listed verb only fails closed;
+  - F3: a note rather than removal;
+  - F5/S1/S2: build at 0600 beside the file and mv it over; when there is no rename, write in place and keep the temp file if that write stops short; always exit 0.
 
 ## Next
+- A second fresh review of PR #39 at cd56bb2 or later runs in a new session (asked by the user 2026-11-03): report to `research/review-findings-fresh-<head sha>.md`, then fix on ccr-fix-general.
 - The user reviews and merges #36, #37, #39 in order. Do not merge unasked.
-- Handle PR #39 events (CI, review comments); this session is subscribed. Confirm CI is green at fa13143, Windows included.
+- Handle PR #39 events (CI, review comments); this session is subscribed. Confirm CI is green at the latest head, Windows included.
 - Windows CI on #39 was red from 89d0bc5 to 7c7c676: the 4 cases of the A1 test `test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written` looked for a `/` path in stderr. b389cac compares with `os.path.normpath`; confirm the Windows job is green at b389cac or later. The new tests pass or skip on Windows (seen in the 9d0c3ca run).
 - Run the suite with a temp HOME and CLAUDE_CONFIG_DIR exported in the same Bash call, and commit in a call without them (git's identity lives in the real HOME).
 
