@@ -126,6 +126,13 @@ Checks at the round 4 fix (temp HOME and CLAUDE_CONFIG_DIR): pytest 2144 passed,
 | Friday in the short spelling (pointed שִׁשִּׁי, or ששי) was missing. | `יום ששי` added to Friday's Hebrew forms. The other weekdays and the months read the same in both spellings. | `test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present` (2 cases) |
 | A `CLAUDE.md` holding only a BOM got the BOM on its own line, then a blank line. | The BOM is held and written before whatever comes first. A file that is only a BOM is an empty file with a BOM, and a BOM with one line end keeps that one blank line, as `\n` alone does. | `test_a_file_holding_only_a_bom_gets_the_section_right_after_it` (2 cases) |
 
-What is left (keyline/README.md): an "although" clause that holds a negation of its own and starts with a word on no list still counts, and a bare answer with no verb (אף שקע.) does not. Both are rare. These need a parser, not a word list.
+### The last two, fixed (user request: "fix the remaining two too")
 
-Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2154 passed, 17 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 33 passed, 1 skipped.
+| Limit | Fix | Test |
+|---|---|---|
+| An "although" clause that holds a negation of its own and starts with an unlisted word (אף שקיבלנו חלק ולא הכל) counted, so it could stand in for a dropped negation. | Hebrew cannot tell it from "not even" without a parser, so such an אף is ambiguous, like "No. 5": full count in a source, in a rendering only as often as the source has one. | both-directions test: the rendering that drops אל is reported, the one that keeps it passes |
+| A bare answer with no verb (אף שקע.) did not count. | אף at the start of the text or of a sentence, its ש-word followed by `. ! ?` or the end, is the same ambiguous case. | both-directions test: "One socket." is reported, "Not one socket." passes |
+
+Trade-off: an English source rendered as a bare "אף שקע." is reported (fail-closed), as an ambiguous "No. 5" already is.
+
+Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2158 passed, 17 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 33 passed, 1 skipped.

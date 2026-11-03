@@ -138,9 +138,12 @@ Negations counted, English and Hebrew together in both texts:
   `AF_NOUNS` (אף שורה, "not one line"), and opens an "although" clause when what follows ש is
   in `AF_CLAUSE` or starts with ה (אף שזה, אף שהמערכת). Any other ש-word is read by the rule
   Hebrew keeps for "not even": it always has a negation of its own in the same clause (אף שקע
-  לא עובד, אין אף שלט), so אף counts then and only then; an "although" clause that holds a
-  negation of its own and starts with a word on no list counts, and a bare answer with no
-  verb (אף שקע.) does not; both are rare. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
+  לא עובד, אין אף שלט), and as a bare answer with no verb (אף שקע., "not one socket."). An
+  "although" clause with a negation of its own reads the same way (אף שקיבלנו חלק ולא הכל), so
+  such an אף is ambiguous and is treated like "No. 5": it counts in full in a source, and in a
+  rendering only as often as the source has one, so it cannot stand in for a dropped
+  negation. A rendering that answers an English source with a bare "אף שקע." is then
+  reported, and a reviewer confirms it. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
   for hedges too. Without these the panel's own Hebrew prose rendering counts 1 negation
   instead of 4 and fails falsely.
 

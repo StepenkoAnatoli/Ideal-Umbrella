@@ -1115,7 +1115,8 @@ def _after_word(text, start, digit=False):
 def _negation_counts(text):
     """(definite, ambiguous): the negations of text but a "No. N" that is a number sign, and of
     them those that may be one ("no. N" before a number, read as the answer "no": "ticket no. 5",
-    "(No. 5)", "A: No. 5")."""
+    "(No. 5)", "A: No. 5"; "אף ש" before a word on no list, read as "not even" or "although":
+    in a clause with a negation of its own, or as a bare answer "אף שקע.")."""
     # Whitespace runs become one space, so the fixed-width lookbehind for "על אף" holds across a
     # double space or a hard wrap too.
     bare = re.sub(r"\s+", " ", POINTS.sub("", text))
@@ -1128,7 +1129,11 @@ def _negation_counts(text):
         end = CLAUSE_END.search(bare, m.end())
         clause = bare[starts[-1] if starts else 0:end.start() if end else len(bare)]
         if NEG_HE.search(clause):
-            n += 1                          # "not even": its clause has a negation of its own
+            ambiguous += 1                  # "not even" (אף שקע לא עובד) or "although" with a
+                                            # negation in its clause (אף שקיבלנו חלק ולא הכל)
+        elif (m.start() == 0 or re.match(r"[.!?:] ", bare[m.start() - 2:m.start()])) and (
+                m.end() == len(bare) or bare[m.end()] in ".!?"):
+            ambiguous += 1                  # a bare answer with no verb: "אף שקע." ("not one")
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):

@@ -1768,6 +1768,15 @@ def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     ("Do not copy v2.1.", "העתק את v2.1, אף שהמערכת עמוסה.", False),
     ("Do not copy v2.1.", "אף שקיבלנו אישור, העתק את v2.1.", False),
     ("Do not copy v2.1 though we got approval.", "אל תעתיק את v2.1, אף שקיבלנו אישור.", True),
+    # Last two limits: an "although" clause with a negation of its own and a start on no list,
+    # and a bare "not even" answer (אף שקע.), are ambiguous: in a rendering they count only as
+    # often as the source has one, so neither stands in for a dropped negation.
+    ("Do not copy v2.1, though we got part and not all.",
+     "העתק את v2.1, אף שקיבלנו חלק ולא הכל.", False),
+    ("Do not copy v2.1, though we got part and not all.",
+     "אל תעתיק את v2.1, אף שקיבלנו חלק ולא הכל.", True),
+    ("אף שקע. v2.1 נשאר.", "One socket. v2.1 stays.", False),
+    ("אף שקע. v2.1 נשאר.", "Not one socket. v2.1 stays.", True),
     # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
     ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
     ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
