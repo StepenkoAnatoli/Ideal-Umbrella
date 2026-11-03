@@ -72,9 +72,11 @@ if [ -f "$file" ]; then
   # the file without the old section. Blank lines are copied as written; those around the old
   # section merge into one gap, and the file's text is followed by one blank line, or by the
   # blank lines it already ends with, before the new section.
-  LC_ALL=C awk -v b="$begin" -v e="$end" '
+  lf=0; [ "$(tail -c 1 -- "$file" | od -An -c | tr -d ' ')" = '\n' ] && lf=1
+  LC_ALL=C awk -v b="$begin" -v e="$end" -v lf="$lf" '
     function bare(s) { sub(/[ \t\r\f\v]+$/, "", s); return s }
-    function blanks(   i) { for (i = 1; i <= nb; i++) print hb[i]; nb = 0 }
+    function lead() { if (pb) printf "\357\273\277"; pb = 0 }
+    function blanks(   i) { if (nb) lead(); for (i = 1; i <= nb; i++) print hb[i]; nb = 0 }
     function take(   i) { if (merge && nk > nb) { for (i = 1; i <= nk; i++) hb[i] = kb[i]; nb = nk }; merge = 0 }
     NR == FNR {
       line[FNR] = $0; n = FNR; s = $0
@@ -86,15 +88,20 @@ if [ -f "$file" ]; then
       }
       next
     }
-    FNR == 1 { decide() }
+    FNR == 1 { decide()
+               # The BOM is held and written before whatever comes first; a file that is only a
+               # BOM (no line end) is an empty file with a BOM, so the section follows it at once.
+               if (substr($0, 1, 3) == "\357\273\277") { $0 = substr($0, 4); pb = 1
+                 if (n == 1 && $0 == "" && !lf) next } }
     FNR == sb { take(); merge = 1; for (i = 1; i <= nb; i++) kb[i] = hb[i]; nk = nb; nb = 0
-                if (FNR == 1 && bom) printf "\357\273\277"; next }
+                lead(); next }
     FNR > sb && FNR <= se { next }
     /^[ \t\r]*$/ { hb[++nb] = $0; next }
-    { take(); blanks(); print; out = 1 }
+    { take(); blanks(); lead(); print; out = 1 }
     END {
       if (NR == FNR) decide()
       take(); if (nb) blanks(); else if (out) print ""
+      lead()
     }
     function decide(   i, j, c, L, x, k, nbeg, nend) {
       # Lines inside closed fences (install.py _fenced): an opener with no closer later is text.
@@ -114,9 +121,9 @@ if [ -f "$file" ]; then
       }
       sb = se = 0; nbeg = nend = 0
       for (i = 1; i <= n; i++) {
-        x = bare(line[i]); if (i == 1 && substr(x, 1, 3) == "\357\273\277") { x = substr(x, 4); bomline = 1 }
+        x = bare(line[i]); if (i == 1 && substr(x, 1, 3) == "\357\273\277") x = substr(x, 4)
         if (fenced[i]) continue
-        if (x == b) { nbeg++; sb = i; if (i == 1) bom = bomline }
+        if (x == b) { nbeg++; sb = i }
         else if (x == e) { nend++; se = i }
       }
       if (nbeg != nend || nbeg > 1 || se < sb) exit 3

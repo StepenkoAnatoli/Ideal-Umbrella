@@ -368,6 +368,20 @@ def test_a_bom_before_the_begin_marker_stays_right_before_the_section(tmp_path):
     assert target.read_text(encoding="utf-8") == once
 
 
+@pytest.mark.parametrize("text,start", [(BOM, BOM + BEGIN), (BOM + "\n", BOM + "\n" + BEGIN)])
+def test_a_file_holding_only_a_bom_gets_the_section_right_after_it(tmp_path, text, start):
+    # Was left as a known cosmetic limit: the BOM stood on a line of its own, then a blank line.
+    # A BOM and one line end is a BOM and one blank line, as "\n" alone keeps its blank line.
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text(text, encoding="utf-8")
+    run(tmp_path)
+    once = target.read_text(encoding="utf-8")
+    assert once.startswith(start + "\n")
+    run(tmp_path)
+    assert target.read_text(encoding="utf-8") == once
+
+
 def test_the_mode_is_kept_without_gnu_chmod_reference(tmp_path):
     # busybox chmod has no --reference.
     env = _shim(tmp_path, "chmod", 'case "$1" in --reference*) exit 1;; esac; exec /bin/chmod "$@"')

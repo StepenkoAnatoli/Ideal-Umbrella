@@ -134,9 +134,13 @@ Negations counted, English and Hebrew together in both texts:
   the list is `AL_TO` in `keyline_check.py`. אל and its verb may be split by any whitespace (a
   line break, a no-break space). אף counts as "not even" (אף אחד), but not in "אף על פי",
   "אף כי" or "אף ש…" ("although"), nor in "על אף" ("despite"), with any whitespace, a maqaf or
-  a hyphen between the words. A word after אף that starts with ש reads as "although" unless it
-  is a noun in `AF_NOUNS` (אף שורה, "not one line"), so an unlisted ש-noun after אף is not
-  counted. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
+  a hyphen between the words. A word after אף that starts with ש is a noun when it is in
+  `AF_NOUNS` (אף שורה, "not one line"), and opens an "although" clause when what follows ש is
+  in `AF_CLAUSE` or starts with ה (אף שזה, אף שהמערכת). Any other ש-word is read by the rule
+  Hebrew keeps for "not even": it always has a negation of its own in the same clause (אף שקע
+  לא עובד, אין אף שלט), so אף counts then and only then; an "although" clause that holds a
+  negation of its own and starts with a word on no list counts, and a bare answer with no
+  verb (אף שקע.) does not; both are rare. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
   for hedges too. Without these the panel's own Hebrew prose rendering counts 1 negation
   instead of 4 and fails falsely.
 
@@ -272,8 +276,8 @@ Two panel claims do not reproduce exactly:
 - Month and weekday names are accepted in English or in their Hebrew form, with up to three
   prefix letters (ב, מ, ל, ה, ו, ש, כ) and Hebrew-letter boundaries, so a word that is a prefix
   plus the name (לשבת, "to sit") still counts as the name. Points are taken off and any
-  whitespace (a no-break space, a line break) joins יום and its day; pointed text in the short
-  spelling (שִׁשִּׁי) is another spelling and is not matched. A rendering that writes the date as a number instead of the name is still a miss.
+  whitespace (a no-break space, a line break) joins יום and its day; Friday is matched in the
+  short spelling too (יום ששי, which pointed שִׁשִּׁי becomes). A rendering that writes the date as a number instead of the name is still a miss.
 - A time with `:00` seconds matches with or without them (`14:30` and `14:30:00`); other seconds
   must be written. `May` is the month when a number, `:` or the line end follows, or a closing
   `**` followed by `:`, a number or the line end (`**May**: 3`, `## **May**`), or when it is not at

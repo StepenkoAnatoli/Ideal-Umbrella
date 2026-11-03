@@ -1728,7 +1728,10 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
 
 
-@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה.", "אף שורה לא נמחקה.", "אף-אחד לא בא."])
+@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה.", "אף שורה לא נמחקה.", "אף-אחד לא בא.",
+                                  # Known limit removed: a ש-noun not in AF_NOUNS, with the
+                                  # negation Hebrew pairs it with in the same clause.
+                                  "אף שקע לא עובד.", "אין כאן אף שלט."])
 def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     # R2-8: only "אף על פי" and "אף כי" ("although") stop counting.
     assert keyline_check.negations(text) == text.count("אף") + text.count("לא") + text.count("אין")
@@ -1760,6 +1763,11 @@ def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
     # Round 4, R4-1: "על אף" across a double space or a hard wrap.
     ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על  אף המגבלות.", False),
     ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על \nאף המגבלות.", False),
+    # Known limit removed: "אף ש…" opening a clause with a word not on any list.
+    ("Do not copy v2.1.", "העתק את v2.1, אף שקיבלנו אישור.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף שהמערכת עמוסה.", False),
+    ("Do not copy v2.1.", "אף שקיבלנו אישור, העתק את v2.1.", False),
+    ("Do not copy v2.1 though we got approval.", "אל תעתיק את v2.1, אף שקיבלנו אישור.", True),
     # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
     ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
     ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
@@ -1779,10 +1787,11 @@ def test_a_pointed_hebrew_hedge_is_still_a_hedge(keyline_check):
 
 
 @pytest.mark.parametrize("rendering", ["פרסו את v2.1 ביום\u00a0שישי.", "פרסו את v2.1 בְּיוֹם שִׁישִׁי.",
-                                       "פרסו את v2.1 ביום\nשישי."])
+                                       "פרסו את v2.1 ביום\nשישי.",
+                                       # Known limit removed: the short spelling, pointed or not.
+                                       "פרסו את v2.1 בְּיוֹם שִׁשִּׁי.", "פרסו את v2.1 ביום ששי."])
 def test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present(keyline_check, rendering):
-    # Round 3, R3-9: the calendar scan read the raw text. (Pointed text in the short spelling,
-    # שִׁשִּׁי, is another spelling of the name and is not matched.)
+    # Round 3, R3-9: the calendar scan read the raw text.
     assert keyline_check.report("s", "r", "Deploy v2.1 on Friday.", rendering)[0] is True
 
 

@@ -117,3 +117,15 @@ I read the round 3 and round 4 diffs again and ran the script on edge inputs. A 
 Considered and not raised: a file holding only a BOM keeps the BOM as its own line, followed by a blank line, before the section. It is stable on rerun, and no text is lost.
 
 Checks at the round 4 fix (temp HOME and CLAUDE_CONFIG_DIR): pytest 2144 passed, 17 skipped; run_tests 35/35; pyflakes clean.
+
+## Known limits, fixed after the loop (user request)
+
+| Limit | Fix | Test (failed first) |
+|-------|-----|------|
+| After אף, a ש-noun not in `AF_NOUNS` read as "although", so a real "not even" went uncounted. | A ש-word on no list counts as "not even" exactly when its clause (up to `, ; : . ! ?`) holds a negation of its own, as Hebrew "not even" always does (אף שקע לא עובד, אין אף שלט). Clause starts after ש (`AF_CLAUSE`, or ה) stay "although". | `test_hebrew_af_as_not_even_is_still_a_negation` (2 cases); "although" guards in the both-directions test |
+| Friday in the short spelling (pointed שִׁשִּׁי, or ששי) was missing. | `יום ששי` added to Friday's Hebrew forms. The other weekdays and the months read the same in both spellings. | `test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present` (2 cases) |
+| A `CLAUDE.md` holding only a BOM got the BOM on its own line, then a blank line. | The BOM is held and written before whatever comes first. A file that is only a BOM is an empty file with a BOM, and a BOM with one line end keeps that one blank line, as `\n` alone does. | `test_a_file_holding_only_a_bom_gets_the_section_right_after_it` (2 cases) |
+
+What is left (keyline/README.md): an "although" clause that holds a negation of its own and starts with a word on no list still counts, and a bare answer with no verb (אף שקע.) does not. Both are rare. These need a parser, not a word list.
+
+Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2154 passed, 17 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 33 passed, 1 skipped.

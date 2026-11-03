@@ -1,4 +1,4 @@
-# Resume point: PR #38 reviewer rounds; G1-G5, round 2 and rounds 3-4 fixed; review loop finished
+# Resume point: PR #38 reviewer rounds; G1-G5, round 2 and rounds 3-4 fixed; review loop finished; known limits fixed
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -18,6 +18,7 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - the cloud-setup tests as `nobody`: 23 passed, 1 skipped (chown test, root only).
 - Round 3 (10 findings: 1 medium, 9 low) fixed in 27262c1; recorded in the report. Checks there: pytest 2142 passed, 17 skipped; run_tests 35/35; pyflakes clean; as `nobody` 31 passed, 1 skipped.
 - Round 4 found 1 low (R4-1, על אף across a whitespace run), fixed; the loop has stopped, as asked. Final self-review done; recorded in the report.
+- The user then asked to fix the known limits: אף before an unlisted ש-word (clause-negation rule), Friday short spelling, BOM-only file. Fixed and recorded under "Known limits, fixed after the loop". Checks: pytest 2154 passed, 17 skipped; run_tests 35/35; pyflakes clean; as `nobody` 33 passed, 1 skipped.
 
 ## Standing request from the user (2026-11-03)
 - Keep running reviewer rounds until a round finds only 1 low (or nothing), then stop.
@@ -34,7 +35,7 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - Markers found by a two-pass awk mirroring install.py find_section/_fenced (order, fences, trailing whitespace); no recorded-hash fallback (the shell has no install record).
   - The body runs in `( ... ) || true` so a host setup script goes on, under set -e too.
   - A file not owned by the runner's user and group, or hard-linked, is written in place.
-- keyline: אף not counted in "אף על פי" / "אף כי" / "אף ש…" / "על אף" (space, maqaf or hyphen; ש-nouns listed in AF_NOUNS still count); calendar names and hedges matched on pointless text with `\s+` between words; אל and verb across any whitespace; niqqud (POINTS) stripped for negations and hedges.
+- keyline: אף not counted in "אף על פי" / "אף כי" / "אף ש…" / "על אף" (space, maqaf or hyphen; ש-nouns listed in AF_NOUNS count; any other ש-word counts only when its clause holds a negation of its own, because Hebrew "not even" always has one); calendar names and hedges matched on pointless text with `\s+` between words; אל and verb across any whitespace; niqqud (POINTS) stripped for negations and hedges.
 - cloud-setup.sh stays busybox-safe: `stat -c %a` for the mode, a dangling link followed by hand; `set +C` in the subshell; BOM handled on line 1 in both passes.
 - Mode-dependent tests skip as root. Verify them as `nobody` on a copy of the tree:
   - `git ls-files -z | xargs -0 cp --parents -t $T`;

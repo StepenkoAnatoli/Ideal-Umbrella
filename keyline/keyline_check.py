@@ -229,7 +229,7 @@ CALENDAR = {
     "may": ("מאי",), "june": ("יוני",), "july": ("יולי",), "august": ("אוגוסט",),
     "september": ("ספטמבר",), "october": ("אוקטובר",), "november": ("נובמבר",), "december": ("דצמבר",),
     "sunday": ("יום ראשון",), "monday": ("יום שני",), "tuesday": ("יום שלישי",),
-    "wednesday": ("יום רביעי",), "thursday": ("יום חמישי",), "friday": ("יום שישי",), "saturday": ("שבת",),
+    "wednesday": ("יום רביעי",), "thursday": ("יום חמישי",), "friday": ("יום שישי", "יום ששי",), "saturday": ("שבת",),
 }
 for _abbr, _full in (("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
                      ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "september"),
@@ -271,12 +271,17 @@ AL_TO = ("תוך תוכו תוכה תוכם תוכן תחת תל "
 # any whitespace separates them. אף is "not even" (אף אחד), but not in "אף על פי" / "אף כי"
 # / "אף ש…" ("although") or "על אף" ("despite"), which would otherwise stand in for a lost
 # negation; a space, a maqaf or a hyphen may join those words. A word after אף that starts
-# with ש is "although" unless it is a noun listed in AF_NOUNS (אף שורה, "not one line"); an
-# unlisted ש-noun after אף is not counted. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with
-# its points taken off (POINTS).
+# with ש is a noun when listed in AF_NOUNS (אף שורה, "not one line") and opens an "although"
+# clause when what follows ש is in AF_CLAUSE or starts with ה (אף שזה, אף שהמערכת). Any other
+# ש-word is read by the rule Hebrew "not even" keeps: it always has a negation of its own in
+# the same clause (אף שקע לא עובד, אין אף שלט), so אף counts then and only then (AF_SH, in
+# _negation_counts). Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off
+# (POINTS).
 AF_NOUNS = ("שורה שורות שאלה שאלות שם שמות שינוי שינויים שלב שלבים שעה שעות שנה שנים שבוע "
             "שבועות שום שירות שרת שרתים שגיאה שגיאות שדה שדות שיחה שפה שיטה שכבה שקל שקלים "
             "שיר שולחן שוק שותף שעון").split()
+AF_CLAUSE = ("הוא היא הם הן זה זו זאת אני אנחנו אתה את אתם אתן לא אין יש כבר גם עדיין עוד "
+             "רק אולי כמעט").split()
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
@@ -286,6 +291,8 @@ NEG_HE = re.compile(
     rf"(?!(?:\s+|[-־])ש(?!(?:{'|'.join(w[1:] for w in AF_NOUNS)})(?![{HEB}])))|מעולם"
     rf")(?![{HEB}])"
 )
+AF_SH = re.compile(rf"(?<![{HEB}])(?<!על )(?<!על[-־])אף[ \-־]ש([{HEB}]+)")
+CLAUSE_END = re.compile(r"[,;:.!?]")
 POINTS = re.compile("[\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7]")
 
 # A hedge must survive as a class, not word-for-word: "could" may become "may", but not "will".
@@ -1111,7 +1118,17 @@ def _negation_counts(text):
     "(No. 5)", "A: No. 5")."""
     # Whitespace runs become one space, so the fixed-width lookbehind for "על אף" holds across a
     # double space or a hard wrap too.
-    n, ambiguous = len(NEG_HE.findall(re.sub(r"\s+", " ", POINTS.sub("", text)))), 0
+    bare = re.sub(r"\s+", " ", POINTS.sub("", text))
+    n, ambiguous = len(NEG_HE.findall(bare)), 0
+    for m in AF_SH.finditer(bare):
+        rest = m.group(1)
+        if "ש" + rest in AF_NOUNS or rest in AF_CLAUSE or rest.startswith("ה"):
+            continue                        # counted by NEG_HE, or "although"
+        starts = [c.end() for c in CLAUSE_END.finditer(bare, 0, m.start())]
+        end = CLAUSE_END.search(bare, m.end())
+        clause = bare[starts[-1] if starts else 0:end.start() if end else len(bare)]
+        if NEG_HE.search(clause):
+            n += 1                          # "not even": its clause has a negation of its own
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):
