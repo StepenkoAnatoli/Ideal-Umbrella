@@ -108,7 +108,7 @@ def analyse(streams):
                 cost_a = (read * price["cache reads"] + w5 * price["cache writes (5m)"]
                           + w1 * price["cache writes (1h)"]) / 1e6
                 gap = None if previous is None else max(0.0, when - previous["when"])
-                if gap is not None and gap > TTL_SECONDS:
+                if gap is not None and gap > TTL_SECONDS and previous["long"]:   # a 5m stream already pays this
                     cost_b = (read + writes) * price["cache writes (5m)"] / 1e6
                 else:
                     cost_b = (read * price["cache reads"] + writes * price["cache writes (5m)"]) / 1e6

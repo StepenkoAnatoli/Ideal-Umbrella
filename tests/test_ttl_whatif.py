@@ -118,3 +118,12 @@ def test_a_one_hour_stream_keeps_its_ttl_after_a_pure_read(ttl_whatif, tmp_path)
         response("m3", "2026-01-01T00:20:00Z", write5=100_000),    # 19 min: the 1-hour cache should be live
     ])
     assert ttl_whatif.analyse([[str(path)]])["busts"] == {"other": 1}
+
+
+def test_a_stream_that_already_runs_on_five_minutes_is_not_charged_a_rewrite(ttl_whatif, tmp_path):
+    path = write_jsonl(tmp_path / "s.jsonl", [
+        response("m1", "2026-01-01T00:00:00Z", write5=1_000_000),
+        response("m2", "2026-01-01T00:05:10Z", read=1_000_000),   # a read that evidently hit
+    ])
+    result = ttl_whatif.analyse([[str(path)]])
+    assert result["whatif"] == pytest.approx(result["actual"])

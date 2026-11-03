@@ -111,3 +111,50 @@ def test_a_symlinked_skill_folder_is_found(skill_bill, tmp_path):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks are not available")
     assert [r["name"] for r in skill_bill.analyse([str(root)], words)] == ["linked"]
+
+
+def test_a_user_only_skill_has_no_always_on_cost_and_is_flagged(skill_bill, tmp_path):
+    make_skill(tmp_path, "manual", description="x y z", extra_front="disable-model-invocation: true\n")
+    make_skill(tmp_path, "auto", description="x y z")
+    rows = {r["name"]: r for r in skill_bill.analyse([str(tmp_path)], words)}
+    assert rows["manual"]["always_on"] == 0 and rows["manual"]["user_only"]
+    assert rows["auto"]["always_on"] > 0 and not rows["auto"]["user_only"]
+
+
+def test_a_link_to_a_parent_folder_does_not_add_skills_outside(skill_bill, tmp_path):
+    skills = tmp_path / "skills"
+    make_skill(skills, "a")
+    make_skill(tmp_path / "other", "b")
+    try:
+        os.symlink(str(tmp_path), str(skills / "up"), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    assert [r["name"] for r in skill_bill.analyse([str(skills)], words)] == ["a"]
+
+
+def test_the_cli_plugin_folder_and_the_config_dir_are_default_folders(skill_bill, tmp_path, monkeypatch):
+    config = tmp_path / "cfg"
+    plugin = config / "plugins" / "cache" / "p"
+    (plugin / ".claude-plugin").mkdir(parents=True)
+    (plugin / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    make_skill(plugin / "skills", "cliplugin")
+    make_skill(config / "skills", "mine")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    monkeypatch.setenv("CLAUDE_APP_DIR", str(tmp_path / "noapp"))
+    rows = skill_bill.analyse(skill_bill.default_folders(), words)
+    assert sorted(r["name"] for r in rows) == ["cliplugin", "mine"]
+
+
+def test_an_unreadable_skill_file_is_a_one_line_error_not_a_zero(skill_bill, tmp_path, monkeypatch):
+    make_skill(tmp_path, "locked")
+    real_open = open
+
+    def refuse(path, *args, **kwargs):
+        if str(path).endswith("SKILL.md"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", refuse)
+    monkeypatch.setattr(skill_bill, "load_counter", lambda: words)
+    with pytest.raises(SystemExit) as e:
+        skill_bill.main([str(tmp_path)])
+    assert "cannot read" in str(e.value) and "\n" not in str(e.value)

@@ -10,7 +10,8 @@ plugin_cost.py).
                is in context on every call
   invocation   tokens of SKILL.md without its frontmatter, plus each other file in the skill
                folder that SKILL.md names by its relative path
-A skill whose frontmatter sets `model` (other than `inherit`) is flagged: per the skills docs
+A skill with `disable-model-invocation: true` is flagged user-only and has no always-on cost (its
+description is not in context). A skill whose frontmatter sets `model` (other than `inherit`) is flagged: per the skills docs
 at code.claude.com the override applies for the rest of the turn, and switching models
 recomputes the whole request.
 Token counts use tiktoken o200k_base as a proxy, like plugin_cost.py; Claude's tokenizer is not
@@ -45,11 +46,8 @@ def load_counter():
 
 
 def read_text(path):
-    try:
-        with open(path, encoding="utf-8-sig", errors="ignore") as f:
-            return f.read()
-    except OSError:
-        return ""
+    with open(path, encoding="utf-8-sig", errors="ignore") as f:
+        return f.read()
 
 
 def split_frontmatter(text):
@@ -63,12 +61,21 @@ def front_value(front, key):
     return m.group(1).strip().strip("'\"") if m else None
 
 
+def _raise(error):
+    raise error
+
+
 def skill_folders(folder):
     """Folders under `folder` (itself included) that hold SKILL.md, not looking inside one."""
     found, seen = [], set()
-    for root, dirs, names in os.walk(str(folder), followlinks=True):
+    top = os.path.realpath(str(folder))
+    for root, dirs, names in os.walk(str(folder), followlinks=True, onerror=_raise):
         real = os.path.realpath(root)
-        if real in seen:       # a link back into a folder already walked
+        try:
+            above = real != top and os.path.commonpath([real, top]) == real
+        except ValueError:
+            above = False      # another drive on Windows: not above the folder
+        if real in seen or above:   # a link back into a folder already walked, or up to one holding it
             dirs[:] = []
             continue
         seen.add(real)
@@ -86,7 +93,7 @@ def skill_folders(folder):
 def referenced_files(folder, body):
     """Files in the skill folder (not SKILL.md) whose relative path SKILL.md mentions."""
     out, seen = [], 0
-    for root, dirs, names in os.walk(folder):
+    for root, dirs, names in os.walk(folder, onerror=_raise):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_FOLDERS)
         for name in sorted(names):
             path = os.path.join(root, name)
@@ -112,8 +119,10 @@ def analyse(folders, count):
             name = front_value(front, "name") or os.path.basename(skill)
             description = pc.desc_of(os.path.join(skill, "SKILL.md"))[:pc.DESCRIPTION_LIMIT]
             model = front_value(front, "model")
+            user_only = (front_value(front, "disable-model-invocation") or "").lower() == "true"
             invocation = count(body) + sum(count(read_text(p)) for p in referenced_files(skill, body))
-            rows.append({"name": name, "always_on": count(f"- {name}: {description}\n"),
+            rows.append({"name": name, "user_only": user_only,
+                         "always_on": 0 if user_only else count(f"- {name}: {description}\n"),
                          "invocation": invocation, "model": model if model and model != "inherit" else None})
     return sorted(rows, key=lambda r: (-r["invocation"], r["name"]))
 
@@ -123,7 +132,9 @@ def default_folders():
     Claude Code does not load, so they are left out."""
     app = pc.default_app_dir()
     plugins = [str(r) for r in pc.plugin_roots(app) if "local-agent-mode-sessions" not in Path(r).parts]         if os.path.isdir(app) else []
-    return [str(Path.home() / ".claude" / "skills"), *plugins]
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    cli_plugins = [str(r) for r in pc.plugin_roots(config / "plugins")] if (config / "plugins").is_dir() else []
+    return [str(config / "skills"), *cli_plugins, *plugins]
 
 
 def main(argv=None):
@@ -152,7 +163,8 @@ def main(argv=None):
           "(o200k proxy: Claude's tokenizer is not public, so these are directional)")
     print(f"{'skill':36} {'always-on':>9} {'per use':>8}  flag")
     for r in rows:
-        flag = f"model: {r['model']}" if r["model"] else ""
+        flag = ", ".join(f for f in (f"model: {r['model']}" if r["model"] else "",
+                                     "user-only" if r["user_only"] else "") if f)
         print(f"{r['name'][:36]:36} {r['always_on']:>9,} {r['invocation']:>8,}  {flag}")
     return 0
 
