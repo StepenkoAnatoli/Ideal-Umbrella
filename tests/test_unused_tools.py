@@ -252,3 +252,11 @@ def test_a_settings_file_of_another_shape_is_one_line_not_a_traceback(unused_too
         assert code == 0 and "Bash: called 1 time(s)" in captured.out, captured
     else:
         assert code == 1 and captured.err.startswith("error:") and captured.err.count("\n") == 1, captured
+
+
+def test_a_resumed_session_that_repeats_earlier_lines_counts_them_once(unused_tools, tmp_path):
+    # Review general-44170ca, N2: the same event (same uuid) in two files is one tool call.
+    event = {"uuid": "u1", "message": {"content": [{"type": "tool_use", "name": "Bash"}]}}
+    write_jsonl(tmp_path / "a.jsonl", [event])
+    write_jsonl(tmp_path / "b.jsonl", [event, {**event, "uuid": "u2"}])
+    assert unused_tools.tool_calls(tmp_path) == (2, {"Bash": 2})

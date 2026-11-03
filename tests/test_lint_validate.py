@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
@@ -86,3 +87,23 @@ def test_a_word_cache_that_cannot_be_read_is_one_line_not_a_traceback(lint_valid
     assert lint_validate.main([str(old), str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert err == "Error: cache/o200k_single_token_words.txt is not UTF-8\n", err
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_symlink_cycle_does_not_hang_and_skipped_folders_are_not_entered(lint_validate, tmp_path, monkeypatch):
+    # General review 44170ca, B3: glob followed folder links, so a pnpm node_modules with a link
+    # cycle hung the run; node_modules and MAX_FILES were applied only after the full walk.
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.md").write_text("# x\n", encoding="utf-8")
+    (tmp_path / "a" / "loop").symlink_to(tmp_path, target_is_directory=True)
+    (tmp_path / "node_modules" / "p").mkdir(parents=True)
+    (tmp_path / "node_modules" / "p" / "r.md").write_text("# r\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "d.md").write_text("# d\n", encoding="utf-8")
+    for i in range(5):
+        (tmp_path / f"f{i}.md").write_text("# f\n", encoding="utf-8")
+    files = lint_validate.corpus_files(tmp_path)
+    assert sorted(os.path.relpath(f, tmp_path) for f in files) == sorted(
+        [os.path.join("a", "x.md")] + [f"f{i}.md" for i in range(5)])
+    monkeypatch.setattr(lint_validate, "MAX_FILES", 3)
+    assert len(lint_validate.corpus_files(tmp_path)) == 3

@@ -572,10 +572,10 @@ def test_a_failed_write_after_the_backup_leaves_no_orphan_backup(install_module,
     write_md(home, "mine\n")
     real = install_module._write_bytes
 
-    def failing(path, data):
+    def failing(path, data, *mode):
         if path.name == "CLAUDE.md":
             raise OSError(28, "No space left on device")
-        real(path, data)
+        real(path, data, *mode)
     monkeypatch.setattr(install_module, "_write_bytes", failing)
     with pytest.raises(OSError):
         install_module.install(home)
@@ -888,10 +888,10 @@ def test_an_edited_backup_left_by_a_failed_write_goes_with_uninstall(install_mod
         monkeypatch.setattr(install_module, "CLAUDE_MD", path)
     real_write = install_module._write_bytes
 
-    def failing(path, data):
+    def failing(path, data, *mode):
         if path == md(home):
             raise OSError(28, "No space left on device")
-        real_write(path, data)
+        real_write(path, data, *mode)
     monkeypatch.setattr(install_module, "_write_bytes", failing)
     with pytest.raises(OSError):
         install_module.install(home)
@@ -985,10 +985,10 @@ def test_a_failed_write_over_a_section_added_by_hand_leaves_nothing(install_modu
         write_md(home, before)
     real_write = install_module._write_bytes
 
-    def failing(path, data):
+    def failing(path, data, *mode):
         if path == md(home):
             raise OSError(28, "No space left on device")
-        real_write(path, data)
+        real_write(path, data, *mode)
     monkeypatch.setattr(install_module, "_write_bytes", failing)
     with pytest.raises(OSError):
         install_module.install(home)

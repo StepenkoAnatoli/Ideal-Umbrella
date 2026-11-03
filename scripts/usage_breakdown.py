@@ -3,7 +3,8 @@
 Usage:
   python -I scripts/usage_breakdown.py TRANSCRIPT_DIR [COUNT]
 
-The COUNT largest .jsonl files in TRANSCRIPT_DIR are read (default 10). Claude Code
+The COUNT largest sessions in TRANSCRIPT_DIR are read (default 10): each session's .jsonl
+file with the transcripts of its subagents (<session>/subagents/*.jsonl). Claude Code
 records 5-minute and 1-hour cache writes separately; they cost $5/MTok and $8/MTok
 on Opus 5.5, so pricing every write at the 5-minute rate understates the bill.
 """
@@ -67,11 +68,14 @@ def _len(value):
 
 
 def summarize(files):
-    """Return (totals, output_characters, api_responses) for the given files."""
-    tot = collections.Counter()
+    """Return (totals, output_characters, api_responses) for the given files.
+
+    The lines of one streamed response share a message id, and an early one can hold a
+    partial count: each field takes its largest value across them. A line whose uuid was
+    already read (a resumed session repeats the history it continues) is counted once."""
+    per_message = {}
     out_chars = collections.Counter()
-    seen = set()
-    turns = 0
+    seen_uuids = set()
     for path in files:
         # utf-8-sig: a BOM would otherwise make the first line unreadable JSON.
         with open(path, encoding="utf-8-sig", errors="ignore") as f:
@@ -82,22 +86,27 @@ def summarize(files):
                     continue
                 if not isinstance(event, dict) or event.get("type") != "assistant":
                     continue
+                uuid = event.get("uuid")
+                if isinstance(uuid, str) and uuid:
+                    if uuid in seen_uuids:
+                        continue
+                    seen_uuids.add(uuid)
                 message = event.get("message")
                 if not isinstance(message, dict):
                     continue
                 message_id = message.get("id")
                 usage = message.get("usage")
-                if not isinstance(usage, dict):
-                    usage = {}
-                if isinstance(message_id, str) and message_id and message_id not in seen and usage:
-                    seen.add(message_id)
-                    turns += 1
+                if isinstance(message_id, str) and message_id and isinstance(usage, dict) and usage:
                     five, one = _cache_writes(usage)
-                    tot["cache_creation_5m_input_tokens"] += five
-                    tot["cache_creation_1h_input_tokens"] += one
-                    tot["cache_creation_input_tokens"] += five + one
+                    counts = {
+                        "cache_creation_5m_input_tokens": five,
+                        "cache_creation_1h_input_tokens": one,
+                    }
                     for key in ("input_tokens", "cache_read_input_tokens", "output_tokens"):
-                        tot[key] += _int(usage.get(key))
+                        counts[key] = _int(usage.get(key))
+                    known = per_message.setdefault(message_id, counts)
+                    for key, value in counts.items():
+                        known[key] = max(known[key], value)
                 content = message.get("content")
                 for block in content if isinstance(content, list) else []:
                     if not isinstance(block, dict):
@@ -111,7 +120,13 @@ def summarize(files):
                         )
                     elif kind == "thinking":
                         out_chars["thinking (visible part)"] += _len(block.get("thinking"))
-    return tot, out_chars, turns
+    tot = collections.Counter()
+    for counts in per_message.values():
+        tot.update(counts)
+    tot["cache_creation_input_tokens"] = (
+        tot["cache_creation_5m_input_tokens"] + tot["cache_creation_1h_input_tokens"]
+    )
+    return tot, out_chars, len(per_message)
 
 
 def costs(tot):
@@ -124,8 +139,9 @@ def costs(tot):
     }
 
 
-def print_report(files, tot, out_chars, turns):
-    print(f"{len(files)} transcripts, {turns} API responses")
+def print_report(files, tot, out_chars, turns, subagents=0):
+    extra = f", {subagents} of them subagent transcripts" if subagents else ""
+    print(f"{len(files)} transcripts, {turns} API responses{extra}")
     for key in TOKEN_KEYS:
         print(f"{key:38} {tot[key]:>14,}")
     cost = costs(tot)
@@ -161,6 +177,20 @@ def transcripts(folder):
                 yield path, st.st_size
 
 
+def sessions(folder):
+    """(path, size, subagent transcripts) of each session in folder: its *.jsonl file and the
+    *.jsonl files in <session>/subagents/, which Claude Code writes for the subagents it runs.
+    size is the whole session's, so the largest sessions are picked with their subagents."""
+    for path, size in transcripts(folder):
+        name = os.path.basename(path)
+        sub = os.path.join(folder, name[: -len(".jsonl")], "subagents")
+        try:
+            found = list(transcripts(sub))
+        except (FileNotFoundError, NotADirectoryError):
+            found = []
+        yield path, size + sum(s for _, s in found), sorted(p for p, _ in found)
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if hasattr(sys.stdout, "reconfigure"):
@@ -176,15 +206,16 @@ def main(argv=None):
     if count <= 0:
         sys.exit("count must be positive")
     try:
-        files = sorted(transcripts(folder), key=lambda f: f[1], reverse=True)[:count]
-        files = [f for f, _ in files]
-        if not files:
+        picked = sorted(sessions(folder), key=lambda f: f[1], reverse=True)[:count]
+        if not picked:
             sys.exit(f"no .jsonl files in {folder}")
+        subagents = [p for _, _, subs in picked for p in subs]
+        files = [f for f, _, _ in picked] + subagents
         tot, out_chars, turns = summarize(files)
     except OSError as e:
         # A folder or transcript that cannot be read would leave its usage out of the report.
         sys.exit(f"cannot read {e.filename or folder} ({e.strerror or e})")
-    print_report(files, tot, out_chars, turns)
+    print_report(files, tot, out_chars, turns, len(subagents))
     return 0
 
 

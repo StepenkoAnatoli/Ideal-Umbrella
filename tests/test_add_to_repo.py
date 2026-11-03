@@ -41,7 +41,7 @@ def test_merge_preserves_custom_keys_and_sibling_hooks(add_to_repo):
             "UserPromptSubmit": [{
                 "hooks": [
                     {"type": "command", "command": "bash my-own-hook.sh"},
-                    {"type": "command", "command": "python3 -I old/context_check.py", "timeout": 5},
+                    {"type": "command", "command": "python3 -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_check.py\"", "timeout": 5},
                 ]
             }]
         },
@@ -1485,3 +1485,154 @@ def test_a_path_is_quoted_for_the_shell(add_to_repo, monkeypatch):
     assert add_to_repo._arg("100%/x") == '"100%/x"'
     assert "$ %" in add_to_repo._risk(["a$b/%x%"])
     assert add_to_repo._risk(["plain"]) == ""
+
+
+@pytest.mark.parametrize("relative,target", [
+    (".claude/hooks/context_check.py", "outside/victim.rc"),
+    (".claude/settings.json", "outside/other.json"),
+    (".claude/hooks/context_check.py", "repo/README.md"),
+    (".claude/settings.json", "repo/README.md"),
+])
+def test_a_file_link_to_an_unrelated_file_is_refused_before_anything_is_written(tmp_path, relative, target):
+    # General review 44170ca, A1: a cloned repo's committed .claude/hooks/context_check.py ->
+    # ~/.bashrc had the hook source written over the link's target, and the run exited 0.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (tmp_path / "outside").mkdir()
+    victim = tmp_path / target
+    victim.write_text("precious\n", encoding="utf-8")
+    link = repo / relative
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        link.symlink_to(victim)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    result = run(repo)
+    assert result.returncode == 1, result.stdout
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert os.path.normpath(relative) in result.stderr and "not a " in result.stderr, result.stderr
+    assert victim.read_text(encoding="utf-8") == "precious\n"
+    assert not (repo / ".claude" / "hooks" / "context_check.py").is_file() or relative.endswith("context_check.py")
+    assert not (repo / ".claude" / "settings.json").is_file() or relative.endswith("settings.json")
+    assert not (repo / "notes" / "learnings.md").exists()
+
+
+def test_a_repository_inside_the_claude_config_folder_is_refused_without_naming_a_symlink(tmp_path):
+    # Fresh review 4c3992c, F4: a repository cloned inside CLAUDE_CONFIG_DIR (a plugin
+    # marketplace clone) was refused with "replace the symlink", though no link was on the way.
+    config = tmp_path / "cfg"
+    repo = config / "plugins" / "marketplaces" / "mk"
+    repo.parent.mkdir(parents=True)
+    _git_init(repo)
+    result = run(repo, env=git_env(CLAUDE_CONFIG_DIR=str(config)))
+    assert result.returncode == 1, result.stdout
+    assert "nothing written" in result.stderr and "Traceback" not in result.stderr, result.stderr
+    assert "symlink" not in result.stderr and "lies in Claude Code's own folder" in result.stderr, result.stderr
+    assert not (repo / ".claude").exists()
+
+
+@pytest.mark.parametrize("how", ["folder", "file"])
+def test_a_link_into_the_claude_config_folder_is_refused(tmp_path, how):
+    # General review 44170ca, A1: `.claude -> ~/.claude`, or settings.json -> the user's own
+    # settings.json, merged the repo template into the user's settings and put the hook there.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    config = tmp_path / "cfg"
+    (config / "hooks").mkdir(parents=True)
+    (config / "settings.json").write_text('{"mine": 1}\n', encoding="utf-8")
+    try:
+        if how == "folder":
+            (repo / ".claude").symlink_to(config, target_is_directory=True)
+        else:
+            (repo / ".claude").mkdir()
+            (repo / ".claude" / "settings.json").symlink_to(config / "settings.json")
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+    for env in (git_env(CLAUDE_CONFIG_DIR=str(config)),
+                git_env(HOME=str(tmp_path), USERPROFILE=str(tmp_path))):
+        if env.get("HOME") == str(tmp_path):
+            if how == "folder":
+                continue
+            (tmp_path / ".claude").symlink_to(config, target_is_directory=True)
+            env.pop("CLAUDE_CONFIG_DIR", None)
+        result = run(repo, env=env)
+        assert result.returncode == 1, result.stdout
+        assert "Claude Code's own" in result.stderr and "nothing written" in result.stderr, result.stderr
+        assert (config / "settings.json").read_text(encoding="utf-8") == '{"mine": 1}\n'
+        assert not (config / "hooks" / "context_check.py").exists()
+
+
+@pytest.mark.parametrize("command", ["python3 tools/context_check.py --lint", "python3 my_context_check.py"])
+def test_a_repositorys_own_context_check_hook_is_not_taken_for_ours(add_to_repo, command):
+    # General review 44170ca, A3 (the same class here): any command naming context_check.py
+    # was rewritten into the Ideal-Umbrella command.
+    mine = {"type": "command", "command": command}
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [dict(mine)]}]}}
+    add_to_repo.merge(settings, TEMPLATE)
+    entries = settings["hooks"]["UserPromptSubmit"]
+    assert entries[0]["hooks"] == [mine]
+    assert any(add_to_repo.is_ours(entry) for entry in entries[1:])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the planted command is a POSIX shell line")
+def test_a_planted_fsmonitor_in_the_repositorys_git_config_is_not_run(tmp_path):
+    # General review 44170ca, A2: git ran with the folder's own .git/config, so a core.fsmonitor
+    # command kept by an archive or a shared drive ran as the user, four times.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "a").write_text("hi\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "a"], check=True, env=git_env())
+    ran = tmp_path / "ran.txt"
+    subprocess.run(["git", "-C", str(repo), "config", "core.fsmonitor", f"echo RAN >> '{ran}'; false"],
+                   check=True, env=git_env())
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert not ran.exists()
+
+
+def test_non_ascii_text_survives_the_rewrite(tmp_path):
+    # A4: json.dumps without ensure_ascii=False wrote "Grüße" back as "Grüße".
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "settings.json").write_text('{"note": "Grüße, שלום"}\n', encoding="utf-8")
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    text = (repo / ".claude" / "settings.json").read_text(encoding="utf-8")
+    assert '"note": "Grüße, שלום"' in text and "\\u" not in text
+
+
+def test_a_duplicate_key_stops_the_run_before_anything_is_written(tmp_path):
+    # A8: json.load kept the last of two equal keys and the rewrite dropped the first silently.
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    original = '{"env": {"A": "1"}, "env": {"B": "2"}}\n'
+    (repo / ".claude" / "settings.json").write_text(original, encoding="utf-8")
+    result = run(repo)
+    assert result.returncode != 0
+    assert "duplicate key 'env'" in result.stderr
+    assert (repo / ".claude" / "settings.json").read_text(encoding="utf-8") == original
+    assert not (repo / ".claude" / "hooks").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_the_temp_file_is_never_more_open_than_the_file_it_replaces(add_to_repo, tmp_path, monkeypatch):
+    # A6: the temp file was created at 0666 less the umask (0644) and chmodded to the target's
+    # 0600 only after the data was in it.
+    target = tmp_path / "settings.json"
+    target.write_text("{}\n", encoding="utf-8")
+    os.chmod(target, 0o600)
+    seen = []
+    real = add_to_repo._new_temp
+
+    def spy(*args, **kwargs):
+        fd, tmp = real(*args, **kwargs)
+        seen.append(os.stat(tmp).st_mode & 0o777)
+        return fd, tmp
+
+    monkeypatch.setattr(add_to_repo, "_new_temp", spy)
+    old = os.umask(0o022)
+    try:
+        add_to_repo._write_json(target, {"env": {"TOKEN": "x"}})
+    finally:
+        os.umask(old)
+    assert seen == [0o600] and os.stat(target).st_mode & 0o777 == 0o600

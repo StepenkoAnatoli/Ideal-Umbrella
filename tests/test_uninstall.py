@@ -103,7 +103,7 @@ def test_sibling_hook_in_same_entry_is_kept(install_module, uninstall_module, tm
     home = tmp_path / "home"
     seed(home, {"hooks": {"UserPromptSubmit": [{"hooks": [
         {"type": "command", "command": "bash my-own-hook.sh"},
-        {"type": "command", "command": "python3 -I old/context_check.py"},
+        {"type": "command", "command": "python3 -I ~/.claude/ballast/context_check.py"},
     ]}]}})
     install_module.install(home)
     uninstall_module.uninstall(home)
@@ -2874,7 +2874,7 @@ def test_a_created_settings_json_holding_nothing_installed_keeps_the_values_to_c
 
 def test_holds_install_counts_the_hook_entry_alone(install_module):
     # SB2: kills a mutant without the hook check.
-    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "python3 context_check.py"}]}]}}
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [{"command": "python3 -I ~/.claude/ballast/context_check.py"}]}]}}
     assert install_module.holds_install(settings, {}) is True
     assert install_module.holds_install({"hooks": {"UserPromptSubmit": []}}, {}) is False
 
@@ -2958,3 +2958,37 @@ def test_a_users_own_settings_json_with_content_gets_no_empty_note(install_modul
     _, notices = uninstall_module.uninstall(home)
     assert read_settings(home) == {"mine": 1}
     assert not any(n.startswith("settings.json left as {}") for n in notices), notices
+
+
+@pytest.mark.parametrize("event,command", [
+    ("Stop", "python3 ~/tools/my_context_check.py --stop"),
+    ("UserPromptSubmit", "python3 ~/tools/context_check.py --mine"),
+    ("UserPromptSubmit", "python3 ~/tools/my_context_check.py"),
+    ("Stop", "python3 -I ~/.claude/ballast/context_check.py"),
+])
+def test_a_users_own_hook_that_names_context_check_is_left_alone(install_module, uninstall_module, tmp_path,
+                                                                  event, command):
+    # General review 44170ca, A3: any command naming context_check.py, in any event, counted as
+    # Ideal-Umbrella's: install rewrote the user's own UserPromptSubmit hook and uninstall
+    # deleted a Stop hook the template never names.
+    home = tmp_path / "home"
+    before = {"hooks": {event: [{"hooks": [{"type": "command", "command": command}]}]}}
+    seed(home, before)
+    install_module.install(home)
+    after_install = read_settings(home)["hooks"]
+    assert {"type": "command", "command": command} in after_install[event][0]["hooks"]
+    assert install_module.has_our_hook(read_settings(home))
+    _, notices = uninstall_module.uninstall(home)
+    assert read_settings(home) == before
+    # Fresh review 4c3992c, F3: a hook that runs the installed ballast/context_check.py in an
+    # event the template does not name is left, but uninstall deletes the file it runs: say so.
+    names_ours = "ballast/context_check.py" in command
+    assert any(f"hooks.{event}" in n and "ballast" in n for n in notices) is names_ours, notices
+
+
+def test_uninstall_home_with_claude_config_dir_set_warns(uninstall_module, tmp_path, monkeypatch, capsys):
+    # A5, the same in uninstall: --home undoes <home>/.claude while Claude Code reads the variable's folder.
+    config = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    uninstall_module.main(["--home", str(tmp_path / "home"), "--dry-run"])
+    assert f"CLAUDE_CONFIG_DIR is set ({config})" in capsys.readouterr().err

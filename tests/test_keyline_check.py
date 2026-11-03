@@ -1696,3 +1696,47 @@ def test_many_code_tokens_that_start_with_a_mark_are_looked_up_in_one_walk(keyli
     assert keyline_check.check(source, source).ok
     assert not keyline_check.check(source, source.replace("`*a1999`", "`*b1999`")).ok
     assert len([tok for tok in calls if tok.startswith("*")]) < 400, len(calls)    # 4,000 before
+
+
+@pytest.mark.parametrize("text", ["We can’t ship.", "We canʼt ship.", "We can't ship.", "Don’t deploy.",
+                                  "It WON’T work."])
+def test_a_contraction_with_a_typographic_apostrophe_is_a_negation(keyline_check, text):
+    # General review 44170ca, B1: only an ASCII ' counted, so "can’t" -> "can" passed.
+    assert keyline_check.negations(text) == 1
+
+
+@pytest.mark.parametrize("text", [
+    "השרת ואינו יציב.", "שרת שאינו יציב.", "כשאינו זמין, חכו.", "פרסו בלי אישור.", "ובלי אישור.",
+    "אל תפרסו ביום שישי.", "ואל תפרסו ביום שישי.", "אל תשבית את השירות.", "אל תמחקו את התיקייה.",
+])
+def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
+    # General review 44170ca, B2: ואינו/שאינו, בלי and the imperative אל were not counted.
+    assert keyline_check.negations(text) == 1
+
+
+@pytest.mark.parametrize("text", ["הלכנו אל הבית.", "אלתר את הקוד.", "שלום אל העולם.",
+                                  "העתיקו אל תוך התיקייה.", "נסענו אל תל אביב.", "זחלו אל תחת השולחן.",
+                                  # Self-check of F2 (PR #39): the ת-nouns docs put after אל.
+                                  "העתיקו אל תיקיית הפרויקט.", "עברו אל תפריט ההגדרות.",
+                                  "הוסיפו אל תבנית הדף.", "שמרו אל תיקייה חדשה.", "הוסיפו אל תצורת השרת.",
+                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר."])
+def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
+    assert keyline_check.negations(text) == 0
+
+
+@pytest.mark.parametrize("source,rendering,ok", [
+    ("We can’t ship v2.1 on Friday.", "We can ship v2.1 on Friday.", False),
+    ("Do not deploy v2.1 before 14:30.", "Don’t deploy v2.1 before 14:30.", True),
+    ("אל תפרסו את v2.1 ביום שישי.", "Deploy v2.1 on Friday.", False),
+    ("Deploy v2.1 without approval.", "פרסו את v2.1 בלי אישור.", True),
+    ("השרת ואינו יציב אחרי v2.1.", "The server is stable after v2.1.", False),
+    ("The server is not stable after v2.1.", "שרת שאינו יציב אחרי v2.1.", True),
+    # Fresh review 4c3992c, F2: "אל תוך" (into) counted as a negation and hid a lost one.
+    ("Do not copy v2.1 into the folder.", "העתיקו את v2.1 אל תוך התיקייה.", False),
+    ("העתיקו את v2.1 אל תוך התיקייה.", "Copy v2.1 into the folder.", True),
+    ("Do not copy v2.1 into the folder.", "אל תעתיקו את v2.1 אל תוך התיקייה.", True),
+    ("Do not copy v2.1 to the project folder.", "העתיקו את v2.1 אל תיקיית הפרויקט.", False),
+    ("Do not open v2.1 from the settings menu.", "פתחו את v2.1 אל תפריט ההגדרות.", False),
+])
+def test_a_negation_survives_or_is_reported_in_both_directions(keyline_check, source, rendering, ok):
+    assert keyline_check.report("src", "ren", source, rendering)[0] is ok

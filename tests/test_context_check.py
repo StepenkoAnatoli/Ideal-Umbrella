@@ -612,3 +612,15 @@ def test_a_threshold_in_ascii_digits_only(context_check, monkeypatch, capsys, tm
 def test_a_threshold_in_ascii_digits_is_read(context_check, monkeypatch, raw, value):
     monkeypatch.setenv("IDEAL_UMBRELLA_HANDOFF_AT", raw)
     assert context_check.parse_int("IDEAL_UMBRELLA_HANDOFF_AT", 150000) == value
+
+
+@pytest.mark.parametrize("name", ["Stop", "PreCompact", "Notification", "../x"])
+def test_an_event_without_additional_context_gets_the_system_message_only(tmp_path, name):
+    # C6: hook_event_name was echoed into hookSpecificOutput for any event; on one whose
+    # output has no additionalContext (Stop) the whole output could be refused.
+    high = transcript(tmp_path, {"input_tokens": 160_000}, name="high.jsonl")
+    result = run_hook(tmp_path, event(high, name=name))
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload == {"systemMessage":
+                       "Ideal-Umbrella: context about 160k tokens; a fresh session is due at the next step boundary."}

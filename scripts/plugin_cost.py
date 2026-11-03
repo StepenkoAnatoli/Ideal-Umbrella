@@ -53,11 +53,17 @@ def desc_of(md):
 def plugin_roots(app_dir):
     """Folders holding .claude-plugin/plugin.json, hidden folders included. os.walk, not
     glob("**"), which passes over hidden folders and has no include_hidden before 3.11.
-    Linked folders are followed, as glob follows them, each real folder once."""
+    Linked folders are followed, as glob follows them, each real folder once, except a link to
+    a folder that holds app_dir (a link to "/" or to the home folder would walk all of it)."""
     roots, seen = set(), set()
+    top = os.path.realpath(app_dir)
     for root, dirs, names in os.walk(str(app_dir), followlinks=True):
         real = os.path.realpath(root)
-        if real in seen:
+        try:
+            above = real != top and os.path.commonpath([real, top]) == real
+        except ValueError:
+            above = False     # another drive on Windows: not above app_dir
+        if real in seen or above:
             dirs[:] = []
             continue
         seen.add(real)
