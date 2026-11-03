@@ -19,6 +19,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `config/verify-tokens.py` takes the key from `ANTHROPIC_API_KEY`; `--api-key` still works but warns that the key shows in `ps` output and shell history, and its help says so (general review 44170ca, A9).
 - `config/cloud-setup.sh` writes the rules as a marked section of `CLAUDE.md` in `${CLAUDE_CONFIG_DIR:-~/.claude}` instead of `cat >` over `~/.claude/CLAUDE.md`, which replaced what the image or an earlier step wrote and ignored `CLAUDE_CONFIG_DIR`; tests: `tests/test_cloud_setup.py` (general review 44170ca, A7).
 - `config/install.py` (install and `--verify-only`) and `config/uninstall.py` warn when `--home` is given while `CLAUDE_CONFIG_DIR` is set: `--home` still wins, but Claude Code reads only the variable's folder, so the install changed nothing it sees and the verify still said OK (general review 44170ca, A5).
 - `config/add_to_repo.py` writes non-ASCII text as written (`Grüße` came back as `Gr\u00fc\u00dfe`); README and CONTRIBUTING now say it makes no backup, since git holds the copy. The installers and add_to_repo stop with `duplicate key '...'` on a key given twice in one object, which the rewrite silently collapsed. A backup or temp file is created with the mode of the file it copies, so a 0600 `settings.json` never sits in a 0644 file, even for a moment (general review 44170ca, A4, A6, A8).

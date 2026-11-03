@@ -2,13 +2,14 @@
 """verify-tokens.py - Calibrate tiktoken proxy counts against Anthropic's count_tokens.
 
 Usage:
-  python -I config/verify-tokens.py --model MODEL [--api-key KEY] [FILE ...]
+  ANTHROPIC_API_KEY=... python -I config/verify-tokens.py --model MODEL [FILE ...]
   python -I config/verify-tokens.py --list-models
 
 The count_tokens endpoint is model-specific, so MODEL is required (or set
 ANTHROPIC_MODEL); no retired model id is baked in. If no files are given, the
-keyline test fixtures are used. Requires the `anthropic` package and an API key
-(via --api-key or ANTHROPIC_API_KEY).
+keyline test fixtures are used. Requires the `anthropic` package and an API key in
+ANTHROPIC_API_KEY. --api-key KEY still works, with a warning: the key shows in `ps`
+output and in shell history.
 """
 import argparse
 import os
@@ -64,10 +65,13 @@ def list_models(client) -> None:
         print(model.id)
 
 
+API_KEY_HELP = ("Anthropic API key. Prefer the ANTHROPIC_API_KEY variable: a key on the command "
+                "line shows in `ps` output and in shell history")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.strip())
-    parser.add_argument("--api-key", default=os.environ.get("ANTHROPIC_API_KEY"),
-                        help="Anthropic API key (or set ANTHROPIC_API_KEY)")
+    parser.add_argument("--api-key", default=None, help=API_KEY_HELP)
     parser.add_argument("--model", default=os.environ.get("ANTHROPIC_MODEL"),
                         help="model id for count_tokens (or set ANTHROPIC_MODEL)")
     parser.add_argument("--list-models", action="store_true",
@@ -81,6 +85,11 @@ def main(argv=None):
     if not anthropic:
         print("Error: anthropic package not installed. Install with: pip install anthropic", file=sys.stderr)
         return 1
+    if args.api_key:
+        print("Warning: a key given with --api-key shows in `ps` and in shell history; "
+              "set ANTHROPIC_API_KEY instead", file=sys.stderr)
+    else:
+        args.api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not args.api_key:
         print("Error: Anthropic API key required (--api-key or ANTHROPIC_API_KEY)", file=sys.stderr)
         return 1
