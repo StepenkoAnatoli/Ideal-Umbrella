@@ -1,4 +1,4 @@
-# Resume point: PR #38 reviewer rounds; G1-G5 and round 2 (R2-1 to R2-9) fixed; round 3 running
+# Resume point: PR #38 reviewer rounds; G1-G5, round 2 and round 3 (R3-1 to R3-10) fixed; round 4 running
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -16,7 +16,8 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - run_tests: 35/35;
   - pyflakes: clean;
   - the cloud-setup tests as `nobody`: 23 passed, 1 skipped (chown test, root only).
-- Round 3 reviewer runs on 86a492e; output in the session scratchpad (round3/findings.md), lost if the session ends: rerun a round instead.
+- Round 3 (10 findings: 1 medium, 9 low) fixed in 27262c1; recorded in the report. Checks there: pytest 2142 passed, 17 skipped; run_tests 35/35; pyflakes clean; as `nobody` 31 passed, 1 skipped.
+- Round 4 reviewer runs on 27262c1; output in the session scratchpad (round4/findings.md), lost if the session ends: rerun a round instead.
 
 ## Standing request from the user (2026-11-03)
 - Keep running reviewer rounds until a round finds only 1 low (or nothing), then stop.
@@ -33,7 +34,8 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - Markers found by a two-pass awk mirroring install.py find_section/_fenced (order, fences, trailing whitespace); no recorded-hash fallback (the shell has no install record).
   - The body runs in `( ... ) || true` so a host setup script goes on, under set -e too.
   - A file not owned by the runner's user and group, or hard-linked, is written in place.
-- keyline: אף not counted in "אף על פי" / "אף כי"; אל and verb across any whitespace; niqqud (POINTS) stripped for negations and hedges.
+- keyline: אף not counted in "אף על פי" / "אף כי" / "אף ש…" / "על אף" (space, maqaf or hyphen; ש-nouns listed in AF_NOUNS still count); calendar names and hedges matched on pointless text with `\s+` between words; אל and verb across any whitespace; niqqud (POINTS) stripped for negations and hedges.
+- cloud-setup.sh stays busybox-safe: `stat -c %a` for the mode, a dangling link followed by hand; `set +C` in the subshell; BOM handled on line 1 in both passes.
 - Mode-dependent tests skip as root. Verify them as `nobody` on a copy of the tree:
   - `git ls-files -z | xargs -0 cp --parents -t $T`;
   - `chown -R nobody $T`;
