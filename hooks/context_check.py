@@ -1,7 +1,8 @@
 """Ideal-Umbrella: show what a session costs, and remind Claude to hand a long chat
 over to a fresh session.
 
-Hook for UserPromptSubmit (and optionally PostToolUse). It reads the session
+Hook for UserPromptSubmit (and optionally PostToolUse; wired to any other event it sends the
+hand-off notice as a systemMessage only, since only these two take additionalContext). It reads the session
 transcript, takes the context size of the last main-chain model call and, once
 that passes the threshold, adds a short note for Claude. It speaks again only
 after the context has grown by another STEP tokens, and resets after compaction.
@@ -179,6 +180,10 @@ def context_tokens(path, limit=None):
     return last_measure(path, limit)[0]
 
 
+# The events whose hookSpecificOutput takes additionalContext and that this hook is wired to.
+CONTEXT_EVENTS = ("UserPromptSubmit", "PostToolUse")
+
+
 def last_measure(path, limit=None):
     """(tokens, compacted): the context size at the last main-chain call, or after the last
     compaction, and whether it came from a compact boundary (then it leaves out the system
@@ -344,17 +349,15 @@ def run():
     else:
         message = (f"Ideal-Umbrella: context about {n // 1000}k tokens; "
                    "a fresh session is due at the next step boundary.")
-    print(
-        json.dumps(
-            {
-                "systemMessage": message,
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "additionalContext": NOTE.format(k=n // 1000, t=threshold // 1000),
-                },
-            }
-        )
-    )
+    output = {"systemMessage": message}
+    # Only these events take additionalContext; on another (Stop, a hook wired by hand) the
+    # field could get the whole output refused, so the user still gets the message alone.
+    if event in CONTEXT_EVENTS:
+        output["hookSpecificOutput"] = {
+            "hookEventName": event,
+            "additionalContext": NOTE.format(k=n // 1000, t=threshold // 1000),
+        }
+    print(json.dumps(output))
 
 
 def main():

@@ -19,6 +19,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `hooks/context_check.py` sends `hookSpecificOutput.additionalContext` only on `UserPromptSubmit` and `PostToolUse`; wired to another event (`Stop`), it echoed that event's name into a field the event does not take, and the output could be refused with the notice in it (general review 44170ca, C6).
 - CI: the workflow token is read-only (`permissions: contents: read`), actions are pinned by commit SHA instead of a movable tag, tiktoken's o200k_base download is cached (`keyline/cache/tiktoken`) so an outage at its host no longer fails CI, and the JSON step parses every tracked `.json` file, `keyline/hooks-example.json` included (general review 44170ca, C3, C4, C5).
 - `keyline/keyline_hook.py --print-config` has an end-to-end test: the printed entry parses and its command runs from a folder whose name needs quoting (general review 44170ca, C2).
 - `keyline/keyline_lint.py` reads `keyline-allow.txt` files only up to the repository root, and never from a folder anyone may write to; a file planted in `/tmp` or above the repository whitelisted words for its notes. It checks the file with `os.stat`, like the hook (general review 44170ca, N4).
