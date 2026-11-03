@@ -41,8 +41,7 @@ def _without_our_hooks(entries):
         if not install._is_ours(entry):
             kept.append(entry)
             continue
-        others = [h for h in install._hook_entries(entry)
-                  if not (isinstance(h, dict) and "context_check.py" in str(h.get("command", "")))]
+        others = [h for h in install._hook_entries(entry) if not install._is_our_hook(h)]
         if others:
             entry = dict(entry)
             entry["hooks"] = others
@@ -134,8 +133,11 @@ def undo_settings(settings, template, record, evidence=None):
         notices.append("no install record; permissions.deny left as is")
 
     hooks = settings.get("hooks")
+    template_hooks = template.get("hooks") if isinstance(template, dict) else None
+    events = set(template_hooks) if isinstance(template_hooks, dict) else set()
     if isinstance(hooks, dict):
-        for event in list(hooks):
+        # Only the events the template names: a hook elsewhere is the user's, whatever it runs.
+        for event in [e for e in hooks if e in events]:
             entries = hooks[event]
             if not isinstance(entries, list):
                 continue
@@ -145,6 +147,15 @@ def undo_settings(settings, template, record, evidence=None):
                 hooks[event] = kept
                 if not kept and made(f"hooks.{event}"):
                     del hooks[event]
+        # A hook wired by hand to the installed file in another event (PostToolUse, which the
+        # hook supports) stays, but the file it runs is removed below: say so, or it is left
+        # running a missing file on every event without a word.
+        for event, entries in hooks.items():
+            if event not in events and isinstance(entries, list) \
+                    and any(install._is_ours(entry) for entry in entries):
+                notices.append(f"hooks.{event} runs ballast/context_check.py, which uninstall "
+                               "removes; that hook was added by hand, so it is left: delete it "
+                               "from settings.json")
         if not hooks and made("hooks"):
             del settings["hooks"]
     return changes, notices, left
@@ -666,6 +677,7 @@ def main(argv=None):
         # looked at.
         install.report_error(e, [], before_writes=True)
         return 1
+    install.warn_home_beside_config_dir(args.home, home)
     progress = []
     try:
         changes, notices = uninstall(home, dry_run=args.dry_run, progress=progress, config_dir=config_dir)

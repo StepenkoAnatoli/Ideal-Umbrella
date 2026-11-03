@@ -3,6 +3,12 @@ import pytest
 from conftest import ROOT, load_module, python_314_pathlib, refuse_looks_inside
 
 
+
+@pytest.fixture(autouse=True)
+def api_key(monkeypatch):
+    # The key comes from the variable, as the script's help says it should.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
 def test_fixture_path_points_at_keyline_tests():
     module = load_module("verify_tokens", "config/verify-tokens.py")
     assert module.FIXTURES == ROOT / "keyline" / "tests"
@@ -32,7 +38,7 @@ def test_unreadable_file_is_reported_not_raised(tmp_path, capsys, monkeypatch):
     folder.mkdir()
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
-    assert module.main(["--api-key", "k", "--model", "m", str(bad), str(folder), str(good)]) == 0
+    assert module.main(["--model", "m", str(bad), str(folder), str(good)]) == 0
     out = capsys.readouterr()
     assert "Traceback" not in out.err
     assert out.err.count("Error reading") == 2
@@ -61,7 +67,7 @@ def test_tiktoken_failure_is_one_error_and_exit_1(tmp_path, capsys, monkeypatch)
     for name in ("a.txt", "b.txt"):
         (tmp_path / name).write_text("fine\n", encoding="utf-8")
         files.append(str(tmp_path / name))
-    assert module.main(["--api-key", "k", "--model", "m", *files]) == 1
+    assert module.main(["--model", "m", *files]) == 1
     err = capsys.readouterr().err
     assert err.count("download failed") == 1 and "Error reading" not in err and "Traceback" not in err
 
@@ -78,7 +84,7 @@ def test_no_api_count_at_all_is_exit_1(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))   # without tiktoken too
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
-    assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
+    assert module.main(["--model", "m", str(good)]) == 1
     out = capsys.readouterr()
     assert "ERROR" in out.out and "no file was counted" in out.err
 
@@ -90,7 +96,7 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(tmp_path, capsys, mo
     for bom in (b"", b"\xef\xbb\xbf"):
         bad = tmp_path / "latin.txt"
         bad.write_bytes(bom + b"caf\xe9\n")
-        module.main(["--api-key", "k", "--model", "m", str(bad)])
+        module.main(["--model", "m", str(bad)])
         assert f"not UTF-8 (invalid continuation byte at byte {len(bom) + 3})" in capsys.readouterr().err
 
 
@@ -104,7 +110,7 @@ def test_a_missing_file_is_a_warning_and_the_rest_are_counted(tmp_path, capsys, 
     missing = tmp_path / "missing.txt"
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
-    assert module.main(["--api-key", "k", "--model", "m", str(missing), str(good)]) == 0
+    assert module.main(["--model", "m", str(missing), str(good)]) == 0
     out = capsys.readouterr()
     assert out.err == f"Warning: {missing} not found, skipping\n", out.err
     assert "good.txt" in out.out and "missing.txt" not in out.out
@@ -126,7 +132,7 @@ def test_a_file_that_cannot_be_looked_at_is_not_called_missing(tmp_path, capsys,
     if pathlib_kind == "3.14":
         python_314_pathlib(monkeypatch)
     refuse_looks_inside(hidden.parent, monkeypatch)
-    module.main(["--api-key", "k", "--model", "m", str(hidden), str(good)])
+    module.main(["--model", "m", str(hidden), str(good)])
     out = capsys.readouterr()
     assert "Traceback" not in out.err and "not found" not in out.err, out.err
     assert "Error reading" in out.err and "hidden.txt" in out.err and "good.txt" in out.out
@@ -140,7 +146,7 @@ def test_an_api_count_of_0_is_not_a_division_by_zero(tmp_path, capsys, monkeypat
     monkeypatch.setattr(module, "count_tiktoken", lambda text: (1, 1))
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
-    assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 1
+    assert module.main(["--model", "m", str(good)]) == 1
     out = capsys.readouterr()
     assert "n/a" in out.out and "no file was counted" in out.err, out
 
@@ -153,6 +159,19 @@ def test_a_tiktoken_count_of_0_is_not_a_division_by_zero(tmp_path, capsys, monke
     monkeypatch.setattr(module, "count_tiktoken", lambda text: (0, 0))
     good = tmp_path / "good.txt"
     good.write_text("fine\n", encoding="utf-8")
-    assert module.main(["--api-key", "k", "--model", "m", str(good)]) == 0
+    assert module.main(["--model", "m", str(good)]) == 0
     out = capsys.readouterr()
     assert "AVERAGE" in out.out and "Traceback" not in out.err, out
+
+
+def test_a_key_on_the_command_line_is_warned_about_and_the_variable_is_not(tmp_path, monkeypatch, capsys):
+    # A9: --api-key puts the key in `ps` output and in shell history, and nothing said so.
+    module = load_module("verify_tokens", "config/verify-tokens.py")
+    monkeypatch.setattr(module, "anthropic", type("A", (), {"Anthropic": lambda **kw: None}))
+    monkeypatch.setattr(module, "list_models", lambda client: None)
+    assert "ps" in module.API_KEY_HELP and "history" in module.API_KEY_HELP
+    assert module.main(["--api-key", "k", "--list-models"]) == 0
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    assert module.main(["--list-models"]) == 0
+    assert capsys.readouterr().err == ""

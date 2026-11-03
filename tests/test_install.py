@@ -30,7 +30,7 @@ def test_install_preserves_user_data_and_is_idempotent(install_module, tmp_path)
             "UserPromptSubmit": [{
                 "hooks": [
                     {"type": "command", "command": "bash my-own-hook.sh"},
-                    {"type": "command", "command": "python3 -I old/context_check.py", "timeout": 30},
+                    {"type": "command", "command": "python3 -I ~/.claude/ballast/context_check.py", "timeout": 30},
                 ]
             }]
         },
@@ -107,6 +107,36 @@ def test_missing_scalar_still_fails_verification(install_module, tmp_path):
     ok, issues, _ = install_module.verify(home)
     assert not ok
     assert any("autoCompactWindow is missing" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("command", ["python3 ~/tools/my_context_check.py --mine",
+                                     "python3 ~/tools/context_check.py"])
+def test_a_users_own_context_check_hook_beside_ours_verifies(install_module, tmp_path, capsys, command):
+    # Fresh review 4c3992c, F1: since A3, install leaves a user's own UserPromptSubmit hook that
+    # names context_check.py and adds ours beside it; verify still took that hook for ours and
+    # failed, so the install itself exited 1 after a good install.
+    home = tmp_path / "home"
+    settings_file(home).parent.mkdir(parents=True)
+    own = {"type": "command", "command": command}
+    settings_file(home).write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [own]}]}}),
+                                   encoding="utf-8")
+    assert install_module.main(["--home", str(home)]) == 0, capsys.readouterr()
+    ok, issues, _ = install_module.verify(home)
+    assert ok, issues
+    hooks = json.loads(settings_file(home).read_text(encoding="utf-8"))["hooks"]["UserPromptSubmit"]
+    assert own in [h for entry in hooks for h in entry["hooks"]]
+
+
+def test_a_context_check_hook_that_is_not_ours_alone_still_fails_verification(install_module, tmp_path):
+    # The loose match stays for the report: with no hook of ours, one naming another
+    # context_check.py is named as pointing elsewhere.
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["hooks"]["UserPromptSubmit"] = [{"hooks": [{"type": "command", "command": "python3 /x/context_check.py"}]}]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok and any("does not point at" in i and "/x/context_check.py" in i for i in issues), issues
 
 
 @pytest.mark.parametrize("record, ok", [(None, True), ("{not json", False)], ids=["no-record", "corrupt-record"])
@@ -1043,10 +1073,10 @@ def test_a_symlinked_claude_md_reuses_the_backup_of_a_run_that_failed(install_mo
     link_or_skip(claude / "CLAUDE.md", dotfiles / "CLAUDE.md")
     write = install_module._write_bytes
 
-    def fail_claude_md(path, data):
+    def fail_claude_md(path, data, *mode):
         if Path(path).resolve() == (dotfiles / "CLAUDE.md").resolve():
             raise OSError(28, "No space left on device")
-        write(path, data)
+        write(path, data, *mode)
     monkeypatch.setattr(install_module, "_write_bytes", fail_claude_md)
     with pytest.raises(OSError):
         install_module.install(home)
@@ -1091,3 +1121,58 @@ def test_the_offset_of_a_byte_that_is_not_utf8_counts_a_bom(install_module, tmp_
     path.write_bytes(bom + body)
     assert install_module.main(["--home", str(home)]) == 1
     assert f"at byte {len(bom) + body.index(0xE9)})" in capsys.readouterr().err
+
+
+def test_a_duplicate_key_in_settings_stops_the_install(install_module, tmp_path):
+    # A8: the second "permissions" replaced the first on the rewrite, and nothing said so.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    original = '{"permissions": {"allow": ["A"]}, "permissions": {"deny": ["B"]}}\n'
+    settings_file(home).write_text(original, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate key 'permissions'"):
+        install_module.install(home)
+    assert settings_file(home).read_text(encoding="utf-8") == original
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_a_backup_and_a_temp_file_are_never_more_open_than_the_file(install_module, tmp_path, monkeypatch):
+    # A6: a 0600 settings.json (its env may hold a token) had its backup and temp file at 0644
+    # until chmod or copystat ran; a copystat that failed left the backup at 0644.
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    settings_file(home).write_text('{"env": {"TOKEN": "secret"}}\n', encoding="utf-8")
+    os.chmod(settings_file(home), 0o600)
+    seen = []
+    real = install_module._new_temp
+
+    def spy(*args, **kwargs):
+        fd, tmp = real(*args, **kwargs)
+        seen.append(os.stat(tmp).st_mode & 0o777)
+        return fd, tmp
+
+    monkeypatch.setattr(install_module, "_new_temp", spy)
+    old = os.umask(0o022)
+    try:
+        backup = install_module._backup(settings_file(home))
+        install_module._write_json(settings_file(home), {"env": {"TOKEN": "secret"}, "x": 1})
+    finally:
+        os.umask(old)
+    assert seen == [0o600, 0o600]
+    assert os.stat(backup).st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("verify", [False, True])
+def test_home_with_claude_config_dir_set_says_which_folder_claude_code_reads(
+        install_module, tmp_path, monkeypatch, capsys, verify):
+    # A5: --home installs into <home>/.claude, which Claude Code does not read while
+    # CLAUDE_CONFIG_DIR is set, and --verify-only still said OK.
+    config = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+    home = tmp_path / "home"
+    if verify:
+        install_module.main(["--home", str(home)])
+        capsys.readouterr()
+    install_module.main(["--home", str(home)] + (["--verify-only"] if verify else []))
+    err = capsys.readouterr().err
+    assert f"CLAUDE_CONFIG_DIR is set ({config})" in err
+    assert str(home / ".claude") in err

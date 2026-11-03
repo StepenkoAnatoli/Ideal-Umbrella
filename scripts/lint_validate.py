@@ -6,7 +6,6 @@ the corpus folder (default: the folder that holds this repository, so sibling re
 outside hidden folders and node_modules/, capped at 400 files.
 """
 import collections
-import glob
 import importlib.util
 import io
 import os
@@ -31,10 +30,18 @@ def flags(mod, words, text):
 
 
 def corpus_files(folder):
-    pattern = os.path.join(glob.escape(str(folder)), "**", "*.md")
-    files = [f for f in sorted(glob.glob(pattern, recursive=True))
-             if "node_modules" not in f and "/.git/" not in f.replace("\\", "/")]
-    return files[:MAX_FILES]
+    """Up to MAX_FILES .md files below folder, in sorted walk order. Folder links are not
+    followed (a pnpm node_modules has link cycles), and hidden folders and node_modules are
+    not entered; the walk stops at MAX_FILES."""
+    files = []
+    for top, dirs, names in os.walk(str(folder), followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "node_modules")
+        for name in sorted(names):
+            if name.endswith(".md") and not name.startswith("."):
+                files.append(os.path.join(top, name))
+                if len(files) >= MAX_FILES:
+                    return files
+    return files
 
 
 def main(argv=None):

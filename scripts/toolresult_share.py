@@ -41,6 +41,7 @@ def short(name):
 
 names, res, cnt, other = {}, collections.Counter(), collections.Counter(), collections.Counter()
 big = collections.Counter()
+seen_uuids = set()   # a resumed session repeats the lines it continues: count each once
 for path in sys.argv[1:]:
     try:
         f = open(path, encoding="utf-8-sig", errors="replace")   # -sig: a BOM would lose line 1
@@ -54,6 +55,11 @@ for path in sys.argv[1:]:
                 continue
             if not isinstance(e, dict) or e.get("isSidechain"):
                 continue
+            u = e.get("uuid")
+            if isinstance(u, str) and u:
+                if u in seen_uuids:
+                    continue
+                seen_uuids.add(u)
             m = e.get("message")
             if not isinstance(m, dict):
                 continue

@@ -75,6 +75,16 @@ def layout(home, config_dir=None):
     }
 
 
+def warn_home_beside_config_dir(home_arg, home):
+    """--home wins over CLAUDE_CONFIG_DIR, but Claude Code reads only CLAUDE_CONFIG_DIR while it
+    is set: an install, a verify that passes or an uninstall under <home>/.claude changes
+    nothing it sees, so say so on stderr."""
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    if home_arg is not None and config:
+        print(f"Warning: CLAUDE_CONFIG_DIR is set ({config}); Claude Code reads that folder, not "
+              f"{home / '.claude'}, which --home uses. Unset it or drop --home.", file=sys.stderr)
+
+
 def target(home_arg):
     """(home, config_dir) for a --home argument. An explicit --home installs under
     <home>/.claude; without it, CLAUDE_CONFIG_DIR (the folder Claude Code reads instead of
@@ -187,17 +197,34 @@ def _hook_entries(entry):
     return hooks if isinstance(hooks, list) else []
 
 
+# The installed hook is ballast/context_check.py in the Claude folder (also quoted, or with
+# Windows separators). A command that merely names some other context_check.py is the user's.
+OUR_HOOK = re.compile(r"""(?:^|[\\/])ballast[\\/]context_check\.py(?=$|[\s"'])""")
+
+
+def _is_our_hook(hook):
+    return isinstance(hook, dict) and bool(OUR_HOOK.search(str(hook.get("command", ""))))
+
+
 def _is_ours(entry):
-    return any(isinstance(h, dict) and "context_check.py" in str(h.get("command", ""))
-               for h in _hook_entries(entry))
+    return any(_is_our_hook(h) for h in _hook_entries(entry))
 
 
-def has_our_hook(settings):
-    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry."""
+def _template_events():
+    """The hook events the template names: the only ones the Ideal-Umbrella hook sits in."""
+    hooks = _read_json(USER_SETTINGS).get("hooks")
+    return frozenset(hooks) if isinstance(hooks, dict) else frozenset()
+
+
+def has_our_hook(settings, events=None):
+    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry in one
+    of the template's events."""
     hooks = settings.get("hooks") if isinstance(settings, dict) else None
     if not isinstance(hooks, dict):
         return False
-    return any(_is_ours(entry) for entries in hooks.values() if isinstance(entries, list)
+    events = _template_events() if events is None else events
+    return any(_is_ours(entry) for event, entries in hooks.items()
+               if event in events and isinstance(entries, list)
                for entry in entries)
 
 
@@ -233,7 +260,7 @@ FILE_FIELDS = ("settings_created", "deny_added", "created")
 def _template_hook(entries):
     for entry in entries:
         for hook in _hook_entries(entry):
-            if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", "")):
+            if _is_our_hook(hook):
                 return hook
     return None
 
@@ -335,7 +362,7 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
             updated = False
             for entry in ours:
                 for hook in _hook_entries(entry):
-                    if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", "")):
+                    if _is_our_hook(hook):
                         if hook.get("command") != replacement["command"]:
                             hook["command"] = replacement["command"]
                             updated = True
@@ -387,6 +414,17 @@ def _bad_byte(path, e):
     return f"{e.reason} at byte {e.start + bom}"
 
 
+def _no_duplicates(pairs):
+    """json.load's object_pairs_hook: a key given twice is an error. json.load would keep the
+    last one, and the rewrite would drop the first without a word."""
+    data = {}
+    for key, value in pairs:
+        if key in data:
+            raise ValueError(f"duplicate key {key!r}")
+        data[key] = value
+    return data
+
+
 def _read_json(path):
     """Read a JSON object; a file that cannot be read, is not UTF-8, not JSON, not an object or
     not writable back is a ValueError naming the file, which main() reports as one line before
@@ -394,7 +432,7 @@ def _read_json(path):
     try:
         # Text mode: bare CR and CRLF line ends are line ends in a JSON error's position.
         with open(path, encoding="utf-8-sig") as f:
-            data = json.load(f)
+            data = json.load(f, object_pairs_hook=_no_duplicates)
     except UnicodeDecodeError as e:
         raise ValueError(f"{path} is not UTF-8 ({_bad_byte(path, e)}); save it as UTF-8 first") from None
     except ValueError as e:
@@ -461,7 +499,8 @@ def _backup(path, backup=None):
     if not (backup.is_file() and not backup.is_symlink() and backup.read_bytes() == data):
         # Whole or not at all, like every other write: a copy cut short by a full disk would
         # leave a truncated backup that no record names and no uninstall removes.
-        _write_bytes(backup, data)
+        # Created with the file's own mode, so a 0600 file is never copied into a 0644 one.
+        _write_bytes(backup, data, os.stat(path).st_mode & 0o777)
         shutil.copystat(path, backup)
         # The backup is the installer's to delete: a read-only mode copied from a read-only
         # file would stop every uninstall at it on Windows, which cannot delete such a file.
@@ -497,17 +536,18 @@ def remove(path):
         raise
 
 
-def _new_temp(directory, prefix):
+def _new_temp(directory, prefix, mode=0o666):
     """Create a new file in directory with the mode a plain write gives (0666 less the umask,
     applied by the kernel), not mkstemp's private 0600; returns (fd, path). The umask is not
     read: reading it means setting it, which leaves a window where another thread's files are
-    created unmasked."""
+    created unmasked. A narrower mode (the mode of the file the temp file replaces) keeps the
+    data from ever sitting in a file more open than that one."""
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     for _ in range(100):
         tmp = os.path.join(directory, prefix + os.urandom(4).hex())
         try:
-            return os.open(tmp, flags, 0o666), tmp
+            return os.open(tmp, flags, mode), tmp
         except FileExistsError:
             continue
     raise FileExistsError(errno.EEXIST, "no free temp file name", os.path.join(directory, prefix))
@@ -573,7 +613,7 @@ def refuse_read_only(path):
         raise PermissionError(errno.EACCES, "the file is read-only; make it writable first", str(path))
 
 
-def _write_bytes(path, data):
+def _write_bytes(path, data, mode=0o666):
     """Write a user file whole or not at all: to a temp file beside it, then rename over it.
     A write that fails part way (disk full, a killed process) leaves the old file as it was
     instead of a truncated one. Writes through a symlink (dotfiles, stow)
@@ -583,12 +623,14 @@ def _write_bytes(path, data):
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     refuse_read_only(path)
-    fd, tmp = _new_temp(path.parent, f".{path.name}-")
+    # The temp file starts no more open than the file it replaces (mode, for a new file).
+    current = path.stat().st_mode & 0o7777 if path.exists() else None
+    fd, tmp = _new_temp(path.parent, f".{path.name}-", (current if current is not None else mode) & 0o777)
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
-        if path.exists():
-            os.chmod(tmp, path.stat().st_mode & 0o7777)
+        if current is not None:
+            os.chmod(tmp, current)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -1268,21 +1310,24 @@ def verify(home, config_dir=None):
                 issues.append(f"hooks.UserPromptSubmit is not a list: {hooks!r}")
                 hooks = []
         found = False
-        for entry in hooks:
-            for hook in _hook_entries(entry):
-                if not isinstance(hook, dict):
-                    continue
-                command = str(hook.get("command", ""))
-                if "context_check.py" in command:
-                    found = True
-                    # The installer writes the path quoted, so a path with a quote in it
-                    # (it's/.claude/...) only appears in its quoted form.
-                    if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
-                        issues.append(f"Hook command does not point at {paths['hook']}: {command}")
-                    exe = _interpreter(command)
-                    if exe and not _runnable(exe):
-                        issues.append(f"Hook interpreter not found: {exe}; run install.py again "
-                                      "to point the hook at the current Python")
+        named = [hook for entry in hooks for hook in _hook_entries(entry)
+                 if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", ""))]
+        # Our hook when there is one: install leaves a user's own hook that names another
+        # context_check.py beside it, and that one is not checked. With none of ours, the loose
+        # match stays on purpose: a hook that names another context_check.py is reported as
+        # pointing elsewhere (it only reports; install and uninstall leave it alone).
+        named = [hook for hook in named if _is_our_hook(hook)] or named
+        for hook in named:
+            found = True
+            command = str(hook.get("command", ""))
+            # The installer writes the path quoted, so a path with a quote in it
+            # (it's/.claude/...) only appears in its quoted form.
+            if str(paths["hook"]) not in command and quote(paths["hook"]) not in command:
+                issues.append(f"Hook command does not point at {paths['hook']}: {command}")
+            exe = _interpreter(command)
+            if exe and not _runnable(exe):
+                issues.append(f"Hook interpreter not found: {exe}; run install.py again "
+                              "to point the hook at the current Python")
         if not found:
             issues.append("Ideal-Umbrella hook not found in UserPromptSubmit")
         risk = shell_risk(paths["hook"])
@@ -1354,6 +1399,7 @@ def main(argv=None):
         # looked at.
         report_error(e, [], before_writes=True)
         return 1
+    warn_home_beside_config_dir(args.home, home)
 
     if not args.verify_only:
         print("Installing Ideal-Umbrella user-level configuration...")

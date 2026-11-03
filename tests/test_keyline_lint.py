@@ -273,3 +273,78 @@ def test_a_list_marker_needs_content_after_it(line, what, furniture):
     words = set(line.replace(".", " ").split()) - {"-", "*", "+"}
     findings = [f for _, f in keyline_lint.lint_text(line, words, set())]
     assert any(what in f for f in findings) == furniture
+
+
+def test_a_non_ascii_word_is_not_split_into_ascii_fragments():
+    # B5: "kämpft" used to give "abbreviation: 'mpft'"; the rule covers ASCII words only.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    for word in ("kämpft", "naïve", "façade", "über"):
+        assert list(keyline_lint.lint_text(f"the {word} test\n", {"the", "test"}, set())) == []
+
+
+@pytest.mark.parametrize("sep", [" ", " ", "\x85", "\x0c", "\x1c"])
+def test_only_a_newline_ends_a_line(sep):
+    # B6: str.splitlines() also splits on U+2028, NEL, form feed and others, so line numbers
+    # drifted and a "- " after the separator was taken for a bullet.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    text = f"one{sep}- two\nthree\n**bold**\n"
+    assert list(keyline_lint.lint_text(text, {"one", "two", "three", "bold"}, set())) == [
+        (3, "furniture: bold '**'")]
+
+
+@pytest.mark.parametrize("text, line", [
+    ("Title\n=====\n", 2),
+    ("Title\n---\n", 2),
+    ("text\n\nTitle\n  ===  \n", 4),
+    ("#\n", 1),
+    ("  ######\n", 1),
+])
+def test_setext_headings_and_a_bare_hash_are_headers(text, line):
+    # B7: a setext heading and a lone "#" passed the lint.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    findings = list(keyline_lint.lint_text(text, {"title", "text"}, set()))
+    assert (line, "furniture: header") in findings
+
+
+@pytest.mark.parametrize("text", ["\n---\n", "---\n", "a - b\n", "#tag\n", "x = 1\n"])
+def test_a_rule_or_a_hash_word_is_not_a_header(text):
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    findings = list(keyline_lint.lint_text(text, {"a", "b", "tag", "x"}, set()))
+    assert not any("header" in m for _, m in findings)
+
+
+def test_an_allow_file_above_the_repository_root_is_not_read(tmp_path):
+    # N4: every parent folder up to "/" was searched, so a keyline-allow.txt above the
+    # repository (in /tmp, or a shared home) whitelisted words for its notes.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    (tmp_path / keyline_lint.ALLOW_NAME).write_text("mgmt\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "notes").mkdir()
+    (repo / keyline_lint.ALLOW_NAME).write_text("srvc\n", encoding="utf-8")
+    (repo / "notes" / keyline_lint.ALLOW_NAME).write_text("alrt\n", encoding="utf-8")
+    allow = keyline_lint.load_allow(repo / "notes" / "n.txt", ())
+    assert {"srvc", "alrt"} <= allow and "mgmt" not in allow
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_an_allow_file_in_a_world_writable_folder_is_not_read(tmp_path):
+    # N4: a planted /tmp/keyline-allow.txt whitelisted words for every note under /tmp.
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    shared = tmp_path / "shared"
+    (shared / "notes").mkdir(parents=True)
+    (shared / keyline_lint.ALLOW_NAME).write_text("mgmt\n", encoding="utf-8")
+    (shared / "notes" / keyline_lint.ALLOW_NAME).write_text("srvc\n", encoding="utf-8")
+    os.chmod(shared, 0o1777)
+    try:
+        allow = keyline_lint.load_allow(shared / "notes" / "n.txt", ())
+    finally:
+        os.chmod(shared, 0o755)
+    assert "srvc" in allow and "mgmt" not in allow
+
+
+def test_a_folder_named_like_the_allow_file_is_skipped(tmp_path):
+    keyline_lint = load_module("keyline_lint", "keyline/keyline_lint.py")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / keyline_lint.ALLOW_NAME).mkdir()
+    assert keyline_lint.load_allow(tmp_path / "n.txt", ()) == keyline_lint.BUILTIN_ALLOW

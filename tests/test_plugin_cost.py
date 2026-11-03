@@ -201,3 +201,15 @@ def test_mcp_servers_that_are_not_a_mapping_count_as_none(plugin_cost, tmp_path,
     make_plugin(tmp_path, "alpha", mcp=servers)
     (row,) = plugin_cost.plugin_rows(tmp_path, _CharEncoding())
     assert row[3] == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlinks need a privilege on Windows")
+def test_a_link_to_a_folder_above_the_app_folder_is_not_walked(plugin_cost, tmp_path):
+    # N5: a link to "/" or to the home folder made the walk cover the whole tree above.
+    app = tmp_path / "Claude"
+    make_plugin(app, "plain")
+    make_plugin(tmp_path / "above", "outside")
+    (app / "up").symlink_to(tmp_path, target_is_directory=True)
+    (app / "root").symlink_to("/", target_is_directory=True)
+    names = sorted(os.path.basename(r) for r in plugin_cost.plugin_roots(app))
+    assert names == ["plain"]

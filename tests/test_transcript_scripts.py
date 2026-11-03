@@ -1,4 +1,5 @@
 """The three small transcript scripts: usage, non-object lines, empty input, a normal run."""
+import json
 import subprocess
 import sys
 
@@ -147,3 +148,20 @@ def test_toolresult_share_counts_a_role_that_is_not_text_as_unknown(tmp_path, ro
     result = run("toolresult_share.py", str(write_jsonl(tmp_path / "t.jsonl", events)))
     assert result.returncode == 0 and "Traceback" not in result.stderr, result.stderr
     assert "?_text" in result.stdout, result.stdout
+
+
+@pytest.mark.parametrize("script", SCRIPTS)
+def test_a_resumed_session_that_repeats_earlier_lines_counts_them_once(script, tmp_path):
+    # Review general-44170ca, N2: a resumed session's file can repeat the history of the one
+    # it continues. A line whose uuid was already read is the same event and is counted once.
+    events = [{"uuid": f"u{i}", **e} for i, e in enumerate(
+        json.loads(line) for line in transcript(tmp_path).read_text(encoding="utf-8").splitlines())]
+    first = write_jsonl(tmp_path / "first.jsonl", events)
+    resumed = write_jsonl(tmp_path / "resumed.jsonl", events)
+    expected = run(script, str(first))
+    result = run(script, str(first), str(resumed))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected.stdout
+    # Lines without a uuid are all counted, as before.
+    plain = run(script, str(transcript(tmp_path)), str(transcript(tmp_path)))
+    assert plain.stdout != expected.stdout

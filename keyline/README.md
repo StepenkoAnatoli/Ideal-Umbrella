@@ -123,10 +123,16 @@ must never report a vacuous `PASS` on a source whose claims it did not understan
 
 Negations counted, English and Hebrew together in both texts:
 
-- English: no, not, never, without, none (the spec list), plus cannot and n't contractions.
-- Hebrew: לא, אין, ללא, אף, מעולם (the spec list), plus ו/ש/וש/כש prefixes on לא, אין and ללא, and
-  the inflected forms of אין (אינו, אינה, אינם, אינן, אינני, איננו, אינך). Without these the
-  panel's own Hebrew prose rendering counts 1 negation instead of 4 and fails falsely.
+- English: no, not, never, without, none (the spec list), plus cannot and n't contractions, with
+  a straight or a typographic apostrophe (`can't`, `can’t`, `canʼt`).
+- Hebrew: לא, אין, ללא, אף, מעולם (the spec list), plus בלי, the inflected forms of אין (אינו,
+  אינה, אינם, אינן, אינני, איננו, אינך), ו/ש/וש/כש prefixes on all of these but אף and מעולם
+  (ולא, שאינו, ובלי), and the imperative אל or ואל before a verb that starts with ת (אל תפרסו;
+  elsewhere אל is "to", and so it is before תוך, תחת, תל and the ת-nouns docs put after "to",
+  such as תיקיית, תפריט, תבנית, תצורת: אל תוך, "into"; אל תיקיית הפרויקט). Another noun after אל
+  that starts with ת still counts, so a rendering with such a phrase can hide a lost negation;
+  the list is `AL_TO` in `keyline_check.py`. Without these the panel's own Hebrew prose rendering counts 1 negation
+  instead of 4 and fails falsely.
 
 ## keyline_lint.py
 
@@ -136,8 +142,10 @@ python keyline_lint.py notes/*.txt
 
 - Furniture: a line starting with a bullet (`- `, `* `, `+ `), a numbered item of one or two digits
   (`1. `, `12) `; `2024. ` is a year, not an item), each with content after it (`12.  ` alone is
-  not an item), or a header (`#` to `######`), or any `**` or backtick.
-- Abbreviations: a lowercase ASCII word that is not one o200k_base token (with its leading space)
+  not an item), or a header (`#` to `######`, a lone `#` included, or a `===`/`---` line under a
+  line of text), or any `**` or backtick. Lines end at `\n` only, so U+2028 or a form feed does
+  not shift the line numbers.
+- Abbreviations: a lowercase ASCII word (a word with any non-ASCII letter, `kämpft`, is skipped) that is not one o200k_base token (with its leading space)
   AND has the shape of an invented abbreviation: a numeronym (k8s, i18n, a11y), 2-5 letters with
   no vowel (rst, mgmt), or 4-5 letters with one vowel (alrt, srvc). Words of 6+ letters, anything
   containing a digit (cp1252, sha256, git hashes), and plurals of a one-token word (diffs, slugs)
@@ -151,7 +159,9 @@ python keyline_lint.py notes/*.txt
 - Common tool and format names (mcp, npm, npx, pnpm, venv, pwsh, docx, stdout...) are allowed by a
   built-in list in `keyline_lint.py`. Other real names go in a `keyline-allow.txt`, one or more words per line
   (`#` starts a comment).
-  Every such file in the note's folder or a parent folder is read. `--no-allow` ignores those files
+  Every such file from the note's folder up to the repository root (the first folder holding
+  `.git`; outside a repository, up to `/`) is read, except in a folder anyone may write to
+  (`/tmp`), where a planted file would whitelist words for every note below it. `--no-allow` ignores those files
   and the built-in list; `--allow FILE` adds one.
 
 ## measure.py
@@ -188,7 +198,8 @@ cannot be read or is not a regular file or folder (a named pipe).
    such as `.obsidian/`), and only acts on `.txt`, `.md`, `.keyline` or
    extension-less files. To watch specific files
    instead, append `--watch PATTERN` to the command (repeatable; fnmatch, case-insensitive; an
-   absolute pattern matches the absolute path, a relative one the path from the project dir;
+   absolute pattern matches the absolute path, a relative one the path from the project dir, each
+   read both as written and with symlinks resolved, so a repo reached through a link still matches;
    the suffix rule still applies, so a watched `.py` file is passed over).
    Example: a repo whose `.claude/settings.local.json` appends `--watch /path/to/repo/PROGRESS.md`
    checks only that file, wherever it is written from. A `--watch` without a pattern, with a
@@ -268,6 +279,8 @@ Two panel claims do not reproduce exactly:
   is an extension, and so is a name pair with a hyphen (`Paris-Berlin`). It also lets a name gain
   a slash pair (`Jean-Luc/Picard` for `Jean-Luc`), and a hyphenated pair of a time, date or version
   with another of its family (`v2.1-v2.3` for `v2.1`) passes as a range.
+- The check reads the rendering as text, not as rendered markdown: a number, name or negation
+  that sits only inside an HTML comment (`<!-- not -->`) counts, though a reader never sees it.
 - Negations are counted, not aligned. A rendering that drops one negation and adds another
   elsewhere passes. Hebrew אף also means "even", so it can be over-counted. A
   negation inside underscore emphasis (`_not_`) counts; `No. 5` is a number sign, not a negation,

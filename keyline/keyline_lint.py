@@ -2,8 +2,9 @@
 
 Furniture: a line starting with a bullet ('- ', '* ', '+ '), a numbered item of one or two digits
 ('1. ', '12) '; '2024. ' is a year, not an item),
-or a header ('# ' to '###### '), or any line containing '**' or a backtick.
-Abbreviations: a lowercase ASCII word that is not a single o200k_base token (with its leading
+or a header ('#' to '######', alone or before a space, or a '===' / '---' line under a line of
+text), or any line containing '**' or a backtick. Lines end at '\n' only.
+Abbreviations: a lowercase ASCII word (a word with a non-ASCII letter is skipped) that is not a single o200k_base token (with its leading
 space, as it appears mid-line) AND has the shape of an invented abbreviation:
   - a numeronym (k8s, i18n, a11y), or
   - 2-5 letters with no vowel (rst, xh, mgmt, tmpl), or 4-5 letters with one vowel (alrt, srvc).
@@ -17,7 +18,8 @@ The single-token word list is built once with tiktoken and cached in cache/.
 
 Project words that are real but split into several tokens (tool names such as 'kubectl') go in a
 keyline-allow.txt, one or more words per line (split on spaces; '#' starts a comment); every
-keyline-allow.txt in the file's folder or any parent folder is read.
+keyline-allow.txt from the file's folder up to the repository root (the first folder with .git) is
+read, except in a folder anyone may write to (/tmp).
 
 Usage:
   python keyline_lint.py FILE [FILE ...]
@@ -29,6 +31,7 @@ Exit: 0 clean, 1 findings, 2 usage or read error.
 import errno
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -42,7 +45,7 @@ FURNITURE = [
     # is a number, and "2024. ..." is a year, not a list.
     (re.compile(r"^[ \t]*[-*+][ \t]+(?=\S)"), "bullet"),
     (re.compile(r"^[ \t]*\d{1,2}[.)][ \t]+(?=\S)"), "numbered item"),
-    (re.compile(r"^\s*#{1,6}\s"), "header"),
+    (re.compile(r"^\s*#{1,6}(?:\s|$)"), "header"),
     (re.compile(r"\*\*"), "bold '**'"),
     (re.compile(r"`"), "backtick"),
 ]
@@ -57,6 +60,8 @@ chdir rmdir mkdir chmod chown stdin stdout stderr docx xlsx pptx csv tsv httpx g
 """.split())
 # A chunk with any of these is an identifier, path, URL, number or expression: not checked.
 IDENT_CHARS = re.compile(r"[/\\_.=@#$%&*+<>|~]")
+# A setext heading underline: "===" or "---" (up to three spaces in) under a line of text.
+SETEXT = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 
 
 class TiktokenMissing(ImportError):
@@ -150,16 +155,32 @@ def load_words():
     return words
 
 
+def allow_files(path):
+    """The keyline-allow.txt files from the note's folder up to the repository root (the first
+    folder holding .git) or, outside a repository, up to "/". A folder anyone may write to
+    (/tmp) is passed over: a file planted there would whitelist words for every note below it."""
+    found = []
+    for d in [Path(path).resolve().parent, *Path(path).resolve().parents]:
+        try:
+            # os.stat, not is_file(): on Python 3.14 is_file() says False for a file it cannot
+            # look at, which would drop the allow file silently.
+            shared = os.name != "nt" and os.stat(d).st_mode & stat.S_IWOTH
+            if not shared and stat.S_ISREG(os.stat(d / ALLOW_NAME).st_mode):
+                found.append(d / ALLOW_NAME)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        if os.path.lexists(d / ".git"):
+            break
+    return found
+
+
 def load_allow(path, extra, use_files=True):
     allow = set(BUILTIN_ALLOW) if use_files else set()
     files = list(extra)
     if use_files:
-        for d in [Path(path).resolve().parent, *Path(path).resolve().parents]:
-            f = d / ALLOW_NAME
-            if f.is_file():
-                files.append(f)
+        files.extend(allow_files(path))
     for f in files:
-        for line in read(f).splitlines():
+        for line in read(f).split("\n"):
             allow.update(line.split("#", 1)[0].lower().split())
     return allow
 
@@ -202,16 +223,27 @@ def looks_invented(part, words=frozenset()):
 def lint_text(text, words, allow):
     """Yield (line_no, message) findings."""
     reason = None                             # why a word was not counted, found once
-    for no, line in enumerate(text.splitlines(), 1):
+    # Lines end at "\n" only (open() has already turned "\r\n" into it): str.splitlines() also
+    # splits on U+2028, NEL, form feed and others, which shifts every later line number.
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    previous = ""
+    for no, line in enumerate(lines, 1):
         for pat, what in FURNITURE:
             if pat.search(line):
                 yield no, f"furniture: {what}"
+        if previous.strip() and SETEXT.match(line):
+            yield no, "furniture: header"
+        previous = line
         for chunk in line.split():
             chunk = chunk.strip(STRIP)
             if not chunk or IDENT_CHARS.search(chunk) or re.search(r"[A-Z]", chunk):
                 continue                      # identifier, path, number, CamelCase, name
             if chunk[0].isdigit():
                 continue                      # 5xx, 2nd, 30k
+            if not chunk.isascii():
+                continue                      # kämpft, naïve: not an ASCII word, so not ruled on
             for part in re.findall(r"[a-z0-9]+", chunk):
                 if part[0].isdigit() or part in words or part in allow:
                     continue
