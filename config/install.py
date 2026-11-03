@@ -187,17 +187,34 @@ def _hook_entries(entry):
     return hooks if isinstance(hooks, list) else []
 
 
+# The installed hook is ballast/context_check.py in the Claude folder (also quoted, or with
+# Windows separators). A command that merely names some other context_check.py is the user's.
+OUR_HOOK = re.compile(r"""(?:^|[\\/])ballast[\\/]context_check\.py(?=$|[\s"'])""")
+
+
+def _is_our_hook(hook):
+    return isinstance(hook, dict) and bool(OUR_HOOK.search(str(hook.get("command", ""))))
+
+
 def _is_ours(entry):
-    return any(isinstance(h, dict) and "context_check.py" in str(h.get("command", ""))
-               for h in _hook_entries(entry))
+    return any(_is_our_hook(h) for h in _hook_entries(entry))
 
 
-def has_our_hook(settings):
-    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry."""
+def _template_events():
+    """The hook events the template names: the only ones the Ideal-Umbrella hook sits in."""
+    hooks = _read_json(USER_SETTINGS).get("hooks")
+    return frozenset(hooks) if isinstance(hooks, dict) else frozenset()
+
+
+def has_our_hook(settings, events=None):
+    """True when settings (a parsed settings.json) holds the Ideal-Umbrella hook entry in one
+    of the template's events."""
     hooks = settings.get("hooks") if isinstance(settings, dict) else None
     if not isinstance(hooks, dict):
         return False
-    return any(_is_ours(entry) for entries in hooks.values() if isinstance(entries, list)
+    events = _template_events() if events is None else events
+    return any(_is_ours(entry) for event, entries in hooks.items()
+               if event in events and isinstance(entries, list)
                for entry in entries)
 
 
@@ -233,7 +250,7 @@ FILE_FIELDS = ("settings_created", "deny_added", "created")
 def _template_hook(entries):
     for entry in entries:
         for hook in _hook_entries(entry):
-            if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", "")):
+            if _is_our_hook(hook):
                 return hook
     return None
 
@@ -335,7 +352,7 @@ def merge_settings(existing, template, home, force=False, record=None, previous=
             updated = False
             for entry in ours:
                 for hook in _hook_entries(entry):
-                    if isinstance(hook, dict) and "context_check.py" in str(hook.get("command", "")):
+                    if _is_our_hook(hook):
                         if hook.get("command") != replacement["command"]:
                             hook["command"] = replacement["command"]
                             updated = True
@@ -1273,6 +1290,8 @@ def verify(home, config_dir=None):
                 if not isinstance(hook, dict):
                     continue
                 command = str(hook.get("command", ""))
+                # Loose on purpose: a hook that names another context_check.py is reported as
+                # pointing elsewhere (it only reports; install and uninstall leave it alone).
                 if "context_check.py" in command:
                     found = True
                     # The installer writes the path quoted, so a path with a quote in it

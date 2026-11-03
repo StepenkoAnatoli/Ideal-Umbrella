@@ -41,7 +41,7 @@ def test_merge_preserves_custom_keys_and_sibling_hooks(add_to_repo):
             "UserPromptSubmit": [{
                 "hooks": [
                     {"type": "command", "command": "bash my-own-hook.sh"},
-                    {"type": "command", "command": "python3 -I old/context_check.py", "timeout": 5},
+                    {"type": "command", "command": "python3 -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_check.py\"", "timeout": 5},
                 ]
             }]
         },
@@ -1546,3 +1546,15 @@ def test_a_link_into_the_claude_config_folder_is_refused(tmp_path, how):
         assert "Claude Code's own" in result.stderr and "nothing written" in result.stderr, result.stderr
         assert (config / "settings.json").read_text(encoding="utf-8") == '{"mine": 1}\n'
         assert not (config / "hooks" / "context_check.py").exists()
+
+
+@pytest.mark.parametrize("command", ["python3 tools/context_check.py --lint", "python3 my_context_check.py"])
+def test_a_repositorys_own_context_check_hook_is_not_taken_for_ours(add_to_repo, command):
+    # General review 44170ca, A3 (the same class here): any command naming context_check.py
+    # was rewritten into the Ideal-Umbrella command.
+    mine = {"type": "command", "command": command}
+    settings = {"hooks": {"UserPromptSubmit": [{"hooks": [dict(mine)]}]}}
+    add_to_repo.merge(settings, TEMPLATE)
+    entries = settings["hooks"]["UserPromptSubmit"]
+    assert entries[0]["hooks"] == [mine]
+    assert any(add_to_repo.is_ours(entry) for entry in entries[1:])

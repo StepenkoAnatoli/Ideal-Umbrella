@@ -42,11 +42,20 @@ def _hook_command(hook):
     return str(hook.get("command", "")) if isinstance(hook, dict) else ""
 
 
+# The hook this script writes is .claude/hooks/context_check.py (quoted, or with Windows
+# separators); a command that merely names some other context_check.py is the repository's.
+OUR_HOOK = re.compile(r"""(?:^|[\\/])\.claude[\\/]hooks[\\/]context_check\.py(?=$|[\s"'])""")
+
+
+def _is_our_hook(hook):
+    return isinstance(hook, dict) and bool(OUR_HOOK.search(_hook_command(hook)))
+
+
 def is_ours(entry):
     if not isinstance(entry, dict):
         return False
     hooks = entry.get("hooks", [])
-    return isinstance(hooks, list) and any("context_check.py" in _hook_command(h) for h in hooks)
+    return isinstance(hooks, list) and any(_is_our_hook(h) for h in hooks)
 
 
 def _template_hook(entries):
@@ -54,7 +63,7 @@ def _template_hook(entries):
         if not isinstance(entry, dict):
             continue
         for hook in entry.get("hooks", []):
-            if isinstance(hook, dict) and "context_check.py" in _hook_command(hook):
+            if _is_our_hook(hook):
                 return hook
     return None
 
@@ -63,7 +72,7 @@ def _replace_hook(entry, replacement):
     """Replace only our hook object, leaving sibling hooks in the same entry alone."""
     changed = False
     for hook in entry.get("hooks", []):
-        if isinstance(hook, dict) and "context_check.py" in _hook_command(hook):
+        if _is_our_hook(hook):
             if hook.get("command") != replacement.get("command"):
                 hook["command"] = replacement.get("command")
                 changed = True

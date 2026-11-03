@@ -41,8 +41,7 @@ def _without_our_hooks(entries):
         if not install._is_ours(entry):
             kept.append(entry)
             continue
-        others = [h for h in install._hook_entries(entry)
-                  if not (isinstance(h, dict) and "context_check.py" in str(h.get("command", "")))]
+        others = [h for h in install._hook_entries(entry) if not install._is_our_hook(h)]
         if others:
             entry = dict(entry)
             entry["hooks"] = others
@@ -134,8 +133,11 @@ def undo_settings(settings, template, record, evidence=None):
         notices.append("no install record; permissions.deny left as is")
 
     hooks = settings.get("hooks")
+    template_hooks = template.get("hooks") if isinstance(template, dict) else None
+    events = set(template_hooks) if isinstance(template_hooks, dict) else set()
     if isinstance(hooks, dict):
-        for event in list(hooks):
+        # Only the events the template names: a hook elsewhere is the user's, whatever it runs.
+        for event in [e for e in hooks if e in events]:
             entries = hooks[event]
             if not isinstance(entries, list):
                 continue

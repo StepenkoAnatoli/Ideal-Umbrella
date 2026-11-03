@@ -30,7 +30,7 @@ def test_install_preserves_user_data_and_is_idempotent(install_module, tmp_path)
             "UserPromptSubmit": [{
                 "hooks": [
                     {"type": "command", "command": "bash my-own-hook.sh"},
-                    {"type": "command", "command": "python3 -I old/context_check.py", "timeout": 30},
+                    {"type": "command", "command": "python3 -I ~/.claude/ballast/context_check.py", "timeout": 30},
                 ]
             }]
         },
