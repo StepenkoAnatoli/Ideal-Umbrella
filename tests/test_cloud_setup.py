@@ -232,3 +232,112 @@ def test_a_read_only_claude_md_in_a_writable_folder_gets_the_rules(tmp_path):
     assert md.read_text(encoding="utf-8").startswith(f"# Image rules\n\n{BEGIN}\n{RULES}")
     assert oct(md.stat().st_mode & 0o777) == "0o444"
     assert [p.name for p in md.parent.iterdir()] == ["CLAUDE.md"]
+
+
+# Round 2 review of the G1-G5 fixes (research/review-findings-fresh-84bfecf.md, R2-1 to R2-6).
+
+def _host(tmp_path, before="", after=""):
+    """The script pasted into a longer setup script, as the README says to use it."""
+    host = tmp_path / "setup.sh"
+    host.write_text(before + SCRIPT.read_text(encoding="utf-8") + "\n" + after, encoding="utf-8")
+    env = {"HOME": str(tmp_path), "PATH": os.environ.get("PATH", "")}
+    return subprocess.run(["bash", str(host)], env=env, capture_output=True, text=True)
+
+
+def test_an_end_marker_before_the_begin_marker_leaves_the_file_alone(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    text = f"top\n{END}\nmine\n{BEGIN}\nMY PRECIOUS TEXT\nmore mine\n"
+    target.write_text(text, encoding="utf-8")
+    result = run(tmp_path)
+    assert target.read_text(encoding="utf-8") == text
+    assert "broken or repeated rule markers" in result.stderr
+
+
+def test_pasted_under_set_e_the_setup_goes_on_and_gets_the_rules(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("# image rules\n", encoding="utf-8")
+    result = _host(tmp_path, before="set -e\ntrap 'echo HOST-TRAP' EXIT\n", after="echo LATER-STEP-RAN\n")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["LATER-STEP-RAN", "HOST-TRAP"]
+    assert sections(target.read_text(encoding="utf-8")) == (1, 1)
+
+
+def test_a_failed_write_does_not_end_the_setup_script(tmp_path):
+    (tmp_path / ".claude" / "CLAUDE.md").mkdir(parents=True)
+    result = _host(tmp_path, after="echo LATER-STEP-RAN\n")
+    assert result.returncode == 0
+    assert "not a file" in result.stderr and result.stdout == "LATER-STEP-RAN\n"
+
+
+def test_marker_lines_in_a_code_fence_are_the_users_example(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    text = f"mine\n```text\n{BEGIN}\nMY EXAMPLE\n{END}\n```\nafter\n"
+    target.write_text(text, encoding="utf-8")
+    run(tmp_path)
+    once = target.read_text(encoding="utf-8")
+    assert once.startswith(text) and sections(once) == (2, 2)
+    run(tmp_path)
+    assert target.read_text(encoding="utf-8") == once
+
+
+def test_a_crlf_file_gets_its_section_replaced(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_bytes(f"mine\r\n{BEGIN}\r\nold\r\n{END}\r\n".encode())
+    run(tmp_path)
+    text = target.read_bytes().decode()
+    assert sections(text) == (1, 1) and "old" not in text and text.startswith("mine\r\n")
+
+
+def test_a_marker_with_trailing_spaces_is_still_the_marker(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text(f"mine\n{BEGIN} \nold\n{END}\t\n", encoding="utf-8")
+    result = run(tmp_path)
+    text = target.read_text(encoding="utf-8")
+    assert result.stderr == "" and sections(text) == (1, 1) and "old" not in text
+
+
+def test_a_hard_linked_claude_md_keeps_its_other_name(tmp_path):
+    other = tmp_path / "dotfiles-CLAUDE.md"
+    other.write_text("mine\n", encoding="utf-8")
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    os.link(other, target)
+    run(tmp_path)
+    assert os.path.samefile(other, target) and sections(other.read_text(encoding="utf-8")) == (1, 1)
+
+
+def test_a_link_into_a_missing_folder_is_left_a_link_with_a_note(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.symlink_to(tmp_path / "dotfiles" / "CLAUDE.md")
+    result = run(tmp_path)
+    assert target.is_symlink() and not (tmp_path / "dotfiles").exists()
+    assert "missing" in result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid") or os.geteuid() != 0, reason="chown needs root")
+def test_a_claude_md_owned_by_another_user_keeps_its_owner(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    target.write_text("mine\n", encoding="utf-8")
+    os.chown(target, 65534, 65534)
+    run(tmp_path)
+    assert (os.stat(target).st_uid, os.stat(target).st_gid) == (65534, 65534)
+    assert sections(target.read_text(encoding="utf-8")) == (1, 1)
+
+
+def test_blank_lines_outside_the_section_are_kept_as_written(tmp_path):
+    target = tmp_path / ".claude" / "CLAUDE.md"
+    target.parent.mkdir()
+    text = "code:\n\n    line1\n    \n    line2\nhard break  \n\n\n"
+    target.write_text(text, encoding="utf-8")
+    run(tmp_path)
+    once = target.read_text(encoding="utf-8")
+    assert once.startswith(text + BEGIN)
+    run(tmp_path)
+    assert target.read_text(encoding="utf-8") == once

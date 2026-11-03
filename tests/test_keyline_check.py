@@ -1719,9 +1719,19 @@ def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
                                   # Self-check of F2 (PR #39): the ת-nouns docs put after אל.
                                   "העתיקו אל תיקיית הפרויקט.", "עברו אל תפריט ההגדרות.",
                                   "הוסיפו אל תבנית הדף.", "שמרו אל תיקייה חדשה.", "הוסיפו אל תצורת השרת.",
-                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר."])
+                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר.",
+                                  # R2-8: "although".
+                                  "אף על פי שהוא קטן.", "אף כי זה קטן.", "אף־על־פי כן, פרסו.",
+                                  # R2-9: אל as "to" across a line break.
+                                  "העתיקו אל\nתוך התיקייה."])
 def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
+
+
+@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה."])
+def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
+    # R2-8: only "אף על פי" and "אף כי" ("although") stop counting.
+    assert keyline_check.negations(text) == text.count("אף") + text.count("לא") + text.count("אין")
 
 
 @pytest.mark.parametrize("source,rendering,ok", [
@@ -1737,6 +1747,22 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     ("Do not copy v2.1 into the folder.", "אל תעתיקו את v2.1 אל תוך התיקייה.", True),
     ("Do not copy v2.1 to the project folder.", "העתיקו את v2.1 אל תיקיית הפרויקט.", False),
     ("Do not open v2.1 from the settings menu.", "פתחו את v2.1 אל תפריט ההגדרות.", False),
+    # Round 2 review of the G1-G5 fixes, R2-8: אף in "אף על פי" / "אף כי" ("although") counted.
+    ("Do not copy v2.1, even if it is small.", "העתק את v2.1, אף על פי שהוא קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף כי זה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף־על־פי שזה קטן.", False),
+    # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
+    ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
+    ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
+    ("לֹא להעתיק את v2.1.", "Copy v2.1.", False),
+    ("אַל תִּפְרְסוּ את v2.1.", "Deploy v2.1.", False),
+    ("Do not copy v2.1 to the server.", "אל\nתעתיק את v2.1 לשרת.", True),
 ])
 def test_a_negation_survives_or_is_reported_in_both_directions(keyline_check, source, rendering, ok):
     assert keyline_check.report("src", "ren", source, rendering)[0] is ok
+
+
+def test_a_pointed_hebrew_hedge_is_still_a_hedge(keyline_check):
+    # Neighbour of R2-9 (round 2 review of the G1-G5 fixes): points hid Hebrew words from the
+    # hedge scan as they hid לֹא from the negation count.
+    assert keyline_check.hedges("הַשָּׁרָת עָלוּל לִפֹּל.") == {"possibility": ["עלול"]}

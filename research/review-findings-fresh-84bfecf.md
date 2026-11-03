@@ -58,3 +58,23 @@ Commands run (temp HOME and CLAUDE_CONFIG_DIR):
 ## Review rounds
 
 The user asked for reviewer rounds to continue until a round finds at most one low, then a final review of the work. Each later round is recorded below.
+
+### Round 2 (fresh-eyes reviewer, head 8a22df2): 9 findings, 3 medium, 6 low; all fixed
+
+Each test below failed on 8a22df2 first. Full repros are kept with the reviewer's notes; the short form is in the Failure column.
+
+| ID | Sev | File:line (at 8a22df2) | Class | Failure | Fix | Test |
+|----|-----|------|-------|---------|-----|------|
+| R2-1 | medium | config/cloud-setup.sh:45-58 | neighbour of install.find_section | An end marker before the begin marker passed the 1/1 count; awk then dropped every line after the begin marker. | The markers are found in awk as install.py finds them, and an end before the begin is "broken markers". | `test_an_end_marker_before_the_begin_marker_leaves_the_file_alone` |
+| R2-2 | medium | config/cloud-setup.sh:29-76; README | halfway state | Pasted into a longer setup script, `exit 0` ended that script, and under `set -e` `grep -c` (exit 1 with no marker) failed the setup. | The body runs in `( ... ) \|\| true`: its exits, trap and names end with it. | `test_pasted_under_set_e_the_setup_goes_on_and_gets_the_rules`, `test_a_failed_write_does_not_end_the_setup_script` |
+| R2-3 | low | config/cloud-setup.sh:45-58 | neighbour of install `_fenced` | Marker lines in a ``` fence were taken as the section and the user's example deleted. | Lines inside a closed fence are skipped, with `_fenced`'s rules (an unclosed opener is text). | `test_marker_lines_in_a_code_fence_are_the_users_example` |
+| R2-4 | low | config/cloud-setup.sh:45-54 | neighbour of install (rstrip) | A CRLF file got a second section on every run; a marker with trailing spaces was refused. | Trailing whitespace is stripped before comparing. | `test_a_crlf_file_gets_its_section_replaced`, `test_a_marker_with_trailing_spaces_is_still_the_marker` |
+| R2-5 | low | config/cloud-setup.sh:36,64,68 | rename semantics | The rename gave the file the runner's owner, split a hard link, and replaced a link into a missing folder by a file. | A file not owned by the runner's user and group, or with more than one link, is written in place; a link into a missing folder is left with a note. | `test_a_hard_linked_claude_md_keeps_its_other_name`, `test_a_link_into_a_missing_folder_is_left_a_link_with_a_note`, `test_a_claude_md_owned_by_another_user_keeps_its_owner` (root) |
+| R2-6 | low | config/cloud-setup.sh:56-58 | docs vs code | Whitespace-only lines were emptied and trailing blank lines dropped. | Blank lines are held as written; the file's trailing blank lines (or one) separate it from the section. | `test_blank_lines_outside_the_section_are_kept_as_written` |
+| R2-7 | low | config/add_to_repo.py:659 | neighbour of F4 | Repo = home folder with `~/.claude` a link: the refusal said "replace the symlink". | The config folders also count by their own name (parent resolved). | `test_a_home_repository_whose_claude_folder_is_a_symlink_is_refused_without_naming_the_link` |
+| R2-8 | medium | keyline/keyline_check.py:275 | fail-open (as F2) | אף in "אף על פי" / "אף כי" ("although") counted, so a dropped negation passed. | Those two phrases (with spaces or maqaf) are not counted; "אף אחד" still is. | both-directions cases; `test_hebrew_af_as_not_even_is_still_a_negation` |
+| R2-9 | low | keyline/keyline_check.py:274 | fail-open | אל and its verb across a line break or NBSP, and pointed לֹא/אַל, were not counted. | `\s+` between them; points (U+0591-U+05C7 but maqaf and punctuation) are taken off before matching. Neighbour: Hebrew hedges, same fix. | both-directions cases; `test_a_pointed_hebrew_hedge_is_still_a_hedge` |
+
+Class searches: `NEG_HE` and `HEDGE_HE` are the only Hebrew word scans (the hedge scan had the points gap, fixed). `cloud-setup.sh` is the only shell script. `_claude_config_dirs` has one caller that compares unresolved paths.
+
+Checks (temp HOME and CLAUDE_CONFIG_DIR): pytest 2124 passed, 16 skipped; run_tests 35/35; pyflakes clean; the cloud-setup tests as `nobody`: 23 passed, 1 skipped (the chown test needs root, and it passes as root).

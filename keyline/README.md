@@ -131,7 +131,10 @@ Negations counted, English and Hebrew together in both texts:
   elsewhere אל is "to", and so it is before תוך, תחת, תל and the ת-nouns docs put after "to",
   such as תיקיית, תפריט, תבנית, תצורת: אל תוך, "into"; אל תיקיית הפרויקט). Another noun after אל
   that starts with ת still counts, so a rendering with such a phrase can hide a lost negation;
-  the list is `AL_TO` in `keyline_check.py`. Without these the panel's own Hebrew prose rendering counts 1 negation
+  the list is `AL_TO` in `keyline_check.py`. אל and its verb may be split by any whitespace (a
+  line break, a no-break space). אף counts as "not even" (אף אחד), but not in "אף על פי" or
+  "אף כי" ("although"). Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
+  for hedges too. Without these the panel's own Hebrew prose rendering counts 1 negation
   instead of 4 and fails falsely.
 
 ## keyline_lint.py

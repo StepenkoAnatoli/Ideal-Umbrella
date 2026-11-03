@@ -267,14 +267,19 @@ AL_TO = ("תוך תוכו תוכה תוכם תוכן תחת תל "
          "תיקייה תיקיית תיקיה תיקית תיקיות תבנית תבניות תצורה תצורת תוכנה תוכנת תוכנית תכנית "
          "תכונה תכונת תמונה תמונת תיבה תיבת תחנה תחנת תפריט תג תגית תהליך תור תא תאריך תיק "
          "תיעוד").split()
+# אל and its verb may stand on two lines (a hard-wrapped note) or around a no-break space, so
+# any whitespace separates them. אף is "not even" (אף אחד), but not in "אף על פי" / "אף כי"
+# ("although"), which would otherwise stand in for a lost negation. Pointed text (לֹא, אַל
+# תִּפְרְסוּ) is matched with its points taken off (POINTS).
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
-    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])(?![ \t]+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
-    rf"|אף|מעולם"
+    rf"|(?:ו)?אל(?=\s+ת[{HEB}])(?!\s+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
+    rf"|אף(?!(?:\s+|־)(?:על(?:\s+|־)פי|כי)(?![{HEB}]))|מעולם"
     rf")(?![{HEB}])"
 )
+POINTS = re.compile("[\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7]")
 
 # A hedge must survive as a class, not word-for-word: "could" may become "may", but not "will".
 # A Hebrew rendering keeps the class with the Hebrew words of the same group.
@@ -891,8 +896,9 @@ def hedges(text):
             if word in words:
                 found.setdefault(group, []).append(word)
                 break
+    bare = POINTS.sub("", text)
     for group, pattern in HEDGE_HE.items():
-        for m in pattern.finditer(text):
+        for m in pattern.finditer(bare):
             found.setdefault(group, []).append(m.group("word"))
     return found
 
@@ -1094,7 +1100,7 @@ def _negation_counts(text):
     """(definite, ambiguous): the negations of text but a "No. N" that is a number sign, and of
     them those that may be one ("no. N" before a number, read as the answer "no": "ticket no. 5",
     "(No. 5)", "A: No. 5")."""
-    n, ambiguous = len(NEG_HE.findall(text)), 0
+    n, ambiguous = len(NEG_HE.findall(POINTS.sub("", text))), 0
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):
