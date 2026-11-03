@@ -1,4 +1,4 @@
-# Resume point: PR #39 fixes reviewed again; G1-G5 fixed on PR #38; reviewer rounds run until one finds at most one low
+# Resume point: PR #38 reviewer rounds; G1-G5 and round 2 (R2-1 to R2-9) fixed; round 3 running
 
 Updated 2026-11-03. Replace this file at each task boundary; do not append to it.
 
@@ -10,11 +10,13 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
 - Fresh review of the #39 fixes (head 84bfecf): `research/review-findings-fresh-84bfecf.md`.
   - G1-G5 are all low, all in `config/cloud-setup.sh`, all fixed with a failing test first.
   - Report sections: Findings, Fixes, Checks, Review rounds.
-- Checks at the G1-G5 commit (temp HOME and CLAUDE_CONFIG_DIR):
-  - pytest: 2097 passed, 16 skipped;
+- Round 2 (9 findings: 3 medium, 6 low) fixed in 86a492e; recorded under "Review rounds" in the report.
+- Checks at 86a492e (temp HOME and CLAUDE_CONFIG_DIR):
+  - pytest: 2124 passed, 16 skipped;
   - run_tests: 35/35;
   - pyflakes: clean;
-  - the cloud-setup tests as `nobody`: 14 passed.
+  - the cloud-setup tests as `nobody`: 23 passed, 1 skipped (chown test, root only).
+- Round 3 reviewer runs on 86a492e; output in the session scratchpad (round3/findings.md), lost if the session ends: rerun a round instead.
 
 ## Standing request from the user (2026-11-03)
 - Keep running reviewer rounds until a round finds only 1 low (or nothing), then stop.
@@ -28,13 +30,18 @@ Updated 2026-11-03. Replace this file at each task boundary; do not append to it
   - The temp file takes the mode only once it is whole.
   - A file that is not a regular file is refused.
   - No `mv -T`: it is GNU-only, and on busybox it would push every run onto the in-place path.
+  - Markers found by a two-pass awk mirroring install.py find_section/_fenced (order, fences, trailing whitespace); no recorded-hash fallback (the shell has no install record).
+  - The body runs in `( ... ) || true` so a host setup script goes on, under set -e too.
+  - A file not owned by the runner's user and group, or hard-linked, is written in place.
+- keyline: אף not counted in "אף על פי" / "אף כי"; אל and verb across any whitespace; niqqud (POINTS) stripped for negations and hedges.
 - Mode-dependent tests skip as root. Verify them as `nobody` on a copy of the tree:
   - `git ls-files -z | xargs -0 cp --parents -t $T`;
   - `chown -R nobody $T`;
   - `runuser -u nobody -- env HOME=$T/home PATH=$PATH python -m pytest -p no:cacheprovider tests/test_cloud_setup.py`.
 
 ## Next
-- Reviewer rounds on PR #38 (see the standing request above). Then push, update the PR #38 body, and subscribe to PR #38.
+- Fix round 3's findings test-first, record the round, push; repeat until a round finds at most one low; then a final self-review.
+- Update the PR #38 body with the rounds (session is subscribed to PR #38).
 - The user merges. Do not merge unasked.
 
 ## Open items
