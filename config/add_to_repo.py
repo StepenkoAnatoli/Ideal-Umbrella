@@ -338,7 +338,7 @@ def _git_ignored(repo, relatives):
             # echoes each path as given.
             given.write(b"".join(os.fsencode("./" + r) + b"\0" for r in relatives))
             given.seek(0)
-            result = subprocess.run(["git", "-C", repo, "check-ignore", "-z", "--stdin"],
+            result = subprocess.run([*GIT, "-C", repo, "check-ignore", "-z", "--stdin"],
                                     stdin=given, stdout=out, stderr=err, env=env, timeout=10)
             out.seek(0)
             err.seek(0)
@@ -352,6 +352,12 @@ def _git_ignored(repo, relatives):
         no_repo = result.returncode == 128 and b"not a git repository (or any" in errors
         return dict.fromkeys(relatives, False if no_repo else None)
     return {r: "./" + r in listed for r in relatives}
+
+
+# The repository's own .git/config is not the user's: one kept by an archive, a shared drive or
+# another tool may name a command (core.fsmonitor) that git would run as the user. The reads
+# below need none, so they are turned off on the command line, which wins over every config file.
+GIT = ("git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false")
 
 
 def _relative(real_repo, full):
@@ -380,7 +386,7 @@ def _ls_files(repo, paths):
             # git matches pathspecs case-sensitively whatever core.ignorecase says: on a
             # case-insensitive file system "notes" must find a submodule recorded as "Notes".
             magic = ":(literal,icase)" if FOLDS else ":(literal)"
-            result = subprocess.run(["git", "-C", repo, "ls-files", "-s", "-z", "--",
+            result = subprocess.run([*GIT, "-C", repo, "ls-files", "-s", "-z", "--",
                                      *(magic + p for p in sorted(paths))],
                                     stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                                     env=env, timeout=10)

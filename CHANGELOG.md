@@ -19,6 +19,8 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 - GitHub Actions: pytest, the keyline suite and a JSON check on Ubuntu and Windows.
 
 ### Fixed
+- `scripts/lint_validate.py` walks its corpus without following folder links, skips hidden folders and `node_modules` while it walks, and stops at 400 files; a link cycle (a pnpm `node_modules`) made it hang (general review 44170ca, B3).
+- `config/add_to_repo.py` runs git with `core.fsmonitor` and `core.untrackedCache` off, so a `core.fsmonitor` command planted in the target folder's `.git/config` no longer runs as the user (general review 44170ca, A2).
 - `keyline/keyline_check.py` counts more negations. English contractions with a typographic apostrophe count (`can’t`), so "can’t" -> "can" fails. In Hebrew it now counts בלי, ואינו and שאינו (the prefixes on the inflected forms of אין), and the imperative אל before a ת-verb. Before, a dropped negation could pass and a correct English-to-Hebrew rendering could fail (general review 44170ca, B1, B2).
 - `keyline/keyline_hook.py --watch` matches the path and the pattern both as written and with symlinks resolved; an absolute pattern through a linked folder (`/tmp` and `/var` on macOS) never matched, so the file was never checked (general review 44170ca, C1).
 - The installer, the uninstaller and `config/add_to_repo.py` take a hook for Ideal-Umbrella's only when it runs the installed path (`ballast/context_check.py`, or `.claude/hooks/context_check.py` in a repository) in an event the template names. Before, any command naming `context_check.py` in any event counted: install rewrote a user's own `context_check.py --mine` hook and uninstall deleted a user's `Stop` hook `my_context_check.py` (general review 44170ca, A3).

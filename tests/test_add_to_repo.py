@@ -1558,3 +1558,19 @@ def test_a_repositorys_own_context_check_hook_is_not_taken_for_ours(add_to_repo,
     entries = settings["hooks"]["UserPromptSubmit"]
     assert entries[0]["hooks"] == [mine]
     assert any(add_to_repo.is_ours(entry) for entry in entries[1:])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the planted command is a POSIX shell line")
+def test_a_planted_fsmonitor_in_the_repositorys_git_config_is_not_run(tmp_path):
+    # General review 44170ca, A2: git ran with the folder's own .git/config, so a core.fsmonitor
+    # command kept by an archive or a shared drive ran as the user, four times.
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / "a").write_text("hi\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "a"], check=True, env=git_env())
+    ran = tmp_path / "ran.txt"
+    subprocess.run(["git", "-C", str(repo), "config", "core.fsmonitor", f"echo RAN >> '{ran}'; false"],
+                   check=True, env=git_env())
+    result = run(repo)
+    assert result.returncode == 0, result.stderr
+    assert not ran.exists()
