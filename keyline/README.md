@@ -131,7 +131,20 @@ Negations counted, English and Hebrew together in both texts:
   elsewhere אל is "to", and so it is before תוך, תחת, תל and the ת-nouns docs put after "to",
   such as תיקיית, תפריט, תבנית, תצורת: אל תוך, "into"; אל תיקיית הפרויקט). Another noun after אל
   that starts with ת still counts, so a rendering with such a phrase can hide a lost negation;
-  the list is `AL_TO` in `keyline_check.py`. Without these the panel's own Hebrew prose rendering counts 1 negation
+  the list is `AL_TO` in `keyline_check.py`. אל and its verb may be split by any whitespace (a
+  line break, a no-break space). אף counts as "not even" (אף אחד), but not in "אף על פי",
+  "אף כי" or "אף ש…" ("although"), nor in "על אף" ("despite"), with any whitespace, a maqaf or
+  a hyphen between the words. A word after אף that starts with ש is a noun when it is in
+  `AF_NOUNS` (אף שורה, "not one line"), and opens an "although" clause when what follows ש is
+  in `AF_CLAUSE` or starts with ה (אף שזה, אף שהמערכת). Any other ש-word is read by the rule
+  Hebrew keeps for "not even": it always has a negation of its own in the same clause (אף שקע
+  לא עובד, אין אף שלט), and as a bare answer with no verb (אף שקע., "not one socket."). An
+  "although" clause with a negation of its own reads the same way (אף שקיבלנו חלק ולא הכל), so
+  such an אף is ambiguous and is treated like "No. 5": it counts in full in a source, and in a
+  rendering only as often as the source has one, so it cannot stand in for a dropped
+  negation. A rendering that answers an English source with a bare "אף שקע." is then
+  reported, and a reviewer confirms it. Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off,
+  for hedges too. Without these the panel's own Hebrew prose rendering counts 1 negation
   instead of 4 and fails falsely.
 
 ## keyline_lint.py
@@ -265,7 +278,9 @@ Two panel claims do not reproduce exactly:
   English rendering that does not hedge.
 - Month and weekday names are accepted in English or in their Hebrew form, with up to three
   prefix letters (ב, מ, ל, ה, ו, ש, כ) and Hebrew-letter boundaries, so a word that is a prefix
-  plus the name (לשבת, "to sit") still counts as the name; a rendering that writes the date as a number instead of the name is still a miss.
+  plus the name (לשבת, "to sit") still counts as the name. Points are taken off and any
+  whitespace (a no-break space, a line break) joins יום and its day; Friday is matched in the
+  short spelling too (יום ששי, which pointed שִׁשִּׁי becomes). A rendering that writes the date as a number instead of the name is still a miss.
 - A time with `:00` seconds matches with or without them (`14:30` and `14:30:00`); other seconds
   must be written. `May` is the month when a number, `:` or the line end follows, or a closing
   `**` followed by `:`, a number or the line end (`**May**: 3`, `## **May**`), or when it is not at

@@ -265,13 +265,13 @@ def _is_link(path):
     return bool(isjunction and isjunction(path))
 
 
-def _claude_config_dirs():
+def _claude_config_dirs(real=True):
     """The folders Claude Code may read the user's own files from (CLAUDE_CONFIG_DIR, and
-    ~/.claude), as real paths."""
+    ~/.claude), as real paths, or with real=False as named (made absolute)."""
     dirs = [os.path.join(os.path.expanduser("~"), ".claude")]
     if os.environ.get("CLAUDE_CONFIG_DIR"):
         dirs.append(os.path.expanduser(os.environ["CLAUDE_CONFIG_DIR"]))
-    return [os.path.realpath(d) for d in dirs]
+    return [os.path.realpath(d) if real else os.path.abspath(d) for d in dirs]
 
 
 def _write_bytes(path, data):
@@ -656,8 +656,12 @@ def _add(repo, force, progress=None, commit=None, handoff_at=None):
         if any(_relative(d, landing) is not None for d in own):
             # Without a link below the repository it is the repository itself that lies there
             # (a plugin marketplace clone, a home folder holding ~/.claude): no link to replace.
+            # The folder's own name counts as well as where it leads: a ~/.claude that is itself
+            # a link (dotfiles) is the user's folder, not a link the repository put there.
             plain = os.path.join(os.path.realpath(repo), os.path.relpath(p, repo))
-            if any(_relative(d, plain) is not None for d in own):
+            named = own + [os.path.join(os.path.realpath(os.path.dirname(d)), os.path.basename(d))
+                           for d in _claude_config_dirs(real=False)]
+            if any(_relative(d, plain) is not None for d in named):
                 raise ValueError(f"{p} lies in Claude Code's own folder ({landing}); config/install.py "
                                  "looks after that one: run this on a repository outside it")
             raise ValueError(f"{p} leads into Claude Code's own folder ({landing}); config/install.py "

@@ -1719,9 +1719,22 @@ def test_hebrew_negations_the_list_missed_are_counted(keyline_check, text):
                                   # Self-check of F2 (PR #39): the ת-nouns docs put after אל.
                                   "העתיקו אל תיקיית הפרויקט.", "עברו אל תפריט ההגדרות.",
                                   "הוסיפו אל תבנית הדף.", "שמרו אל תיקייה חדשה.", "הוסיפו אל תצורת השרת.",
-                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר."])
+                                  "הכניסו אל תוכו.", "צרפו אל תמונת המסך.", "עברו אל תיבת הדואר.",
+                                  # R2-8: "although".
+                                  "אף על פי שהוא קטן.", "אף כי זה קטן.", "אף־על־פי כן, פרסו.",
+                                  # R2-9: אל as "to" across a line break.
+                                  "העתיקו אל\nתוך התיקייה."])
 def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     assert keyline_check.negations(text) == 0
+
+
+@pytest.mark.parametrize("text", ["אף אחד לא בא.", "אף פעם.", "אין לי אף שאלה.", "אף שורה לא נמחקה.", "אף-אחד לא בא.",
+                                  # Known limit removed: a ש-noun not in AF_NOUNS, with the
+                                  # negation Hebrew pairs it with in the same clause.
+                                  "אף שקע לא עובד.", "אין כאן אף שלט."])
+def test_hebrew_af_as_not_even_is_still_a_negation(keyline_check, text):
+    # R2-8: only "אף על פי" and "אף כי" ("although") stop counting.
+    assert keyline_check.negations(text) == text.count("אף") + text.count("לא") + text.count("אין")
 
 
 @pytest.mark.parametrize("source,rendering,ok", [
@@ -1737,6 +1750,60 @@ def test_hebrew_al_as_to_is_not_a_negation(keyline_check, text):
     ("Do not copy v2.1 into the folder.", "אל תעתיקו את v2.1 אל תוך התיקייה.", True),
     ("Do not copy v2.1 to the project folder.", "העתיקו את v2.1 אל תיקיית הפרויקט.", False),
     ("Do not open v2.1 from the settings menu.", "פתחו את v2.1 אל תפריט ההגדרות.", False),
+    # Round 2 review of the G1-G5 fixes, R2-8: אף in "אף על פי" / "אף כי" ("although") counted.
+    ("Do not copy v2.1, even if it is small.", "העתק את v2.1, אף על פי שהוא קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף כי זה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף־על־פי שזה קטן.", False),
+    # Round 3, R3-1: "על אף" (despite), "אף ש…" (although), and an ASCII hyphen for the maqaf.
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על אף המגבלות.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף-על-פי שזה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף שזה קטן.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף-כי זה קטן.", False),
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על־אף המגבלות.", False),
+    # Round 4, R4-1: "על אף" across a double space or a hard wrap.
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על  אף המגבלות.", False),
+    ("Do not copy v2.1, despite the limits.", "העתק את v2.1, על \nאף המגבלות.", False),
+    # Known limit removed: "אף ש…" opening a clause with a word not on any list.
+    ("Do not copy v2.1.", "העתק את v2.1, אף שקיבלנו אישור.", False),
+    ("Do not copy v2.1.", "העתק את v2.1, אף שהמערכת עמוסה.", False),
+    ("Do not copy v2.1.", "אף שקיבלנו אישור, העתק את v2.1.", False),
+    ("Do not copy v2.1 though we got approval.", "אל תעתיק את v2.1, אף שקיבלנו אישור.", True),
+    # Last two limits: an "although" clause with a negation of its own and a start on no list,
+    # and a bare "not even" answer (אף שקע.), are ambiguous: in a rendering they count only as
+    # often as the source has one, so neither stands in for a dropped negation.
+    ("Do not copy v2.1, though we got part and not all.",
+     "העתק את v2.1, אף שקיבלנו חלק ולא הכל.", False),
+    ("Do not copy v2.1, though we got part and not all.",
+     "אל תעתיק את v2.1, אף שקיבלנו חלק ולא הכל.", True),
+    ("אף שקע. v2.1 נשאר.", "One socket. v2.1 stays.", False),
+    ("אף שקע. v2.1 נשאר.", "Not one socket. v2.1 stays.", True),
+    # R2-9: אל and its verb split by a line break or a no-break space, or pointed, went uncounted.
+    ("אל\nתעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
+    ("אל\u00a0תעתיק את v2.1 לשרת.", "Copy v2.1 to the server.", False),
+    ("לֹא להעתיק את v2.1.", "Copy v2.1.", False),
+    ("אַל תִּפְרְסוּ את v2.1.", "Deploy v2.1.", False),
+    ("Do not copy v2.1 to the server.", "אל\nתעתיק את v2.1 לשרת.", True),
 ])
 def test_a_negation_survives_or_is_reported_in_both_directions(keyline_check, source, rendering, ok):
     assert keyline_check.report("src", "ren", source, rendering)[0] is ok
+
+
+def test_a_pointed_hebrew_hedge_is_still_a_hedge(keyline_check):
+    # Neighbour of R2-9 (round 2 review of the G1-G5 fixes): points hid Hebrew words from the
+    # hedge scan as they hid לֹא from the negation count.
+    assert keyline_check.hedges("הַשָּׁרָת עָלוּל לִפֹּל.") == {"possibility": ["עלול"]}
+
+
+
+@pytest.mark.parametrize("rendering", ["פרסו את v2.1 ביום\u00a0שישי.", "פרסו את v2.1 בְּיוֹם שִׁישִׁי.",
+                                       "פרסו את v2.1 ביום\nשישי.",
+                                       # Known limit removed: the short spelling, pointed or not.
+                                       "פרסו את v2.1 בְּיוֹם שִׁשִּׁי.", "פרסו את v2.1 ביום ששי."])
+def test_a_hebrew_weekday_with_points_or_a_no_break_space_is_present(keyline_check, rendering):
+    # Round 3, R3-9: the calendar scan read the raw text.
+    assert keyline_check.report("s", "r", "Deploy v2.1 on Friday.", rendering)[0] is True
+
+
+def test_a_two_word_hebrew_hedge_with_a_no_break_space_is_a_hedge(keyline_check):
+    # Neighbour of R3-9: "ככל הנראה" and "מן הסתם" are matched with any whitespace between.
+    assert list(keyline_check.hedges("הוא ככל\u00a0הנראה יפול.")) == ["probability"]

@@ -1636,3 +1636,16 @@ def test_the_temp_file_is_never_more_open_than_the_file_it_replaces(add_to_repo,
     finally:
         os.umask(old)
     assert seen == [0o600] and os.stat(target).st_mode & 0o777 == 0o600
+
+
+def test_a_home_repository_whose_claude_folder_is_a_symlink_is_refused_without_naming_the_link(tmp_path):
+    # Round 2 review of the G1-G5 fixes, R2-7: with the repository being the home folder and
+    # ~/.claude a dotfiles link, the refusal told the user to replace their own ~/.claude link.
+    repo = tmp_path / "home"
+    (tmp_path / "dot" / "claude").mkdir(parents=True)
+    _git_init(repo)
+    (repo / ".claude").symlink_to(tmp_path / "dot" / "claude", target_is_directory=True)
+    result = run(repo, env=git_env(CLAUDE_CONFIG_DIR=str(repo / ".claude")))
+    assert result.returncode == 1, result.stdout
+    assert "symlink" not in result.stderr and "lies in Claude Code's own folder" in result.stderr, result.stderr
+    assert list((tmp_path / "dot" / "claude").iterdir()) == []

@@ -229,7 +229,7 @@ CALENDAR = {
     "may": ("מאי",), "june": ("יוני",), "july": ("יולי",), "august": ("אוגוסט",),
     "september": ("ספטמבר",), "october": ("אוקטובר",), "november": ("נובמבר",), "december": ("דצמבר",),
     "sunday": ("יום ראשון",), "monday": ("יום שני",), "tuesday": ("יום שלישי",),
-    "wednesday": ("יום רביעי",), "thursday": ("יום חמישי",), "friday": ("יום שישי",), "saturday": ("שבת",),
+    "wednesday": ("יום רביעי",), "thursday": ("יום חמישי",), "friday": ("יום שישי", "יום ששי",), "saturday": ("שבת",),
 }
 for _abbr, _full in (("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
                      ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "september"),
@@ -267,14 +267,33 @@ AL_TO = ("תוך תוכו תוכה תוכם תוכן תחת תל "
          "תיקייה תיקיית תיקיה תיקית תיקיות תבנית תבניות תצורה תצורת תוכנה תוכנת תוכנית תכנית "
          "תכונה תכונת תמונה תמונת תיבה תיבת תחנה תחנת תפריט תג תגית תהליך תור תא תאריך תיק "
          "תיעוד").split()
+# אל and its verb may stand on two lines (a hard-wrapped note) or around a no-break space, so
+# any whitespace separates them. אף is "not even" (אף אחד), but not in "אף על פי" / "אף כי"
+# / "אף ש…" ("although") or "על אף" ("despite"), which would otherwise stand in for a lost
+# negation; a space, a maqaf or a hyphen may join those words. A word after אף that starts
+# with ש is a noun when listed in AF_NOUNS (אף שורה, "not one line") and opens an "although"
+# clause when what follows ש is in AF_CLAUSE or starts with ה (אף שזה, אף שהמערכת). Any other
+# ש-word is read by the rule Hebrew "not even" keeps: it always has a negation of its own in
+# the same clause (אף שקע לא עובד, אין אף שלט), so אף counts then and only then (AF_SH, in
+# _negation_counts). Pointed text (לֹא, אַל תִּפְרְסוּ) is matched with its points taken off
+# (POINTS).
+AF_NOUNS = ("שורה שורות שאלה שאלות שם שמות שינוי שינויים שלב שלבים שעה שעות שנה שנים שבוע "
+            "שבועות שום שירות שרת שרתים שגיאה שגיאות שדה שדות שיחה שפה שיטה שכבה שקל שקלים "
+            "שיר שולחן שוק שותף שעון").split()
+AF_CLAUSE = ("הוא היא הם הן זה זו זאת אני אנחנו אתה את אתם אתן לא אין יש כבר גם עדיין עוד "
+             "רק אולי כמעט").split()
 HEB = "א-ת"
 NEG_HE = re.compile(
     rf"(?<![{HEB}])(?:"
     rf"(?:ו|ש|וש|כש)?(?:לא|אין|ללא|בלי|אינו|אינה|אינם|אינן|אינני|איננו|אינך)"
-    rf"|(?:ו)?אל(?=[ \t]+ת[{HEB}])(?![ \t]+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
-    rf"|אף|מעולם"
+    rf"|(?:ו)?אל(?=\s+ת[{HEB}])(?!\s+(?:{'|'.join(AL_TO)})(?![{HEB}]))"
+    rf"|(?<!על\s)(?<!על[-־])אף(?!(?:\s+|[-־])(?:על(?:\s+|[-־])פי|כי)(?![{HEB}]))"
+    rf"(?!(?:\s+|[-־])ש(?!(?:{'|'.join(w[1:] for w in AF_NOUNS)})(?![{HEB}])))|מעולם"
     rf")(?![{HEB}])"
 )
+AF_SH = re.compile(rf"(?<![{HEB}])(?<!על )(?<!על[-־])אף[ \-־]ש([{HEB}]+)")
+CLAUSE_END = re.compile(r"[,;:.!?]")
+POINTS = re.compile("[\u0591-\u05bd\u05bf\u05c1\u05c2\u05c4\u05c5\u05c7]")
 
 # A hedge must survive as a class, not word-for-word: "could" may become "may", but not "will".
 # A Hebrew rendering keeps the class with the Hebrew words of the same group.
@@ -294,7 +313,7 @@ HEDGE_GROUPS_HE = {
 }
 HEDGE = re.compile(EN_L + "(?:" + "|".join(w for words in HEDGE_GROUPS.values() for w in words) + ")" + EN_R, re.I)
 HEDGE_HE = {
-    group: re.compile(rf"(?<![{HEB}])(?:ו|ש|וש|כש)?(?P<word>" + "|".join(map(re.escape, words)) + rf")(?![{HEB}])")
+    group: re.compile(rf"(?<![{HEB}])(?:ו|ש|וש|כש)?(?P<word>" + "|".join(re.escape(w).replace("\\ ", r"\s+") for w in words) + rf")(?![{HEB}])")
     for group, words in HEDGE_GROUPS_HE.items()
 }
 
@@ -891,8 +910,9 @@ def hedges(text):
             if word in words:
                 found.setdefault(group, []).append(word)
                 break
+    bare = POINTS.sub("", text)
     for group, pattern in HEDGE_HE.items():
-        for m in pattern.finditer(text):
+        for m in pattern.finditer(bare):
             found.setdefault(group, []).append(m.group("word"))
     return found
 
@@ -972,9 +992,11 @@ def _in_calendar(tok, kind, text):
     full name in capitals is a month or weekday: "DEC" and "SAT" are acronyms, not דצמבר and
     שבת."""
     if kind == "proper" or tok.lower() in CALENDAR_FULL:
-        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form) + rf"(?![{HEB}])"
-                 for form in CALENDAR.get(tok.lower(), ())]
-        if forms and re.search("(?:" + "|".join(forms) + ")", text):
+        # Points are taken off and any whitespace joins a two-word form (יום שישי), as for the
+        # negations and hedges.
+        forms = [rf"(?<![{HEB}])[ובלמהשכ]{{0,3}}" + re.escape(form).replace("\\ ", r"\s+")
+                 + rf"(?![{HEB}])" for form in CALENDAR.get(tok.lower(), ())]
+        if forms and re.search("(?:" + "|".join(forms) + ")", POINTS.sub("", text)):
             return True
     return False
 
@@ -1093,8 +1115,25 @@ def _after_word(text, start, digit=False):
 def _negation_counts(text):
     """(definite, ambiguous): the negations of text but a "No. N" that is a number sign, and of
     them those that may be one ("no. N" before a number, read as the answer "no": "ticket no. 5",
-    "(No. 5)", "A: No. 5")."""
-    n, ambiguous = len(NEG_HE.findall(text)), 0
+    "(No. 5)", "A: No. 5"; "אף ש" before a word on no list, read as "not even" or "although":
+    in a clause with a negation of its own, or as a bare answer "אף שקע.")."""
+    # Whitespace runs become one space, so the fixed-width lookbehind for "על אף" holds across a
+    # double space or a hard wrap too.
+    bare = re.sub(r"\s+", " ", POINTS.sub("", text))
+    n, ambiguous = len(NEG_HE.findall(bare)), 0
+    for m in AF_SH.finditer(bare):
+        rest = m.group(1)
+        if "ש" + rest in AF_NOUNS or rest in AF_CLAUSE or rest.startswith("ה"):
+            continue                        # counted by NEG_HE, or "although"
+        starts = [c.end() for c in CLAUSE_END.finditer(bare, 0, m.start())]
+        end = CLAUSE_END.search(bare, m.end())
+        clause = bare[starts[-1] if starts else 0:end.start() if end else len(bare)]
+        if NEG_HE.search(clause):
+            ambiguous += 1                  # "not even" (אף שקע לא עובד) or "although" with a
+                                            # negation in its clause (אף שקיבלנו חלק ולא הכל)
+        elif (m.start() == 0 or re.match(r"[.!?:] ", bare[m.start() - 2:m.start()])) and (
+                m.end() == len(bare) or bare[m.end()] in ".!?"):
+            ambiguous += 1                  # a bare answer with no verb: "אף שקע." ("not one")
     for m in NEG_EN.finditer(text):
         word = m.group()
         if word.lower() == "no" and NUMBER_SIGN.match(text, m.end()):
