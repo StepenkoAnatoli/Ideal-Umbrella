@@ -32,7 +32,10 @@ User: "fix all stay in pr 36 and when done open new chat for new review".
   - the earlier repros are unchanged;
   - a failing test first for each fix.
 - Then verify, commit, push, and get CI green on #36.
-- Then open a new cloud session (create_session) for a fresh review of keyline_check at the new head. Brief it from this file.
+- Then open a new cloud session (create_session) for a fresh review at the new head. Brief it from this file.
+  - User, 2026-11-03: "fresh review more general". The review covers the whole repo, not only keyline_check or `_plain`.
+  - It covers correctness, security of untrusted input, tests, docs and CI.
+  - It names each finding's class and reproduces each medium or high finding with `python -I`.
 
 ## Open items
 - Round 4 is in progress with the fixer subagent.
