@@ -1176,3 +1176,17 @@ def test_home_with_claude_config_dir_set_says_which_folder_claude_code_reads(
     err = capsys.readouterr().err
     assert f"CLAUDE_CONFIG_DIR is set ({config})" in err
     assert str(home / ".claude") in err
+
+
+def test_a_missing_or_different_bash_output_cap_is_reported(install_module, tmp_path):
+    home = tmp_path / "home"
+    install_module.install(home)
+    settings = json.loads(settings_file(home).read_text(encoding="utf-8"))
+    settings["bashOutputMaxChars"] = 5000
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, warnings = install_module.verify(home)
+    assert ok and any("bashOutputMaxChars is 5000" in w for w in warnings), (issues, warnings)
+    del settings["bashOutputMaxChars"]
+    settings_file(home).write_text(json.dumps(settings), encoding="utf-8")
+    ok, issues, _ = install_module.verify(home)
+    assert not ok and any("bashOutputMaxChars is missing" in i for i in issues)

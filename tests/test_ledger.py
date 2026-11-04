@@ -319,3 +319,22 @@ def test_a_hand_edited_nan_inf_or_null_is_shown_as_written_without_a_change(ledg
     assert ledger.main(["--file", str(path), "--fixed-tokens", "5", "--date", "2026-10-27"]) == 0
     out = capsys.readouterr().out
     assert f"  {shown}" in out.splitlines(), out
+
+
+def test_a_tag_is_kept_with_the_line_and_named_in_the_comparison(ledger, tmp_path, capsys):
+    path = tmp_path / "m.jsonl"
+    ledger.main(["--file", str(path), "--fixed-tokens", "71396", "--tag", "holdout", "--date", "2026-10-19"])
+    capsys.readouterr()
+    assert ledger.main(["--file", str(path), "--fixed-tokens", "60000", "--tag", "treated",
+                        "--date", "2026-10-20"]) == 0
+    assert [entry.get("tag") for entry in lines(path)] == ["holdout", "treated"]
+    assert "change since line 1 (2026-10-19, tag holdout)" in capsys.readouterr().out
+
+
+def test_a_tag_alone_is_not_a_measurement(ledger, tmp_path, capsys):
+    path = tmp_path / "m.jsonl"
+    with pytest.raises(SystemExit) as stop:
+        ledger.main(["--file", str(path), "--tag", "holdout"])
+    assert stop.value.code == 2
+    assert "give at least one of" in capsys.readouterr().err
+    assert not path.exists()
