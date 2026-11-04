@@ -42,5 +42,5 @@ Step A run on 2026-11-03 with `python -I scripts/<name>.py <project folder> 60` 
 - Skill `model` frontmatter: override applies for the rest of the turn, not saved; docs on prompt caching say switching models recomputes the whole request. `/usage` shows a "Prompt cache (main)" line (v2.1.251+).
 
 ## Resume point
-State (2026-11-04): PR 40 (draft) holds the work and fixes for three Opus reviews (E:\Temp\opus-review-pr40*.md). Review 3: README TTL figures re-run (+16%/+19%), ttl_whatif docstring and README advice corrected (the what-if only prices 1h -> 5m), skill_bill docstring lists the real defaults and warns that a plugins folder may hold several cached versions. Not done (low): skill_bill rows lack the plugin-name prefix, plugin-folder discovery skips unreadable folders silently, a link to another drive's root on Windows walks that drive.
+State (2026-11-04): PR 40 (draft) holds the work and fixes for three Opus reviews (E:\Temp\opus-review-pr40*.md), including the low items of review 3: skill_bill names plugin skills "plugin:skill", plugin discovery notes a folder it cannot list on stderr, and a link to another drive's root is not walked (`plugin_cost.link_above`, shared by both walks). Nothing known is open.
 Left: CI on the last push; mark ready only when the user says so.

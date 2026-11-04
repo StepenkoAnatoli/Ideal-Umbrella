@@ -13,6 +13,7 @@ argument for an exact figure.
                is in context on every call
   invocation   tokens of SKILL.md without its frontmatter, plus each other file in the skill
                folder that SKILL.md names by its relative path
+A plugin's skills are named "plugin:skill", as in the listing.
 A skill with `disable-model-invocation: true` is flagged user-only and has no always-on cost (its
 description is not in context). A skill whose frontmatter sets `model` (other than `inherit`) is flagged: per the skills docs
 at code.claude.com the override applies for the rest of the turn, and switching models
@@ -20,6 +21,7 @@ recomputes the whole request.
 Token counts use tiktoken o200k_base as a proxy, like plugin_cost.py; Claude's tokenizer is not
 public, so the numbers are directional.
 """
+import json
 import os
 import re
 import sys
@@ -68,17 +70,38 @@ def _raise(error):
     raise error
 
 
+def _note(error):
+    """Plugin discovery goes on past a folder it cannot list, and says so."""
+    print(f"note: cannot list {error.filename or 'a folder'} ({error.strerror or error}); "
+          "plugins in it are not counted", file=sys.stderr)
+
+
+def plugin_name(skill, stop):
+    """Name of the plugin holding `skill`: the nearest folder from the skill up to `stop` that has
+    .claude-plugin/plugin.json, named by its manifest (else by the folder). None for a plain skill."""
+    stop = os.path.normcase(os.path.abspath(stop))
+    d = os.path.dirname(os.path.abspath(skill))
+    while True:
+        manifest = os.path.join(d, ".claude-plugin", "plugin.json")
+        if os.path.isfile(manifest):
+            try:
+                name = json.loads(read_text(manifest)).get("name")
+            except (OSError, ValueError, RecursionError, AttributeError):
+                name = None
+            return name if isinstance(name, str) and name else os.path.basename(d)
+        parent = os.path.dirname(d)
+        if os.path.normcase(d) == stop or parent == d:
+            return None
+        d = parent
+
+
 def skill_folders(folder):
     """Folders under `folder` (itself included) that hold SKILL.md, not looking inside one."""
     found, seen = [], set()
     top = os.path.realpath(str(folder))
     for root, dirs, names in os.walk(str(folder), followlinks=True, onerror=_raise):
         real = os.path.realpath(root)
-        try:
-            above = real != top and os.path.commonpath([real, top]) == real
-        except ValueError:
-            above = False      # another drive on Windows: not above the folder
-        if real in seen or above:   # a link back into a folder already walked, or up to one holding it
+        if real in seen or pc.link_above(real, top):   # a link back into a folder walked, or up out of this one
             dirs[:] = []
             continue
         seen.add(real)
@@ -120,6 +143,9 @@ def analyse(folders, count):
             text = read_text(os.path.join(skill, "SKILL.md"))
             front, body = split_frontmatter(text)
             name = front_value(front, "name") or os.path.basename(skill)
+            plugin = plugin_name(skill, folder)
+            if plugin:
+                name = f"{plugin}:{name}"      # the form the skill listing uses
             description = pc.desc_of(os.path.join(skill, "SKILL.md"))[:pc.DESCRIPTION_LIMIT]
             model = front_value(front, "model")
             user_only = (front_value(front, "disable-model-invocation") or "").lower() == "true"
@@ -134,9 +160,10 @@ def default_folders():
     """~/.claude/skills and each installed plugin. The app's desktop-session folders hold copies
     Claude Code does not load, so they are left out."""
     app = pc.default_app_dir()
-    plugins = [str(r) for r in pc.plugin_roots(app) if "local-agent-mode-sessions" not in Path(r).parts]         if os.path.isdir(app) else []
+    roots = pc.plugin_roots(app, _note) if os.path.isdir(app) else []
+    plugins = [str(r) for r in roots if "local-agent-mode-sessions" not in Path(r).parts]
     config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
-    cli_plugins = [str(r) for r in pc.plugin_roots(config / "plugins")] if (config / "plugins").is_dir() else []
+    cli_plugins = [str(r) for r in pc.plugin_roots(config / "plugins", _note)] if (config / "plugins").is_dir() else []
     return [str(config / "skills"), *cli_plugins, *plugins]
 
 

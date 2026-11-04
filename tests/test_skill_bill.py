@@ -98,7 +98,7 @@ def test_default_folders_skip_desktop_session_copies_and_count_a_skill_once(skil
     monkeypatch.setenv("CLAUDE_APP_DIR", str(app))
     monkeypatch.setattr(skill_bill.Path, "home", classmethod(lambda cls: home))
     rows = skill_bill.analyse(skill_bill.default_folders(), words)
-    assert sorted(r["name"] for r in rows) == ["alpha", "beta"]
+    assert sorted(r["name"] for r in rows) == ["alpha", "p:beta"]
 
 
 def test_a_symlinked_skill_folder_is_found(skill_bill, tmp_path):
@@ -142,7 +142,47 @@ def test_the_cli_plugin_folder_and_the_config_dir_are_default_folders(skill_bill
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
     monkeypatch.setenv("CLAUDE_APP_DIR", str(tmp_path / "noapp"))
     rows = skill_bill.analyse(skill_bill.default_folders(), words)
-    assert sorted(r["name"] for r in rows) == ["cliplugin", "mine"]
+    assert sorted(r["name"] for r in rows) == ["mine", "p:cliplugin"]
+
+
+def test_plugin_skills_are_named_with_the_manifest_name_and_plain_skills_are_not(skill_bill, tmp_path):
+    for folder, manifest in (("one", '{"name": "alpha"}'), ("two", '{"name": "beta"}'), ("three", "not json")):
+        (tmp_path / folder / ".claude-plugin").mkdir(parents=True)
+        (tmp_path / folder / ".claude-plugin" / "plugin.json").write_text(manifest, encoding="utf-8")
+        make_skill(tmp_path / folder / "skills", "review")
+    make_skill(tmp_path / "plain", "review")
+    rows = skill_bill.analyse([str(tmp_path / n) for n in ("one", "two", "three", "plain")], words)
+    assert sorted(r["name"] for r in rows) == ["alpha:review", "beta:review", "review", "three:review"]
+    assert words("- alpha:review: does a thing\n") in {r["always_on"] for r in rows}
+
+
+def test_a_folder_that_cannot_be_listed_is_noted_not_silently_skipped(skill_bill, tmp_path, monkeypatch, capsys):
+    app = tmp_path / "app"
+    (app / "p" / ".claude-plugin").mkdir(parents=True)
+    (app / "p" / ".claude-plugin" / "plugin.json").write_text("{}", encoding="utf-8")
+    (app / "locked").mkdir()
+    real_walk = os.walk
+
+    def walk(top, *args, onerror=None, **kwargs):
+        yield from real_walk(top, *args, onerror=onerror, **kwargs)
+        if onerror:
+            onerror(PermissionError(13, "Permission denied", str(app / "locked")))
+    monkeypatch.setattr(os, "walk", walk)
+    monkeypatch.setenv("CLAUDE_APP_DIR", str(app))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "nocfg"))
+    assert skill_bill.default_folders()[-1] == str(app / "p")
+    err = capsys.readouterr().err
+    assert "cannot list" in err and "locked" in err and "plugins in it are not counted" in err
+
+
+def test_a_link_to_the_root_of_another_drive_counts_as_above(skill_bill):
+    above = skill_bill.pc.link_above
+    assert not above("/a/b", "/a/b")
+    if os.name != "nt":
+        assert above("/a", "/a/b") and not above("/a/b", "/a")
+    else:
+        assert above("Z:\\", "C:\\work\\skills")           # another drive's root: not walked
+        assert not above("Z:\\other", "C:\\work\\skills")  # a folder on another drive is not a root
 
 
 def test_an_unreadable_skill_file_is_a_one_line_error_not_a_zero(skill_bill, tmp_path, monkeypatch):
