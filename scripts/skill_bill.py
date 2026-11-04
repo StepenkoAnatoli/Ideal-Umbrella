@@ -4,8 +4,11 @@ Usage:
   python -I scripts/skill_bill.py [FOLDER ...]
 
 Each FOLDER is searched for skill folders (a folder holding SKILL.md). Default: ~/.claude/skills
-and the Claude app folder (installed plugins; CLAUDE_APP_DIR, else the folder for your OS, as in
-plugin_cost.py).
+(or CLAUDE_CONFIG_DIR), the plugins under <config dir>/plugins and the plugins in the Claude app
+folder (CLAUDE_APP_DIR, else the folder for your OS, as in plugin_cost.py); the app's
+desktop-session copies are left out. A plugins folder can hold a marketplace copy or several
+cached versions of one plugin, which are then counted once each: pass the folder you mean as an
+argument for an exact figure.
   always-on    tokens of the skill's line in the skill listing ("- name: description"), which
                is in context on every call
   invocation   tokens of SKILL.md without its frontmatter, plus each other file in the skill

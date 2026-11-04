@@ -10,7 +10,9 @@ prices the cache part of the bill twice, in list-price terms (Opus 5.5 rates fro
 usage_breakdown.py):
   actual   cache reads at the read rate, 5-minute and 1-hour writes at their own rates;
   what-if  a 5-minute TTL for everything: every write at the 5-minute rate, and every response
-           whose gap is over 5 minutes rewrites its whole prefix (reads become writes).
+           whose gap is over 5 minutes rewrites its whole prefix (reads become writes), but only
+           in a stream that has already written with a 1-hour TTL: a stream on 5 minutes shows
+           +0%. It prices moving from 1 hour to 5 minutes, never the reverse.
 It also lists cache busts (nearly the whole context written fresh) with a likely cause.
 The causes are guesses from the gap and the context size. Input and output tokens are the same
 in both and are left out. Plan limits are not dollars: these figures are list prices.

@@ -32,9 +32,9 @@ Use sub-agents for each step if useful (one writer at a time on the checkout). T
 
 ## Results
 Step A run on 2026-11-03 with `python -I scripts/<name>.py <project folder> 60` on the two largest project folders under `~/.claude/projects` (Windows, subscription, 1-hour cache writes in use). Aggregates only.
-- ttl_whatif: 15,115 and 9,761 API responses; 94% and 96% followed a gap under 5 minutes. List-price cache cost with a 5-minute TTL what-if: +20% ($1,133 -> $1,358) and +21% ($532 -> $644). Busts: 352 and 117 "gap over TTL", 3 compaction, ~10 other. Verdict: do not switch to 5m.
+- ttl_whatif: 15,115 and 9,761 API responses; 94% and 96% followed a gap under 5 minutes. List-price cache cost with a 5-minute TTL what-if: +16% ($1,137 -> $1,314) and +19% ($532 -> $635) after the 5m-stream fix (+20%/+21% before it). Busts: 352 and 117 "gap over TTL", 3 compaction, ~10 other. Verdict: do not switch to 5m.
 - top_waste: 71.9M tool-result characters over 3 folders; Bash+PowerShell 66%, Read 30%, everything else under 1% each. Shell results (20,034): <2k 17.6% of shell chars (13,569 results), 2-8k 41.8% (5,011), 8-12k 15.5% (758), 12-30k 25.1% (696), >30k 0 (output already capped at 30k). Gate for item 4 passes (results over 12k are a quarter of shell characters); item 8 (3-10k logs): 2-8k holds 42% but that is mostly small outputs a hook would not shrink much; decide at item 8.
-- skill_bill (corrected after review: the first run also counted desktop-session copies and missed linked folders): 49 skills in ~/.claude/skills plus installed plugins, always-on listing about 5,800 tokens (o200k proxy), largest per-use bodies 21-29k tokens (memory-architecture, auto-build).
+- skill_bill (corrected after review: the first run also counted desktop-session copies and missed linked folders): 49 skills in ~/.claude/skills plus installed plugins, always-on listing about 5,300 tokens (o200k proxy), largest per-use bodies 21-29k tokens (memory-architecture, auto-build).
 
 ## Verified facts (code.claude.com, 2026-11-03)
 - `bashOutputMaxChars` (settings, any file, v2.1.261+, up to 128,000): sizes the inline ceiling and read-back window together; default inline ~30,000 for a valid result (past it: file path plus 2,000-char preview); failure results inline ~10,000 (head+tail). Env `BASH_MAX_OUTPUT_LENGTH` is ignored when the setting is set.
@@ -42,5 +42,5 @@ Step A run on 2026-11-03 with `python -I scripts/<name>.py <project folder> 60` 
 - Skill `model` frontmatter: override applies for the rest of the turn, not saved; docs on prompt caching say switching models recomputes the whole request. `/usage` shows a "Prompt cache (main)" line (v2.1.251+).
 
 ## Resume point
-State (2026-11-03): PR 40 (draft) holds the work and the fixes for both Opus reviews (E:\Temp\opus-review-pr40.md, opus-review-pr40-round2.md); every finding is fixed or documented. skill_bill: user-only skills (verified in the skills docs), link-up guard, config dir and CLI plugin folders (CLI plugin layout not verified), unreadable files are errors; ttl_whatif: a 5m stream is not charged a rewrite. Full README Tests: only tests/test_keyline_check.py fails (timing tests and 20 env-var errors), identical on origin/main in a real run.
-Left: CI on the last push; mark the PR ready only when the user says so.
+State (2026-11-04): PR 40 (draft) holds the work and fixes for three Opus reviews (E:\Temp\opus-review-pr40*.md). Review 3: README TTL figures re-run (+16%/+19%), ttl_whatif docstring and README advice corrected (the what-if only prices 1h -> 5m), skill_bill docstring lists the real defaults and warns that a plugins folder may hold several cached versions. Not done (low): skill_bill rows lack the plugin-name prefix, plugin-folder discovery skips unreadable folders silently, a link to another drive's root on Windows walks that drive.
+Left: CI on the last push; mark ready only when the user says so.
