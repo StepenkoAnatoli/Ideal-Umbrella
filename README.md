@@ -2,7 +2,14 @@
 
 Make me waste fewer tokens while we work.
 
-Rules and small tools that cut how many tokens Claude Code re-reads on every call. Working name for the setup: **Ideal-Umbrella**.
+Rules and small tools for reducing repeated context overhead. Choose the implementation for your coding agent:
+
+| Platform | Start here | Configuration directory |
+| --- | --- | --- |
+| Claude Code | [Claude quick start](#quick-start), using the existing `config/`, `hooks/`, and `scripts/` | `~/.claude` |
+| [GPT / OpenAI Codex](gpt/README.md) | Separate **GPT Umbrella** implementation in [`gpt/`](gpt/), with its own installer, usage analyzer, tests, and research | `~/.codex` or `CODEX_HOME` |
+
+**The rest of this README describes Claude Code.** Its settings, prices, and measured savings do not apply to GPT/Codex. The GPT adapter targets local Codex and saved OpenAI API data; it does not modify ordinary ChatGPT chats. Read the [GPT setup and limitations](gpt/README.md) before installing it.
 
 ## Why
 

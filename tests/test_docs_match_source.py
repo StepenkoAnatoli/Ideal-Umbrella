@@ -229,3 +229,28 @@ def test_fixed_load_line_numbers_count_newlines_only():
     readme = read("README.md").replace("measurements.jsonl` line 1", "measurements.jsonl` line 2")
     ledger = '{"date": "2026-10-01", "tools": 3, "note": "a\u2028b"}\n' + read("research/measurements.jsonl")
     assert fixed_load_drift(readme, ledger) is None
+
+
+def gpt_budget_drift(markdown, installer):
+    """The documented Codex TOML budget example matches the separate installer."""
+    snippet = re.search(r"```toml\n(.*?)```", markdown, re.S)
+    if not snippet:
+        return "missing GPT TOML example"
+    pattern = r"(tool_output_token_limit|max_context_tokens) = (\d+)"
+    expected = dict(re.findall(pattern, installer))
+    actual = dict(re.findall(pattern, snippet.group(1)))
+    if set(expected) != {"tool_output_token_limit", "max_context_tokens"}:
+        return "installer no longer has the expected budget literals"
+    return None if actual == expected else "GPT README budget differs from installer"
+
+
+def test_gpt_documented_budgets_match_installer():
+    assert gpt_budget_drift(read("gpt/README.md"), read("gpt/gpt_umbrella/install.py")) is None
+
+
+def test_gpt_budget_drift_is_caught():
+    readme, installer = read("gpt/README.md"), read("gpt/gpt_umbrella/install.py")
+    assert gpt_budget_drift(readme.replace("= 6000", "= 9000"), installer)
+    assert gpt_budget_drift(readme, installer.replace("= 5000", "= 7000"))
+    assert gpt_budget_drift(readme.replace("```toml", "```text"), installer)
+    assert gpt_budget_drift(readme, "")
