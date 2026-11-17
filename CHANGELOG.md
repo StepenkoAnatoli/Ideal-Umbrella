@@ -4,6 +4,7 @@ Notable changes to Ideal-Umbrella. `HISTORY.md` is the narrative history and `re
 
 ## [Unreleased]
 ### Added
+- GPT beginner onboarding: installation, activation and hook review, the files Codex loads, automatic versus manual behavior, troubleshooting, and a visual workflow preview. Advanced commands remain in `gpt/docs/reference.md`.
 - **GPT Umbrella**, a separate local OpenAI Codex adapter under `gpt/`: reversible installation into Codex home, a prompt-time checkpoint reminder, usage and cache accounting, offline skill/request audits, and before/after comparisons. Includes its own README, research, and tests, integrated into the existing Windows/Ubuntu CI on supported Python versions. The root README now distinguishes Claude Code from GPT/Codex; Claude measurements are not GPT savings claims.
 - `config/uninstall.py` without an install record removes only the two keys those installs wrote, so a `bashOutputMaxChars` you set yourself stays.
 - `scripts/skill_bill.py` by default reads `~/.claude/skills` (or `CLAUDE_CONFIG_DIR`), plugins under `<config dir>/plugins` and the desktop app's plugins; skills with `disable-model-invocation: true` cost nothing always-on and are flagged `user-only`; an unreadable skill file or folder is a one-line error; a link up to a parent folder, or to another drive's root, is not followed; plugin skills are named `plugin:skill` as in the listing; a plugin folder that cannot be listed is noted on stderr; follows linked skill folders and counts each skill folder once; the app's desktop-session copies are left out.
