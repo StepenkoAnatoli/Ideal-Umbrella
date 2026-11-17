@@ -9,6 +9,11 @@ Rules and small tools for reducing repeated context overhead. Choose the impleme
 | Claude Code | [Claude quick start](#quick-start), using the existing `config/`, `hooks/`, and `scripts/` | `~/.claude` |
 | [GPT / OpenAI Codex](gpt/README.md) | Separate **GPT Umbrella** implementation in [`gpt/`](gpt/), with its own installer, usage analyzer, tests, and research | `~/.codex` or `CODEX_HOME` |
 
+[![GPT Umbrella preview: focus work, keep continuity, and measure usage.](gpt/assets/gpt-umbrella-preview.png)](gpt/README.md)
+
+New to Codex setup? Follow the [GPT beginner guide](gpt/README.md#install-step-by-step).
+The image illustrates the GPT workflow; it is not a measured savings comparison.
+
 **The rest of this README describes Claude Code.** Its settings, prices, and measured savings do not apply to GPT/Codex. The GPT adapter targets local Codex and saved OpenAI API data; it does not modify ordinary ChatGPT chats. Read the [GPT setup and limitations](gpt/README.md) before installing it.
 
 ## Why

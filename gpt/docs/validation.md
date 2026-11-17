@@ -54,3 +54,18 @@ python -m pytest -q tests/test_keyline_check.py::test_extraction_and_hedges_are_
 The root workflow uses Python 3.12 on Windows and Python 3.12, 3.13, and 3.14 on Ubuntu
 for GPT execution. The baseline result is a local test limitation, not a claim that
 the complete repository suite passed locally. Full logs are retained outside the repository.
+
+## Beginner guide and activation check
+
+The first published revision passed the complete GitHub Actions matrix on Ubuntu and
+Windows: [run 43978521885](https://github.com/StepenkoAnatoli/Ideal-Umbrella/actions/runs/43978521885).
+For the onboarding update, all 15 documentation checks passed. A fresh temporary Codex
+home also passed the documented dry-run, install, verify, local usage report, installed-hook
+reminder with a synthetic transcript, and uninstall flow. Relative links and heading
+anchors were checked; the generated preview was visually reviewed for readable, accurate text.
+
+The existing local installation was updated to v0.1.2 and verified. Its parsed configuration
+values and hook definitions remained unchanged. An earlier edited skills block contained
+Codex's hook-trust settings; those settings were preserved, and only the obsolete ownership
+comments were removed after backing up the original file. This local maintenance is not an
+automatic upgrade feature or evidence that a fresh user's hooks are already trusted.

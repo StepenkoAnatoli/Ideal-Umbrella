@@ -1,69 +1,138 @@
-# GPT Umbrella — OpenAI Codex edition
+# GPT Umbrella — for OpenAI Codex
 
-Version 0.1.2, integrated into Ideal-Umbrella with a Unicode CLI output fix.
-See the [multi-angle review and fixes](docs/review-2026-11-17.md).
+**Help Codex keep its working context focused, remember progress, and measure token usage.**
 
-Reduce avoidable context overhead in **local Codex**, and measure what actually changes.
-Inspired by [Ideal Umbrella](https://github.com/StepenkoAnatoli/Ideal-Umbrella), inspected at
-`415f786cf74828c1a039b0e75d0389321bf2eeed`. This is a new Python implementation for OpenAI
-usage records and Codex configuration. It does not modify the GPT model or ordinary ChatGPT chats.
+GPT Umbrella is the OpenAI Codex edition of [Ideal-Umbrella](../README.md). It installs
+working rules and a local checkpoint reminder. You can also run reports to see where
+context and tokens go. It does not guarantee lower costs.
 
-This is the **GPT/Codex part of Ideal-Umbrella**. The [repository root](../README.md)
-documents the separate Claude Code implementation. Use this directory's commands for Codex;
-the root `config/install.py` is the Claude installer.
+![GPT Umbrella workflow: focused work, checkpoint reminders, and local usage reports.](assets/gpt-umbrella-preview.png)
 
-Python **3.11+**, standard library only. No API key, network request, paid model call, or
-third-party dependency is needed. Developed and tested on Windows with Codex CLI 0.156.1.
-The [repository CI](../.github/workflows/ci.yml) runs GPT's suite through
-`tests/test_gpt_entrypoint.py` on Ubuntu with Python 3.12, 3.13, and 3.14 and Windows
-with Python 3.12. The Python 3.10 job skips GPT execution. Check actual CI results;
-Python 3.11 is the minimum required by the code but is not currently in the CI matrix.
+*Illustrative workflow, not an app screenshot or measured savings result.*
 
-## What is included
+[Install](#install-step-by-step) · [Make Codex use it](#how-do-i-make-codex-use-it) ·
+[Check usage](#run-your-first-usage-report) · [Troubleshooting](#troubleshooting) ·
+[Technical reference](docs/reference.md)
 
-| Component | Behavior |
-| --- | --- |
-| Usage analyzer | Reads Codex JSONL and saved Responses JSON; deduplicates response IDs; reports input, cache reads/writes, output and reasoning subsets. |
-| Waste report | Ranks tool outputs by characters, flags large results, and hashes repeated commands instead of printing them. |
-| Context monitor | Reminds the agent to save a checkpoint near 75% of its reported context window, then at additional 10 percentage point bands. |
-| Installer | Backs up existing files, preserves existing settings, appends a small instruction section, copies the runtime, and registers hooks. |
-| Uninstaller | Restores unchanged files exactly; removes intact owned sections while preserving later user edits. |
-| Skill/instruction audit | Ranks source-file sizes without pretending all those files are loaded into context. |
-| API request audit | Offline advice about eager tool definitions, changed prefix settings, and possibly replayed conversation history. |
-| Before/after comparison | Shows total work, response counts and per-response averages; makes no causal savings claim. |
+## Is this for me?
 
-## Start with measurement
+Use this edition with the **local Codex desktop app or Codex CLI**. You need
+**Python 3.11 or newer** and Git. GPT Umbrella itself needs no API key, paid API call,
+or extra Python package. Your normal Codex access is separate.
 
-Clone Ideal-Umbrella if needed, then enter the **gpt** directory:
+This does not install into ordinary ChatGPT web chats. Claude Code users should follow
+the [Claude guide](../README.md). Keep the installers separate: `gpt/umbrella.py` is
+for Codex; the root `config/install.py` is for Claude Code.
+
+## What actually happens?
+
+| Part | What it does | When it runs |
+| --- | --- | --- |
+| Working rules | Ask Codex to focus searches, bound tool output, and maintain a concise checkpoint. | Loaded as instructions when Codex starts a session. |
+| Optional budgets | Add starting limits for tool output and skill context when those settings are not already owned. | Applied through local Codex configuration. |
+| Checkpoint reminder | Checks recent reported context use and can remind Codex to save progress. | At prompt time, after hook review/trust, when a usable estimate crosses a reminder band. |
+| Usage reports | Report input, cached input, output, and tool-output sizes from available local logs. | Only when you or your agent run an analysis command. |
+
+A **checkpoint** is a short note with the objective, decisions, changed files, checks,
+open issues, and next action. The reminder asks the agent to write it; it does not write
+the note itself. Rules are guidance, not a guarantee of agent behavior.
+
+## Install step by step
+
+Open PowerShell on Windows, or a terminal on macOS/Linux. Check your tools:
+
+```powershell
+python --version
+git --version
+```
+
+If your system uses `python3`, substitute it for `python` in every command below.
+If needed, install [Python](https://www.python.org/downloads/) and
+[Git](https://git-scm.com/downloads) first.
+
+### 1. Download this edition
+
+The GPT edition is included in the main Ideal-Umbrella repository:
 
 ```powershell
 git clone https://github.com/StepenkoAnatoli/Ideal-Umbrella.git
 cd Ideal-Umbrella/gpt
 ```
 
-Run these commands from that directory:
+Run the remaining commands from this `gpt` directory. If you already cloned the repository,
+update your checkout and enter `gpt` instead of cloning another copy.
+
+### 2. Preview the changes
 
 ```powershell
-python -I umbrella.py analyze --latest 10 --output output/before.json
-python -I umbrella.py audit /path/to/your/skills --output output/skills.json
 python -I umbrella.py install --dry-run
+```
+
+This lists what would change without installing anything. `-I` isolates Python from
+Python environment variables and user site packages.
+
+### 3. Install and check the files
+
+```powershell
 python -I umbrella.py install
 python -I umbrella.py verify
 ```
 
-`analyze` defaults to `$CODEX_HOME/sessions` or `~/.codex/sessions`. It reads **available JSONL
-files only**; it does not access the app's database, paginated history, remote sessions, or
-automatically add archived sessions. Pass explicit files/directories to include them. Child
-agent files are included only when found under the selected directories. `--latest` limits
-files, so it can omit child sessions. A report is not necessarily your entire account usage.
+Look for `"files_match_install": true`. The installer backs up files before changing them.
+It preserves your existing model, reasoning effort, permissions, and tool access.
+See [what it installs](#what-files-does-it-change).
 
-After installation, start a new local Codex chat to load configuration and instructions.
-Codex must review and trust the installed hooks before they execute: use **Settings > Hooks**
-in the desktop app, or `/hooks` in the CLI. `verify` checks installed files, not hook trust
-or runtime activation. This project never writes trust approvals or bypasses that review.
-See [official hooks documentation](https://learn.chatgpt.com/docs/hooks).
+### 4. Load the setup in Codex
 
-The normal `balanced` preset adds these settings **only when no existing setting/table owns them**:
+Start a **new local Codex chat**, or relaunch the CLI, to load configuration and instructions.
+Keep your existing chats; you do not need to delete your history.
+
+In the desktop app, open **Settings > Hooks** (or **Review hooks** if shown). In the CLI,
+open **`/hooks`**. Review and trust the **GPT Umbrella context monitor** if Codex requests it.
+New or changed hook definitions need review before execution.
+[Official hook instructions](https://learn.chatgpt.com/docs/hooks).
+
+### 5. Confirm the instructions are loaded
+
+Paste this into that new Codex chat:
+
+> Check whether the GPT Umbrella rules are loaded from my global AGENTS.md. Summarize the active rules and keep a concise checkpoint for this task.
+
+`verify` checks files; this prompt checks what instructions the agent can see. Neither
+alone proves the hook executed. The hook normally stays quiet below its reminder threshold.
+
+## How do I make Codex use it?
+
+**Install once for your local Codex profile. You do not need to paste this README into every chat.**
+
+The working rules go in your global `AGENTS.md`, which Codex reads when it builds a
+session's instructions. A global `AGENTS.override.md` can replace that file, and project
+instructions can add more specific guidance.
+[How Codex loads instructions](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
+You can also ask directly:
+
+> Use GPT Umbrella's workflow for this task. Keep searches focused, save long logs to files, and update the checkpoint after meaningful progress.
+
+The automatic reminder needs a trusted hook. Reports are separate commands you can run
+yourself or ask the agent to run. GPT Umbrella does not switch models, lower reasoning
+effort, disable tools, restart chats, or compact history.
+
+## What files does it change?
+
+Codex home defaults to `%USERPROFILE%\.codex` on Windows or `~/.codex` on macOS/Linux.
+If you set `CODEX_HOME`, that directory is used instead.
+
+| Inside Codex home | Purpose |
+| --- | --- |
+| `AGENTS.md` | Adds a clearly marked GPT Umbrella rules section. |
+| `config.toml` | Adds missing budgets with the balanced preset; preserves existing settings. |
+| `hooks.json` | Registers the prompt-time monitor alongside existing hooks. |
+| `gpt-umbrella/runtime/` | Stores the Python code used by the hook. |
+| `gpt-umbrella/backups/` and `gpt-umbrella/install-record.json` | Store backups and track installer ownership. |
+| `gpt-umbrella/state/` | Stores reminder bands and compaction fingerprints, not chat text. |
+
+The default **balanced** preset adds these values only when the setting/table is absent:
 
 ```toml
 tool_output_token_limit = 6000
@@ -72,115 +141,66 @@ tool_output_token_limit = 6000
 max_context_tokens = 5000
 ```
 
-These are starting budgets to evaluate, not demonstrated optimal values. Existing
-`tool_output_token_limit` is preserved. Any existing `skills` table is preserved in full,
-so its budget is not changed. Other configuration layers can override these values.
-The [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
-documents these controls. The installer keeps model choice, reasoning effort, permissions,
-tools, connectors, and compaction thresholds as configured.
+These are experimental starting budgets, not measured optimal settings. An existing
+`skills` table is preserved in full. On an uninstalled profile, use
+`python -I umbrella.py install --preset observe` to add rules and the monitor without
+these budgets. Observe still adds instructions; it is not a passive baseline.
 
-`--preset observe` installs the monitor and concise workflow rules without adding output or
-skill budgets. It is not a completely passive baseline because the rules can affect behavior.
-To change presets or update this first version: uninstall, then install again. In-place
-upgrades are intentionally not implemented.
+## Run your first usage report
 
-## Compare after a matching task
+After using a local Codex chat, return to `gpt` and run:
 
 ```powershell
-python -I umbrella.py analyze PATH/TO/COMPLETED-SESSION.jsonl --output output/after.json
-python -I umbrella.py compare output/before.json output/after.json
+python -I umbrella.py analyze --latest 3 --output output/usage.json
 ```
 
-For a meaningful experiment use the same task, repository state, model, reasoning setting,
-tool access, and acceptance checks. Compare cold and warm cache runs separately. Record
-completion time and correctness alongside tokens. A smaller prompt that causes more retries
-can cost more overall. Sessions still being written can produce partial totals and warnings.
+Open `output/usage.json` in a text editor, or ask Codex to explain it. It reports:
 
-## Hooks and continuity
+- Input and output tokens, with cache and reasoning subsets kept separate.
+- Tool output ranked by **characters**, which are not token counts.
+- Warnings about malformed records, incomplete history, or accounting differences.
 
-Only `UserPromptSubmit` is installed. It reads at most the last 4 MiB of the transcript to
-obtain a reported context window and a recent usage estimate, and detects compaction
-boundaries within that tail. It uses the transcript path to separate forks that share a
-root session ID. There is no process launch or state write on each model request.
-Below the reminder threshold the
-monitor emits no extra context. It never starts a fresh chat, requests another model call,
-or blocks a task. All hook errors exit successfully and print a short diagnostic.
+This reads recent available JSONL files under Codex home. It is not an account bill or
+a complete history: remote, archived, and child-agent files may need explicit paths.
+Reports omit raw prompts, commands, and tool results, but contain metadata and deterministic
+fingerprints. Check their contents before sharing them.
 
-The estimate is from the last model request; new prompt text and tool results can make the
-next request larger. Transcripts are an unstable compatibility interface. If a usable
-window/record is absent, the reminder stays quiet rather than guessing a model's capacity.
-State is one small reminder-band/compaction fingerprint file per transcript under
-`~/.codex/gpt-umbrella/state/`, retained until you delete it. Old v0.1.0 numeric state is
-ignored. There is no automatic retention cleanup.
+[More commands: comparisons, skill audits, API request audits, and rates](docs/reference.md).
 
-Workflow rules ask the agent to maintain a concise checkpoint after meaningful work, use
-focused searches, read detailed references on demand, and investigate repeated failures.
-They are instructions, not an enforcement mechanism. See [checkpoint template](templates/checkpoint.md).
+## Troubleshooting
 
-## Optional API tools
+| What you see | What to do |
+| --- | --- |
+| `python` is missing, or `tomllib` is not found | Install Python 3.11+, or use `python3` if that is your installation. |
+| `umbrella.py` cannot be found | Enter the repository's `gpt` directory. |
+| No reminder appears | Check hook review/trust. Silence is normal below the threshold or without a reported context window. |
+| Rules are missing in a new chat | Check Codex home and whether `AGENTS.override.md` replaces the global rules. |
+| `verify` reports a changed file | Inspect that file. Codex or later user edits can change config; this is not automatically a broken hook. |
+| No transcripts are found | Complete a local Codex task, or pass an explicit JSONL path. Remote history is not downloaded. |
+| Uninstall preserves an edited block | Inspect it before reinstalling. It may contain settings added by Codex, including hook trust; do not blindly delete the block. |
+| An install was interrupted or a lock remains | Follow the [recovery notes](docs/reference.md#undo-and-recovery). |
 
-```powershell
-python -I umbrella.py analyze saved-response.json --rates my-model-rates.json
-python -I umbrella.py audit-requests request-1.json request-2.json
-```
+## Update or remove it
 
-Rates are supplied per million tokens and keyed by the exact model ID:
-
-```json
-{
-  "your-model-id": {
-    "input": 1,
-    "cached_input": 0.1,
-    "output": 5,
-    "cache_write": 1.25,
-    "cache_write_30m": 1.25,
-    "cache_write_12h": 2.5
-  }
-}
-```
-
-**Those are illustrative rates, not a price quote.** Supply the correct model, service tier,
-and applicable pricing. If the write lifetime is unknown, `cache_write` must be supplied;
-the analyzer will not assume a TTL. Cache reads/writes are subsets of input, and reasoning
-is already included in output. Missing required rates produce an unavailable estimate.
-API estimates do not predict subscription quotas or charges.
-
-The request audit changes no requests and makes no API calls. It is advisory; model
-compatibility and actual cache diagnostics must be checked before acting on a suggestion.
-
-## Undo and recovery
+Updates use uninstall then reinstall; there is no in-place upgrade command. Review any
+preservation notices before reinstalling:
 
 ```powershell
 python -I umbrella.py uninstall --dry-run
 python -I umbrella.py uninstall
 ```
 
-`--home ABSOLUTE_PATH` selects a Codex configuration directory for install, verify,
-uninstall, hook, or default analysis. The installer refuses linked target paths, malformed
-configuration, and untracked runtime files. It journals backups before applying changes,
-rolls back ordinary write failures, and leaves a pending record after abrupt interruption;
-run uninstall to recover that pending transaction before reinstalling.
+To update, pull the latest source for your branch, then run `install` and `verify` again.
+To remove it, stop after uninstall. Backups and reminder state are retained for inspection.
+Later user edits are preserved where the installer cannot safely restore a file.
 
-Mutating commands use an exclusive `gpt-umbrella/mutation.lock`. After an abrupt process
-crash, inspect the recorded process ID and confirm no installer is running before removing
-a stale lock. Recorded file and backup paths are restricted to the installer's owned
-namespace. Detected external edits during installation/undo cause a stop; rollback does
-not overwrite an externally edited file. This is not a filesystem-wide lock on editors.
+## Development and evidence
 
-Edited managed sections are left intact with a notice. If hook entries changed, the runtime
-is retained for inspection so an edited hook is not left pointing at deleted code. Backups
-and numeric monitor state remain after uninstall. Keep the source checkout for maintenance.
+Version **0.1.2**. Standard-library runtime; no telemetry or network calls from the tool.
+Run `python -m unittest discover -s tests -v` from `gpt/` for its tests. The existing
+[repository CI](../.github/workflows/ci.yml) also runs the suite on its Python 3.12+ jobs
+on Windows and Ubuntu. Python 3.11 is the code's minimum but is not in that matrix.
 
-## Validation
-
-```powershell
-python -m unittest discover -s tests -v
-python -m compileall -q umbrella.py gpt_umbrella
-```
-
-Tests cover accounting, response deduplication, legacy fallback, privacy of reports,
-malformed input, reminders and compaction, installer rollback, user-edit preservation,
-isolated execution, and both PowerShell and cmd.exe hosts on Windows.
-
-See [GPT-specific research](docs/gpt-research.md), [validation notes](docs/validation.md),
-and [attribution](NOTICE.md). No percentage savings is claimed without matched measurements.
+See [validation and limits](docs/validation.md), [GPT research](docs/gpt-research.md),
+[review and fixes](docs/review-2026-11-17.md), [technical reference](docs/reference.md),
+and [attribution](NOTICE.md). No matched task benchmark currently proves savings or better quality.
